@@ -1,0 +1,57 @@
+/* タグ一括編集の共有スタイル — グリッド (?bulk=1) とマンガビューアの両方が
+   import する。枠色の意味論 (青=付与済み / 緑=追加選択中 / 赤=解除選択中) の
+   色トークンと、選択中 marching ants (「動き=選択中」) はここに 1 箇所だけ置く。
+
+   枠の「描き方」はページごとに違うまま:
+   - グリッド .thumb は 2px の border-color (ページ側 CSS がトークンを参照)
+   - マンガ .item は ::after オーバーレイ枠 (5px + ants) — コンテナに .vb-frames
+     を付けて opt-in する (下記)。
+   状態クラス名は両ページ統一: vb-has / vb-adding / vb-removing。 */
+
+:root {
+  --vb-has: #4a9eff;   /* target タグ付与済み */
+  --vb-add: #4caf50;   /* 追加選択中 */
+  --vb-rem: #e05050;   /* 解除選択中 */
+  --vb-lock: #e0c97f;  /* 施錠選択中 (present pin + positive GT) */
+}
+
+/* ── ::after オーバーレイ枠 (マンガビューア .stream.vb-frames の item) ──
+   inset box-shadow は子の <img> の下に描かれて見えないため ::after の
+   オーバーレイ枠で画像の上に描く。要 position:relative な item。 */
+.vb-frames .vb-has::after,
+.vb-frames .vb-adding::after,
+.vb-frames .vb-removing::after {
+  content: ''; position: absolute; inset: 0; pointer-events: none; z-index: 3;
+}
+.vb-frames .vb-has::after { border: 5px solid var(--vb-has); }
+
+/* ── 選択中 (緑=追加候補 / 赤=解除候補) は marching ants — 「動き=選択中」──
+   青 (適用状態) は静的なまま: 動きは選択状態の専有チャネル。
+   border は position をアニメーションできないため、4 辺を repeating-linear-gradient
+   の背景で描き background-position を周回させる (時計回り: 上→右 / 右→下 /
+   下→左 / 左→上)。ダッシュ周期 24px・枠太さ 5px は solid 枠と同寸。
+   選択解除・適用完了はクラスが外れるので即静止。 */
+.vb-frames .vb-adding::after { --vb-ant: var(--vb-add); }
+.vb-frames .vb-removing::after { --vb-ant: var(--vb-rem); }
+.vb-frames .vb-adding::after,
+.vb-frames .vb-removing::after {
+  background-image:
+    repeating-linear-gradient(90deg, var(--vb-ant) 0 12px, transparent 12px 24px),
+    repeating-linear-gradient(90deg, var(--vb-ant) 0 12px, transparent 12px 24px),
+    repeating-linear-gradient(0deg, var(--vb-ant) 0 12px, transparent 12px 24px),
+    repeating-linear-gradient(0deg, var(--vb-ant) 0 12px, transparent 12px 24px);
+  background-size: 100% 5px, 100% 5px, 5px 100%, 5px 100%;
+  background-position: 0 0, 24px 100%, 0 24px, 100% 0;
+  background-repeat: no-repeat;
+  animation: vb-ants 1.6s linear infinite;
+}
+@keyframes vb-ants {
+  to { background-position: 24px 0, 0 100%, 0 0, 100% 24px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .vb-frames .vb-adding::after,
+  .vb-frames .vb-removing::after { animation: none; }
+}
+
+.vb-frames .item { user-select: none; -webkit-user-select: none; }
+

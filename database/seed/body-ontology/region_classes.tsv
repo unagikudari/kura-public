@@ -1,0 +1,10 @@
+class_slug	description
+surface_skin	External keratinized/normal skin surface
+surface_mucosa	Mucosal surface
+hair	Hair-bearing region / hair as a region
+eye	Ocular structures
+mouth	Oral region/structures
+external_genital	External genital anatomy (neutral anatomical term)
+perianal	Perianal region
+bone_landmark	Skeletal landmark used for geometry/pose
+joint	Articulation used for geometry/pose

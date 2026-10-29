@@ -1,0 +1,9 @@
+[Unit]
+Description=Read independent library backup evidence
+After=network-online.target
+
+[Service]
+Type=oneshot
+UMask=0077
+TimeoutStartSec=40
+ExecStart=/usr/bin/python3 %h/kura/web/scripts/library-backup-status.py

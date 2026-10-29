@@ -1,0 +1,71 @@
+@import url('/control-tokens.css');
+
+/* kura — global styles.
+ *
+ * This is the app's ONE global CSS layer. It is imported by
+ * src/routes/+layout.svelte (the root layout, which wraps every route and the
+ * embedded gallery iframe). Put app-wide rules here; per-route/component styles
+ * live in each .svelte file's <style> block.
+ */
+
+/* Global reset. Without this the dark theme lives only in component-scoped
+ * `.page { background:#111 }`, so on reload the browser paints body's default
+ * 8px margin + white background for a frame before the app CSS applies (FOUC).
+ * Setting it here (app.css is linked in <head>, applied before body paints)
+ * makes the first paint dark and frame-less. */
+:root {
+  color-scheme: dark;
+  --background: #111518;
+  --surface: #191f23;
+  --surface-raised: #222a30;
+  --surface-hover: #2b353c;
+  --input: #101619;
+  --muted: #a6b2ba;
+  --accent-soft: #e2c58c14;
+  --radius: var(--control-radius);
+  --shadow: 0 12px 36px #0005;
+  --text: #ece9e2;
+  --line: #364149;
+  --accent: #e2c58c;
+}
+html, body {
+  margin: 0;
+  background: var(--background);
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans JP", sans-serif;
+}
+button, input, select, textarea { font-family: inherit; }
+/* Keep viewport/media geometry local: these tokens also serve compact viewers. */
+button, a, input, select, textarea { -webkit-tap-highlight-color: #e2c58c22; }
+input, textarea, select { accent-color: var(--accent); }
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; scroll-behavior: auto !important; }
+}
+:where(a, button, input, select, textarea, [tabindex]):focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+::selection { background: #d9bd8740; color: #fff; }
+
+/* Thin, unobtrusive scrollbar. Chrome 121+/Firefox honor the standard
+ * scrollbar-* props; older WebKit falls back to ::-webkit-scrollbar. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #3a3a3a transparent;
+}
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: #3a3a3a;
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-thumb:hover { background: #555; background-clip: padding-box; }
+::-webkit-scrollbar-corner { background: transparent; }
+
+/* Keep mobile text sizing predictable without disabling browser/user zoom. */
+html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
+@media (max-width: 600px), (pointer: coarse) {
+  body { font-size: 14px; }
+}

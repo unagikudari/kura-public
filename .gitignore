@@ -1,0 +1,65 @@
+__pycache__/
+*.pyc
+data/
+!web/src/routes/data/
+!web/src/routes/data/**
+*.egg-info/
+dist/
+build/
+.venv/
+node_modules/
+web/build/
+.svelte-kit/
+web/src/lib/build_info.ts
+cookies.txt
+
+# secrets — match the FAMILY, not the exact name.
+#
+# `api/env` alone let `api/env.bak.20260730` (DB password, KURA_SECRET,
+# BROKER_API_KEY, KURA_TOKEN, TELEGRAM_BOT_TOKEN) sit untracked-but-committable:
+# one `git add api/` away from the history. `tagger/env` actually did land in
+# history once (99cb743, untracked again in 31022bb) with a live KURA_TOKEN.
+# An ignore rule that names one file does not follow the backups, per-host
+# copies and .old/.bak derivatives that people inevitably make of it, so the
+# rule has to cover the family and the .example templates have to be re-allowed.
+.env*
+api/env*
+tagger/env*
+web/.env*
+!.env.example
+!api/env.example
+!tagger/env.example
+!web/.env.server.example
+
+# view-smoke.py の比較出力 (golden は commit、比較 shot と diff heatmap は使い捨て)
+web/tests/out/
+
+# tagger の runtime 状態 — 生成物であってソースではない。tracked に置くと
+# 書き換えのたびに production tree が dirty になる (kura#44: reap authority を
+# 6h ごとに書く evaluator が /api/build の dirty:true を常時点灯させていた)。
+# reap authority は data/tagger/reap_authorized.json へ移設済 (data/ は上で ignore)。
+tagger/reconciler_disposition.json
+tagger/reap_authorized.json
+# 同族: head 分布の before/after スナップショット。誰も import しない一回限りの
+# 測定成果物で、置き去りにされると tree が dirty のままになる。2026-09-05 に
+# `tagger/head_distribution_before.json` 1 本が **gated な kura review round の
+# preflight を全部 UNAVAILABLE にしていた** — preflight は dirty tree を「何が
+# checkout されていたか分からない」として PASS を拒否するので、
+# dirty:true の点灯より重い。before/after は対で出るので pattern で受ける。
+tagger/head_distribution_*.json
+data-images/
+tmp/
+
+# tagger heads: コードは tagger/heads/ に版管理、成果物と秘密は repo 外 ($TAGGER_HEADS_DATA)。
+# ここは「万一 repo 内に現れたら止める」ための網であって、置き場所の宣言ではない。
+.ktok
+.runner_key
+tagger/heads/heads/
+tagger/heads/*.log
+tagger/heads/*.jsonl
+tagger/heads/*.pt
+tagger/heads/*.safetensors
+
+# Separately versioned extension payloads, materialized by compose_extensions.py.
+.kura-extensions.json
+.kura-extensions.lock

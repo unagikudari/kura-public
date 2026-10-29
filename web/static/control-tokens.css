@@ -1,0 +1,13 @@
+/* Shared by the Svelte app and native dashboard iframe. Keep geometry here. */
+:root {
+  --control-height: 28px;
+  --control-compact-height: 24px;
+  --control-radius: 2px;
+  --control-padding-x: 6px;
+  --control-gap: 4px;
+  --control-font: 12px;
+  --control-count-font: 10px;
+}
+@media (max-width: 600px), (pointer: coarse) {
+  :root { --control-height: 30px; }
+}

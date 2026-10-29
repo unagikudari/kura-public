@@ -1,0 +1,370 @@
+#!/usr/bin/env python3
+"""kura pre-commit — VERSION 単調増加ガード。
+
+CLAUDE.md の「1 commit = 1 VERSION バンプ + 1 CHANGELOG 行」を機械強制する。
+
+2026-07-14 の実害: 並行 push された 1.51.0/1.51.1 を見ずに、セッション記憶にあった
+1.50.2 の上から 1.50.3 を採番 → 公開バージョンが 1.51.1 → 1.50.3 と逆行し、
+/api/build の ground truth と CHANGELOG の順序が壊れた。原因は「VERSION ファイルを
+読まずに記憶で次番号を書いた」こと。テキスト規則では防げないので gate にする。
+
+BLOCK 条件:
+  1. VERSION が HEAD の値以下 (逆行・据え置き)
+  2. VERSION が CHANGELOG / 既知の release tag の最大バージョンを超えない
+  3. 新 VERSION 見出し (## X.Y.Z) が CHANGELOG に無い
+
+bypass: git commit --no-verify (明示的な意思表示のみ)
+"""
+import os
+import re
+import subprocess
+import sys
+
+DEPLOYABLE = ("api/", "web/", "scripts/", "data/")
+SEMVER = re.compile(r"^(\d+)\.(\d+)\.(\d+)$")
+HEADING = re.compile(r"^##\s+(\d+\.\d+\.\d+)", re.MULTILINE)
+
+
+def git(*args):
+    r = subprocess.run(["git", *args], capture_output=True, text=True)
+    return r.stdout if r.returncode == 0 else None
+
+
+def parse(v):
+    m = SEMVER.match((v or "").strip())
+    return tuple(int(x) for x in m.groups()) if m else None
+
+
+def fmt(t):
+    return ".".join(str(x) for x in t)
+
+
+# --- refguard endpoints-snapshot drift guard (primary-only) --------------------
+# refguard CI is snapshot-based (no app in the cloud runner), so it only catches
+# a STALE snapshot once some client references the missing route. This local
+# guard closes that window: whenever route-defining code (or the snapshot) is
+# staged, it re-enumerates api.main:app under the kura venv and blocks if the
+# committed schema/endpoints.snapshot no longer matches. Off-primary (no venv) it
+# skips — CI still backs it up. bypass: git commit --no-verify.
+REFGUARD_EP = "scripts/devtools/refguard/endpoint_refs.py"
+EP_SNAPSHOT = "schema/endpoints.snapshot"
+KURA_VENV_PY = os.path.expanduser("~/.local/share/kura-api/venv/bin/python")
+
+
+def _routes(text):
+    if text is None:
+        return None
+    return sorted(ln.strip() for ln in text.splitlines() if ln.strip() and not ln.startswith("#"))
+
+
+def _route_lines(path):
+    try:
+        with open(path) as fh:
+            return _routes(fh.read())
+    except FileNotFoundError:
+        return None
+
+
+def endpoints_snapshot_drift(staged):
+    touches_routes = any(f.startswith("api/") and f.endswith(".py") for f in staged)
+    if not (touches_routes or EP_SNAPSHOT in staged):
+        return 0
+    if not (os.path.exists(KURA_VENV_PY) and os.path.exists(REFGUARD_EP)):
+        return 0  # can't enumerate routes off-primary; refguard CI is the backstop
+    import tempfile
+
+    tmp = tempfile.NamedTemporaryFile(suffix=".snapshot", delete=False).name
+    try:
+        r = subprocess.run(
+            [KURA_VENV_PY, REFGUARD_EP, "--app", "api.main:app", "--write-snapshot", tmp],
+            capture_output=True, text=True, env={**os.environ, "PYTHONPATH": "."},
+        )
+        if r.returncode != 0:
+            tail = (r.stderr.strip().splitlines() or [""])[-1]
+            print(f"[refguard-snapshot] WARN: app のルート列挙に失敗 (skip): {tail}", file=sys.stderr)
+            return 0
+        # compare live app routes against the STAGED snapshot (what will actually be
+        # committed) — not the working tree — so "regen したが git add し忘れ" も捕まる
+        live = _route_lines(tmp)
+        committed = _routes(git("show", f":{EP_SNAPSHOT}"))
+    finally:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+    if committed is None or live == committed:
+        return 0
+    added = sorted(set(live) - set(committed))
+    removed = sorted(set(committed) - set(live))
+    lines = ["[refguard-snapshot] BLOCK: api のルートと " + EP_SNAPSHOT + " が不一致です (snapshot 未再生成)。"]
+    if added:
+        lines.append("  + app にあり snapshot に無い: " + ", ".join(added[:8]))
+    if removed:
+        lines.append("  - snapshot に残存し app に無い: " + ", ".join(removed[:8]))
+    lines.append(
+        f"  FIX: PYTHONPATH=. {KURA_VENV_PY} {REFGUARD_EP} "
+        f"--app api.main:app --write-snapshot {EP_SNAPSHOT} && git add {EP_SNAPSHOT}"
+    )
+    print("\n".join(lines), file=sys.stderr)
+    return 1
+
+
+# ── hook 自身の健全性 (2026-09-04) ─────────────────────────────────────────
+# hook を symlink で入れると、指す先がその checkout に無いとき symlink は**宙ぶらりん**
+# になる。そして **git は存在しない hook を黙って無視する** — エラーも警告も出ない。
+# つまりゲートが外れたことに誰も気づかない。実際に起きた: pre-push (torch ゲート) を
+# feature ブランチで足し、本番 checkout を main へ戻した瞬間に無効化された。
+#
+# kura#120 以降、tracked な hooks/ は symlink ではなく worktree を解決する entrypoint な
+# ので、この検査が拾うのは旧 installer が .git/hooks に残した symlink や手で入れたものに
+# なる。git が実際に読むディレクトリを見る (core.hooksPath 設定時はそちらが返る)。
+#
+# 走っている hook (これ) が、走っていない hook の不在を報告する。自分の健全性を自分で
+# 測れない機構は、壊れたことを言えない。
+def dangling_hooks():
+    hooks_dir = git("rev-parse", "--git-path", "hooks").strip()
+    bad = []
+    for name in ("pre-commit", "pre-push", "commit-msg"):
+        link = os.path.join(hooks_dir, name)
+        if os.path.islink(link) and not os.path.exists(link):
+            bad.append((link, os.readlink(link)))
+    return bad
+
+
+# --- vendored refguard は canonical のコピーである (primary-only) ---------------
+# scripts/devtools/refguard/*.py は broker からの vendored copy。broker 側の
+# pre-commit は `vendor.py check` を持っているが、**broker の guard が staged された
+# ときにしか走らない** — kura 側でこのファイルを直接編集しても、誰も見ていない。
+# 実際に起きた: kura#44 (863419b) が vendored endpoint_refs.py を直接広げ、canonical
+# には戻らないまま 9 日。kura#53 の修正が `vendor.py sync` を実行した時点で、新しい方
+# が古い方に上書きされて kura#44 が黙って消える寸前だった。vendoring は両端の不変条件
+# なので、検査も両端に置く。broker checkout の無いノードでは skip (fail-open)。
+VENDOR_PY = os.path.expanduser("~/broker/scripts/devtools/refguard/vendor.py")
+
+
+def vendored_refguard_drift(staged):
+    if not any(f.startswith("scripts/devtools/refguard/") and f.endswith(".py")
+               for f in staged):
+        return 0
+    if not os.path.exists(VENDOR_PY):
+        return 0  # broker checkout の無いノード — broker 側の check が backstop
+    r = subprocess.run([sys.executable, VENDOR_PY, "check", os.getcwd()],
+                       capture_output=True, text=True)
+    if r.returncode == 0:
+        return 0
+    print("\n".join([
+        "[refguard-vendor] BLOCK: vendored copy が canonical と一致しません。",
+        "  " + (r.stdout.strip().splitlines() or [""])[-1],
+        "  これらは broker のコピーです。**ここを直しても canonical には戻りません** —",
+        "  次の `vendor.py sync` で黙って上書きされます (kura#44 で実際に起きかけた)。",
+        "  FIX: broker 側の scripts/devtools/refguard/ を直して commit し、",
+        f"       python3 {VENDOR_PY} sync してから ここを git add してください。",
+        "  bypass: git commit --no-verify",
+    ]), file=sys.stderr)
+    return 1
+
+
+# ── secret gate (2026-09-04, tagger heads 移設 Phase 0) ─────────────────────
+# 「秘密は環境変数からのみ」は規約では守れない。tagger/heads/ を版管理下に置いた時点で、
+# 秘密ファイルが同じ木に居ると commit できてしまう — パスで到達できる秘密は commit できる
+# 秘密。ここで止める。
+#
+# 中身の正規表現でトークンを探すことはしない (誤検出と、探せなかったときに「無い」と読まれる
+# 危険の両方がある)。**名前が秘密であるファイル**だけを、名指しで拒む。
+SECRET_NAMES = {".ktok", ".runner_key", ".env", "node_credential.json"}
+SECRET_SUFFIXES = (".pem", ".key")
+
+
+def secret_gate(staged):
+    # **削除は止めない。** `git diff --cached --name-only` は削除された path も返すので、
+    # 素朴に見ると「秘密を repo から取り除く commit」自体が BLOCK される — この gate が
+    # 存在する理由そのものの緊急事態 (秘密が入ってしまった) で、その修正 commit が
+    # 通らない。実測 (2026-09-05、全 1516 commit): 履歴での誤検知は 0 件だが、それは
+    # **この種別が母集団に 1 件も無かったから**で、gate を直接評価すると削除も BLOCK した。
+    # 率ゼロは「測った」ではない (broker の changelog gate で同じ形を踏んだ)。
+    deleted = set((git("diff", "--cached", "--name-only", "--diff-filter=D") or "").split())
+    bad = [p for p in staged
+           if p not in deleted
+           and (os.path.basename(p) in SECRET_NAMES
+                or os.path.basename(p).endswith(SECRET_SUFFIXES))]
+    if not bad:
+        return 0
+    print(
+        "[secret-gate] BLOCK: 秘密として扱うファイルが staged です:\n  "
+        + "\n  ".join(bad)
+        + "\n  秘密は環境変数から渡します (tagger/heads/README.md)。repo に入れないでください。\n"
+          "  意図的な例外は git commit --no-verify (明示的な意思表示のみ)。",
+        file=sys.stderr,
+    )
+    return 1
+
+
+# --- replica DDL declaration gate (issue #52 層 2) --------------------------
+# 0153 以降の migration は REPLICA_DDL (str | None) の宣言必須。宣言が無いと
+# api/replica_propagation.py の自動 dispatch が「手動分類が必要」な task を配る
+# ことになり、propagation が人手後追いに戻る。散文 (docstring の「replication に
+# ついて」節) は人間向け rendering であり、機械はこの定数だけを読む。
+REPLICA_DDL_FLOOR = 152  # この番号より後の revision に宣言を強制
+
+
+def replica_ddl_undeclared(staged):
+    bad = []
+    for f in staged:
+        m = re.match(r"api/alembic/versions/(\d{4})_.*\.py$", f)
+        if not m or int(m.group(1)) <= REPLICA_DDL_FLOOR:
+            continue
+        content = git("show", f":{f}") or ""
+        if not re.search(r"^REPLICA_DDL\s*(?::.*)?=", content, re.MULTILINE):
+            bad.append(f)
+    if bad:
+        print(
+            "[replica-ddl-gate] BLOCK: migration に REPLICA_DDL 宣言がありません:\n"
+            + "".join(f"  {f}\n" for f in bad)
+            + "  REPLICA_DDL: str | None を module 冒頭で宣言してください —\n"
+            "  None = publisher-only (replica は台帳 stamp のみ) /\n"
+            "  str  = replica に先行適用すべき DDL (apply が強制するクラスのみ:\n"
+            "         列の追加/削除/型・CHECK・NOT NULL・PK/UNIQUE)。\n"
+            "  分類基準: docs/notes/replica-ddl-propagation.md。宣言は\n"
+            "  api/replica_propagation.py が merge 時の自動 propagation task に使う (issue #52)。",
+            file=sys.stderr,
+        )
+        return 1
+    return 0
+
+
+def replica_ddl_lies(staged):
+    """issue #60: `REPLICA_DDL = None` が嘘の migration を止める。
+
+    宣言の**存在**は replica_ddl_undeclared が見る。こちらは**中身**: publisher-only
+    と名乗りながら複製対象テーブルの形を変えていないか。self-stamp はこの宣言だけを
+    信じて replica の台帳を進めるので、嘘の None は「列の無い最新」を作り、台帳一致の
+    監視は green のまま publisher の行が届いた瞬間に apply が crash-loop する。
+    """
+    sys.path.insert(0, (git("rev-parse", "--show-toplevel") or "").strip())
+    try:
+        from api.replica_propagation import contradicts_publisher_only, published_tables
+        published = published_tables()
+    except Exception as e:      # 検査不能を「合格」にしない (fail-closed)
+        print(f"[replica-ddl-truth] BLOCK: 宣言の中身を検査できません: {e}\n"
+              "  api/replica_published_tables.txt が要ります "
+              "(bash scripts/refresh_published_tables.sh)。", file=sys.stderr)
+        return 1
+    bad = {}
+    for f in staged:
+        m = re.match(r"api/alembic/versions/(\d{4})_.*\.py$", f)
+        if not m or int(m.group(1)) <= REPLICA_DDL_FLOOR:
+            continue
+        tables = contradicts_publisher_only(git("show", f":{f}") or "", published)
+        if tables:
+            bad[f] = sorted(tables)
+    if bad:
+        print(
+            "[replica-ddl-truth] BLOCK: REPLICA_DDL = None と宣言しながら、複製対象"
+            "テーブルの形を変えています:\n"
+            + "".join(f"  {f}: {', '.join(t)}\n" for f, t in bad.items())
+            + "  publisher-only の宣言は replica の台帳 self-stamp (issue #60) の唯一の\n"
+            "  根拠です。嘘だと replica は「列の無い最新」になり、台帳監視は green の\n"
+            "  まま apply worker が後で crash-loop します。\n"
+            "  直し方: REPLICA_DDL に replica へ先行適用する DDL を str で宣言する\n"
+            "  (docs/notes/replica-ddl-propagation.md)。表が複製対象でなくなったのなら\n"
+            "  bash scripts/refresh_published_tables.sh で snapshot を更新する。",
+            file=sys.stderr)
+        return 1
+    return 0
+
+
+def main():
+    # merge commit は pre-commit を通さない (競合解決を邪魔しない)
+    if os.path.exists(os.path.join(git("rev-parse", "--git-dir").strip(), "MERGE_HEAD")):
+        return 0
+
+    staged = (git("diff", "--cached", "--name-only") or "").split()
+    if not staged:
+        return 0
+
+    for link, target in dangling_hooks():
+        # BLOCK ではなく WARN: hook が指す先の不在は、この commit の問題ではない。
+        # ただし黙らない — 黙る側に倒すと、ゲートが外れたまま何日も進む。
+        print(
+            f"[hook-health] WARN: {link} が壊れた symlink です "
+            f"(-> {target})。\n"
+            f"  git はこれを黙って無視するので、そのゲートは**外れています**。\n"
+            f"  この symlink を消して bash scripts/install_hooks.sh を実行すると、"
+            f"tracked な hooks/ の entrypoint に切り替わります。",
+            file=sys.stderr)
+
+    if secret_gate(staged):
+        return 1
+
+    if endpoints_snapshot_drift(staged):
+        return 1
+
+    if replica_ddl_undeclared(staged):
+        return 1
+
+    if replica_ddl_lies(staged):
+        return 1
+
+    if vendored_refguard_drift(staged):
+        return 1
+
+    if "VERSION" not in staged:
+        touched = [f for f in staged if f.startswith(DEPLOYABLE)]
+        if touched:
+            print(
+                "[version-gate] WARN: deployable な変更があるのに VERSION が未バンプです "
+                f"({len(touched)} files: {', '.join(touched[:3])}…)\n"
+                "  意図的でなければ中断して VERSION と CHANGELOG を更新してください "
+                "(CLAUDE.md: 1 commit = 1 バンプ)。",
+                file=sys.stderr,
+            )
+        return 0
+
+    new = parse(git("show", ":VERSION"))
+    if new is None:
+        print("[version-gate] BLOCK: VERSION が semver 1行 (X.Y.Z) ではありません。", file=sys.stderr)
+        return 1
+
+    old = parse(git("show", "HEAD:VERSION"))  # 初回 commit では None
+    changelog = git("show", ":CHANGELOG.md") or git("show", "HEAD:CHANGELOG.md") or ""
+    published = {parse(v) for v in HEADING.findall(changelog)}
+    published.discard(None)
+
+    known = {v for v in published if v != new}
+    if old:
+        known.add(old)
+    # Tags are shared across linked worktrees; their reserved release numbers
+    # may not yet appear in this branch's HEAD or CHANGELOG. Do not reuse them.
+    # Only locally known refs are checked here; this offline hook does not
+    # claim to reserve a number atomically across independent clones.
+    tagged = {parse(t[1:]) for t in (git("tag", "--list", "v*") or "").splitlines()}
+    tagged.discard(None)
+    known.update(tagged)
+    ceiling = max(known) if known else None
+
+    if ceiling and new <= ceiling:
+        nxt = (ceiling[0], ceiling[1], ceiling[2] + 1)
+        where = "tag" if ceiling in tagged else "HEAD" if old == ceiling else "CHANGELOG"
+        print(
+            f"[version-gate] BLOCK: VERSION {fmt(new)} は既存の最大バージョン "
+            f"{fmt(ceiling)} ({where}) を超えていません — 公開番号が逆行します。\n"
+            f"  原因の典型: 手元の VERSION を読まずに記憶で採番した / pull 後に採番し直していない。\n"
+            f"  FIX: echo {fmt(nxt)} > VERSION && CHANGELOG.md の見出しを ## {fmt(nxt)} に直す "
+            f"(feat なら {ceiling[0]}.{ceiling[1] + 1}.0)。",
+            file=sys.stderr,
+        )
+        return 1
+
+    if new not in published:
+        print(
+            f"[version-gate] BLOCK: CHANGELOG.md に `## {fmt(new)}` の見出しがありません。\n"
+            f"  FIX: CHANGELOG.md の先頭に `## {fmt(new)} — <YYYY-MM-DD>` と 1 行 summary を追加。",
+            file=sys.stderr,
+        )
+        return 1
+
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

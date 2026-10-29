@@ -1,0 +1,79 @@
+{
+  "policy_version": "0.1",
+  "source": "kura#66 G7 — Optional intelligence / capability portability",
+  "ratified": true,
+  "ratified_note": "true = capability contract を裁定済み。image_tagging は optional capability であり、provider (local-accelerated / disabled) は同一契約上で差し替え可能であることを要求する。変更するには再裁定 — ratified_at/ratified_by を更新すること。",
+  "core_boot_paths": [
+    "api/**"
+  ],
+  "core_requirements_file": "api/requirements.txt",
+  "forbidden_core_dependency_tokens": [
+    "torch",
+    "onnxruntime",
+    "nvidia-",
+    "cupy",
+    "tensorflow",
+    "transformers",
+    "timm",
+    "openai",
+    "anthropic"
+  ],
+  "capabilities": [
+    {
+      "id": "image_tagging",
+      "optional": true,
+      "config_flag": "KURA_TAGGING_ENABLED",
+      "config_flag_note": "core が capability 無しで正常構成として起動できることを宣言する env。未実装なら『disabled が正常構成として成立する』は主張に過ぎない (#66 G7 checklist 2)",
+      "implementation_paths": [
+        "tagger/**"
+      ],
+      "providers": [
+        {
+          "id": "local-ensemble",
+          "kind": "local-accelerated",
+          "path": "tagger/",
+          "note": "WD14v3 + PixAI + ml-danbooru ensemble + patch head。fleet 既定"
+        },
+        {
+          "id": "disabled",
+          "kind": "disabled",
+          "path": null,
+          "note": "capability を持たない正常構成。契約上ここが成立しないと G7 は閉じない"
+        }
+      ],
+      "result_records": [
+        {
+          "id": "verified_log",
+          "kind": "jsonl",
+          "writer": "tagger/heads/promote_verified.py",
+          "required_fields": [
+            "provider",
+            "generation",
+            "capability_scope",
+            "quality_tier",
+            "confidence_semantics",
+            "produced_at",
+            "provenance"
+          ],
+          "issue": "kura#64"
+        },
+        {
+          "id": "post_tag_actor_claim",
+          "kind": "table",
+          "required_columns": [
+            "actor_id",
+            "claimed_at"
+          ],
+          "provenance_columns": [
+            "provider",
+            "generation",
+            "capability_scope"
+          ],
+          "note": "actor_id は『誰が主張したか』は持つが、provider/generation は持たない (#66 G7 Result semantics)"
+        }
+      ]
+    }
+  ],
+  "ratified_at": "2026-09-05",
+  "ratified_by": "unagikudari (owner) — #66 Phase B レビュー時の裁定「両方裁定していい」"
+}

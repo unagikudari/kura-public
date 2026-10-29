@@ -1,0 +1,14 @@
+-- Migration 0001 — Kura 1.0 initial baseline
+--
+-- The v0.1.0 baseline schema is database/schema.sql (the canonical, readable
+-- snapshot). Initialize an empty database by applying that file:
+--
+--     psql -v ON_ERROR_STOP=1 -f database/schema.sql
+--
+-- This migrations/ directory is forward-only (Volume 2 §7): subsequent schema
+-- changes are added as 0002_*, 0003_*, … deltas, and schema.sql is re-flattened
+-- to match. 0001 records the baseline rather than duplicating it.
+--
+-- Verified: schema.sql applies cleanly on PostgreSQL 18 (65 tables); append-only
+-- observation trigger, entity/scope CHECK constraints, and the JSON-free
+-- invariant were exercised at authoring time.

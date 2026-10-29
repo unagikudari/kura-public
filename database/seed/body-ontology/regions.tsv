@@ -1,0 +1,118 @@
+slug	display_name	parent_slug	laterality	primary_class
+body	body		none	surface_skin
+head	head	body	midline	surface_skin
+skull	skull	head	midline	bone_landmark
+scalp	scalp	head	midline	surface_skin
+face	face	head	midline	surface_skin
+forehead	forehead	face	midline	surface_skin
+temple	temple	face	bilateral	surface_skin
+eyebrow	eyebrow	face	bilateral	hair
+eye	eye	face	bilateral	eye
+upper_eyelid	upper eyelid	eye	bilateral	surface_skin
+lower_eyelid	lower eyelid	eye	bilateral	surface_skin
+eyelash	eyelash	eye	bilateral	hair
+sclera	sclera	eye	bilateral	eye
+iris	iris	eye	bilateral	eye
+pupil	pupil	iris	bilateral	eye
+cheek	cheek	face	bilateral	surface_skin
+cheekbone	cheekbone	face	bilateral	bone_landmark
+ear	ear	head	bilateral	surface_skin
+earlobe	earlobe	ear	bilateral	surface_skin
+nose	nose	face	midline	surface_skin
+nose_bridge	nose bridge	nose	midline	bone_landmark
+nostril	nostril	nose	bilateral	surface_mucosa
+mouth	mouth	face	midline	mouth
+upper_lip	upper lip	mouth	midline	surface_skin
+lower_lip	lower lip	mouth	midline	surface_skin
+inner_lip	inner lip	mouth	midline	surface_mucosa
+teeth	teeth	mouth	midline	mouth
+tongue	tongue	mouth	midline	surface_mucosa
+gums	gums	mouth	midline	surface_mucosa
+chin	chin	face	midline	surface_skin
+jaw	jaw	face	midline	bone_landmark
+jawline	jawline	face	bilateral	surface_skin
+beard	beard	face	midline	hair
+mustache	mustache	face	midline	hair
+sideburns	sideburns	face	bilateral	hair
+neck	neck	body	midline	surface_skin
+throat	throat	neck	midline	surface_skin
+nape	nape	neck	midline	surface_skin
+laryngeal_prominence	laryngeal prominence	neck	midline	bone_landmark
+clavicle	clavicle	neck	bilateral	bone_landmark
+torso	torso	body	midline	surface_skin
+chest	chest	torso	midline	surface_skin
+sternum	sternum	chest	midline	bone_landmark
+rib	rib	chest	bilateral	bone_landmark
+breast	breast	chest	bilateral	surface_skin
+areola	areola	breast	bilateral	surface_skin
+nipple	nipple	areola	bilateral	surface_skin
+abdomen	abdomen	torso	midline	surface_skin
+navel	navel	abdomen	midline	surface_skin
+waist	waist	torso	midline	surface_skin
+flank	flank	torso	bilateral	surface_skin
+midriff	midriff	torso	midline	surface_skin
+back	back	torso	midline	surface_skin
+upper_back	upper back	back	midline	surface_skin
+lower_back	lower back	back	midline	surface_skin
+scapula	shoulder blade	back	bilateral	bone_landmark
+spine	spine	back	midline	bone_landmark
+pelvis	pelvis	body	midline	surface_skin
+iliac_crest	iliac crest	pelvis	bilateral	bone_landmark
+buttock	buttock	pelvis	bilateral	surface_skin
+gluteal_cleft	gluteal cleft	pelvis	midline	surface_skin
+groin	groin	pelvis	bilateral	surface_skin
+pubic_region	pubic region	pelvis	midline	surface_skin
+mons	mons pubis	pubic_region	midline	surface_skin
+external_genitalia	external genitalia	pelvis	midline	external_genital
+penis	penis	external_genitalia	midline	external_genital
+penile_shaft	penile shaft	penis	midline	external_genital
+glans	glans	penis	midline	external_genital
+foreskin	foreskin	penis	midline	external_genital
+frenulum	frenulum	penis	midline	external_genital
+scrotum	scrotum	external_genitalia	midline	external_genital
+testis	testis	scrotum	bilateral	external_genital
+vulva	vulva	external_genitalia	midline	external_genital
+labia_majora	labia majora	vulva	bilateral	external_genital
+labia_minora	labia minora	vulva	bilateral	external_genital
+clitoris	clitoris	vulva	midline	external_genital
+clitoral_hood	clitoral hood	vulva	midline	external_genital
+vaginal_opening	vaginal opening	vulva	midline	surface_mucosa
+urethral_opening	urethral opening	external_genitalia	midline	surface_mucosa
+perineum	perineum	pelvis	midline	surface_skin
+anus	anus	pelvis	midline	perianal
+perianal_region	perianal region	pelvis	midline	perianal
+arm	arm	body	bilateral	surface_skin
+shoulder	shoulder	arm	bilateral	joint
+upper_arm	upper arm	arm	bilateral	surface_skin
+axilla	armpit	arm	bilateral	surface_skin
+elbow	elbow	arm	bilateral	joint
+forearm	forearm	arm	bilateral	surface_skin
+wrist	wrist	arm	bilateral	joint
+hand	hand	arm	bilateral	surface_skin
+palm	palm	hand	bilateral	surface_skin
+back_of_hand	back of hand	hand	bilateral	surface_skin
+knuckle	knuckle	hand	bilateral	joint
+thumb	thumb	hand	bilateral	surface_skin
+index_finger	index finger	hand	bilateral	surface_skin
+middle_finger	middle finger	hand	bilateral	surface_skin
+ring_finger	ring finger	hand	bilateral	surface_skin
+little_finger	little finger	hand	bilateral	surface_skin
+fingernail	fingernail	hand	bilateral	surface_skin
+fingertip	fingertip	hand	bilateral	surface_skin
+leg	leg	body	bilateral	surface_skin
+hip	hip	leg	bilateral	joint
+thigh	thigh	leg	bilateral	surface_skin
+inner_thigh	inner thigh	thigh	bilateral	surface_skin
+knee	knee	leg	bilateral	joint
+patella	kneecap	knee	bilateral	bone_landmark
+calf	calf	leg	bilateral	surface_skin
+shin	shin	leg	bilateral	surface_skin
+ankle	ankle	leg	bilateral	joint
+foot	foot	leg	bilateral	surface_skin
+sole	sole	foot	bilateral	surface_skin
+heel	heel	foot	bilateral	surface_skin
+instep	instep	foot	bilateral	surface_skin
+arch	arch	foot	bilateral	surface_skin
+big_toe	big toe	foot	bilateral	surface_skin
+toe	toe	foot	bilateral	surface_skin
+toenail	toenail	foot	bilateral	surface_skin

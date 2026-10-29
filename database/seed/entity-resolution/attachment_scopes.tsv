@@ -1,0 +1,4 @@
+scope_slug	description
+entity	Target entity unambiguous -> attached to that entity
+scene	Inherently scene-level (camera/setting/rendering/counts)
+unresolved	Person-scoped but entity ambiguous -> scene + ambiguity marker, pending disambiguation

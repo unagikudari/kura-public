@@ -1,0 +1,23 @@
+{
+ "revision": "0186",
+ "generator": 1,
+ "sha256": "cf4343a0182b1a83733cbc6b490042e5958891b8ef90d8f5f6daade50a38cafc",
+ "extensions": [
+  "fuzzystrmatch",
+  "pg_trgm",
+  "vector"
+ ],
+ "roles": [
+  "kura",
+  "kura_audit",
+  "kura_reconciler"
+ ],
+ "reference_tables": [
+  "tag_category",
+  "tagger_config",
+  "tagger_stage",
+  "tagger_stage_transition",
+  "tagger_tag_condition",
+  "tagger_allowed_executor"
+ ]
+}

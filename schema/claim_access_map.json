@@ -1,0 +1,259 @@
+{
+ "_doc": "kura#51 Phase A — every statement shape that may touch post_tag_actor_claim, and what question it answers. claim_census_gate.py matches the WHOLE normalised shape (prefix matching let a short declaration absorb a different statement and hide a path); anything unmatched REFUSES the census. Adding an entry is the census work: run `claim_census_gate.py shapes` to see what is undeclared, find the code that issues it, and name the question it answers. Questions are the plan's B'' cut — Q-A write contract / Q-B consensus+retraction / Q-C history+audit / Q-D learning input / Q-E human-override interaction. A statement that CHANGES becomes a new shape and must be re-examined; that is intended, not friction. Integer-storage native queries are outside this legacy-table census; do not reuse a legacy artifact as proof of the whole normalized access graph.",
+ "paths": [
+  {
+   "shape": "SELECT c.tag_id FROM post_tag_actor_claim c WHERE c.post_id = $N AND c.actor_id = $N AND c.tag_id <> ALL($N) AND NOT EXISTS ( SELECT N FROM post_tag_actor_claim o WHERE o.post_id = $N AND o.tag_id = c.tag_id AND o.actor_id <> $N)",
+   "role": "reader",
+   "question": "Q-B",
+   "attributes": [
+    "actor_id",
+    "tag_id",
+    "cross-actor existence"
+   ],
+   "note": "Self-scoped reap candidate: tags THIS actor still claims, no longer proposes, and no OTHER actor claims. The NOT EXISTS ranges over other actors, so it needs per-actor rows — an aggregated tag set cannot answer it. Under rev4's B''' predicate that puts anything inside the retraction window on 'raw retention'.",
+   "sites": [
+    {
+     "path": "api/claim_storage/legacy.py",
+     "description": "Legacy writer adapter during copying/rollback; active storage uses integer references"
+    }
+   ],
+   "fragment": "SELECT c.tag_id FROM post_tag_actor_claim c"
+  },
+  {
+   "shape": "DELETE FROM post_tag_actor_claim WHERE post_id = $N AND actor_id = $N",
+   "role": "writer",
+   "question": "Q-A",
+   "attributes": [
+    "post_id",
+    "actor_id"
+   ],
+   "note": "The write contract is NOT the ON CONFLICT upsert rev2/rev3 assumed: it is delete-then-reinsert of this actor's whole set, both halves in ONE transaction. The code says why append-only is wrong — a still-running actor would accumulate claims forever and permanently block another actor's legitimate reap.",
+   "sites": [
+    {
+     "path": "api/claim_storage/legacy.py",
+     "description": "Legacy writer adapter during copying/rollback; active storage uses integer references"
+    }
+   ],
+   "fragment": "DELETE FROM post_tag_actor_claim WHERE post_id",
+   "provenance": "standing"
+  },
+  {
+   "shape": "INSERT INTO post_tag_actor_claim (post_id, tag_id, actor_id) SELECT $N, x, $N FROM unnest(($N)::int[]) AS x",
+   "role": "writer",
+   "question": "Q-A",
+   "attributes": [
+    "post_id",
+    "tag_id",
+    "actor_id"
+   ],
+   "note": "Bulk unnest insert with no ON CONFLICT clause; the preceding DELETE is what makes it idempotent. Any folding must preserve 'replace this actor's set atomically', not merely 'dedupe on the PK'.",
+   "sites": [
+    {
+     "path": "api/claim_storage/legacy.py",
+     "description": "Legacy writer adapter during copying/rollback; active storage uses integer references"
+    }
+   ],
+   "fragment": "INSERT INTO post_tag_actor_claim (post_id, tag_id, actor_id)",
+   "provenance": "standing"
+  },
+  {
+   "shape": "DELETE FROM ONLY \"public\".\"post_tag_actor_claim\" WHERE $N OPERATOR(pg_catalog.=) \"post_id\"",
+   "role": "writer",
+   "question": "Q-A",
+   "attributes": [
+    "post_id"
+   ],
+   "note": "Issued by PostgreSQL itself, not by application code. A folded schema still has to carry an equivalent cascade or deleting a post leaves orphan claims. pgaudit CSV-quotes this one (it contains a comma), doubling the inner quotes.",
+   "sites": [
+    {
+     "path": "api/alembic/versions/0073_post_tag_actor_claim.py",
+     "description": "declares the FK; the DELETE itself is issued by PostgreSQL, not by any caller, so no source fragment can be pinned"
+    }
+   ],
+   "provenance": "standing"
+  },
+  {
+   "shape": "SELECT tn.name FROM post_tag_actor_claim c JOIN tag_name tn ON tn.tag_id = c.tag_id AND tn.ord = N WHERE c.post_id = $N AND c.actor_id = $N",
+   "role": "test",
+   "question": "Q-B",
+   "attributes": [
+    "actor_id",
+    "tag name"
+   ],
+   "note": "The test suite runs against the LIVE database, so its reads appear in the audit log. Classified non-production so the census does not credit it as a consumer — but that the suite is a live-DB client is itself worth knowing.",
+   "sites": [
+    {
+     "path": "tests/test_post_tag_locked.py",
+     "line": 168,
+     "description": ""
+    }
+   ],
+   "fragment": "SELECT tn.name FROM post_tag_actor_claim c"
+  },
+  {
+   "shape": "SELECT count(*) FROM post_tag_actor_claim WHERE false /* kura-census-probe:NONCE */",
+   "role": "gate-probe",
+   "question": "Q-A",
+   "attributes": [],
+   "note": "This gate's own probe. The nonce is normalised to NONCE, or every run would mint a new unclassified shape and the census would refuse because of itself.",
+   "sites": [
+    {
+     "path": "scripts/claim_census_gate.py",
+     "description": "scripts/claim_census_gate.py (coverage proof)"
+    }
+   ]
+  },
+  {
+   "shape": "SELECT 'S'||pg_size_pretty(pg_total_relation_size('S'))||'S'||(SELECT count(*) FROM post_tag_actor_claim)::text||'S'",
+   "role": "gate-probe",
+   "question": "Q-A",
+   "attributes": [],
+   "note": "A size query touches the table and therefore appears in the audit log.",
+   "sites": [
+    {
+     "path": "(operator, not a source site)",
+     "description": "ad-hoc operator probe (2026-09-03 Phase A preflight, table size)"
+    }
+   ],
+   "provenance": "operator-one-off"
+  },
+  {
+   "shape": "select count(*) from post_tag_actor_claim where false /* kura51probe1788414236 */",
+   "role": "gate-probe",
+   "question": "Q-A",
+   "attributes": [],
+   "note": "Manual coverage probe run by hand before this gate existed; kept so the historical window classifies. Its digits sit inside a word, so normalisation leaves them.",
+   "sites": [
+    {
+     "path": "(operator, not a source site)",
+     "description": "ad-hoc operator probe (2026-09-03 Phase A coverage check)"
+    }
+   ],
+   "provenance": "operator-one-off"
+  },
+  {
+   "shape": "SELECT count(*) FROM post_tag_actor_claim WHERE false /* kura-census-heartbeat */",
+   "role": "gate-probe",
+   "question": "Q-A",
+   "attributes": [],
+   "note": "The continuity proof. One audited read per bucket, issued by a timer, so the census can show the instrument was alive THROUGH the window and not merely at its ends. Organic traffic cannot stand in for it: quiet hours are real (02:00 and 05:00 measured with no rows at all), so an empty bucket would be ambiguous.",
+   "sites": [
+    {
+     "path": "scripts/claim_census_gate.py",
+     "description": "heartbeat subcommand, driven by systemd/user/kura-claim-census-heartbeat.timer"
+    }
+   ]
+  },
+  {
+   "shape": "UPDATE post_tag_actor_claim SET tag_id=tid WHERE tag_id=sid AND NOT EXISTS (SELECT N FROM post_tag_actor_claim c2 WHERE c2.post_id=post_tag_actor_claim.post_id AND c2.actor_id=post_tag_actor_claim.actor_id AND c2.tag_id=tid)",
+   "role": "writer",
+   "question": "Q-E",
+   "sites": [
+    {
+     "path": "(operator, not a source site)",
+     "description": "hand-run curation, 2026-09-04 artist tag cleanup"
+    }
+   ],
+   "attributes": [
+    "tag_id",
+    "post_id",
+    "actor_id"
+   ],
+   "note": "The same merge run directly, with plpgsql-style variable names. Those names appear nowhere in the repo, so this is an operator block during the 37-pair artist merge. Declared because it really wrote: a census that counted only the application would have missed the session that touched the most rows.",
+   "provenance": "operator-one-off"
+  },
+  {
+   "shape": "DELETE FROM post_tag_actor_claim WHERE tag_id=sid",
+   "role": "writer",
+   "question": "Q-E",
+   "sites": [
+    {
+     "path": "(operator, not a source site)",
+     "description": "hand-run curation, 2026-09-04 artist tag cleanup"
+    }
+   ],
+   "attributes": [
+    "tag_id"
+   ],
+   "note": "Merge cleanup, hand-run form of the API path.",
+   "provenance": "operator-one-off"
+  },
+  {
+   "shape": "DELETE FROM ONLY \"public\".\"post_tag_actor_claim\" WHERE $N OPERATOR(pg_catalog.=) \"tag_id\"",
+   "role": "writer",
+   "question": "Q-E",
+   "sites": [
+    {
+     "path": "api/alembic/versions/0073_post_tag_actor_claim.py",
+     "description": "declares the tag_id FK; the DELETE is issued by PostgreSQL, not by a caller"
+    }
+   ],
+   "attributes": [
+    "tag_id"
+   ],
+   "note": "The second cascade path. The post one was already declared; deleting a TAG also reaches these rows, so a folded schema needs both or a tag deletion leaves orphans.",
+   "provenance": "standing"
+  },
+  {
+   "shape": "DELETE FROM post_tag_actor_claim WHERE tag_id=gid",
+   "role": "writer",
+   "question": "Q-E",
+   "sites": [
+    {
+     "path": "(operator, not a source site)",
+     "description": "hand-run curation, 2026-09-04 junk tag deletion"
+    }
+   ],
+   "attributes": [
+    "tag_id"
+   ],
+   "note": "The same operation under a third variable name — the shape cannot say which block issued it, only that a human deletion path exists.",
+   "provenance": "operator-one-off"
+  },
+  {
+   "shape": "UPDATE post_tag_actor_claim SET tag_id = $N WHERE tag_id = $N AND NOT EXISTS ( SELECT N FROM post_tag_actor_claim c2 WHERE c2.post_id = post_tag_actor_claim.post_id AND c2.actor_id = post_tag_actor_claim.actor_id AND c2.tag_id = $N)",
+   "role": "writer",
+   "question": "Q-E",
+   "sites": [
+    {
+     "path": "api/routers/tags.py",
+     "line": 471,
+     "description": "merge-into: carry an actor's claim to the target tag"
+    }
+   ],
+   "attributes": [
+    "tag_id",
+    "post_id",
+    "actor_id"
+   ],
+   "fragment": "post_tag_actor_claim SET tag_id = :tid",
+   "note": "The FIRST update-shaped writer of this table. rev2/rev3 assumed the write contract was delete-then-reinsert of an actor's set; a tag merge rewrites tag_id in place, with NOT EXISTS standing in for the PK conflict. Any folding that aggregates actors per (post, tag) has to keep supporting that remap under the same guard. The caller sets kura.tag_actor='human' first, so this is human curation reaching into machine claims — Q-E, evidenced rather than assumed. Q-E の根拠は呼び出し側の近接ではなく、declared site が 同一トランザクション内で kura.tag_actor マーカーを立てていること (set_config(..., true) は transaction-local、間に commit が無い)。test_the_human_marker_is_set_in_the_same_transaction が固定する。",
+   "human_marker": "kura.tag_actor",
+   "provenance": "standing"
+  },
+  {
+   "shape": "DELETE FROM post_tag_actor_claim WHERE tag_id = $N",
+   "role": "writer",
+   "question": "Q-E",
+   "sites": [
+    {
+     "path": "api/routers/tags.py",
+     "line": 378,
+     "description": "force delete of a tag: drop its claims before the tag row"
+    },
+    {
+     "path": "api/routers/tags.py",
+     "line": 477,
+     "description": "merge-into cleanup: drop the source tag's remaining claims"
+    }
+   ],
+   "attributes": [
+    "tag_id"
+   ],
+   "fragment": "post_tag_actor_claim WHERE tag_id = :",
+   "note": "Two call sites the audit line cannot separate — bind parameters make both the same $N. This is what the candidate-site list is for; naming either one exclusively would overstate the evidence. Q-E の根拠は呼び出し側の近接ではなく、declared site が 同一トランザクション内で kura.tag_actor マーカーを立てていること (set_config(..., true) は transaction-local、間に commit が無い)。test_the_human_marker_is_set_in_the_same_transaction が固定する。",
+   "human_marker": "kura.tag_actor",
+   "provenance": "standing"
+  }
+ ]
+}

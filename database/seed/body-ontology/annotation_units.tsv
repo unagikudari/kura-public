@@ -1,0 +1,7 @@
+unit_slug	description
+presence	Region present / absent in the scene
+visibility	Region visible / occluded
+laterality_confirm	Confirm which instance (left/right) is meant
+region_bbox	Bounding box localization of the region
+region_mask	Pixel mask localization of the region
+class_correction	Correct the region-class assignment

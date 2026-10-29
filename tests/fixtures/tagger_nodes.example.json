@@ -1,0 +1,85 @@
+{
+ "_doc": "A made-up inventory for tests/test_tagger_deploy.py, derived from tagger/deploy/nodes.json with the host names and home paths replaced. The real inventory is private deployment (release/public_artifact_policy.json); tests/test_tagger_deploy_inventory.py renders it.",
+ "template": "tagger/systemd/kura-tagger@.service",
+ "canonical": {
+  "host": "canon",
+  "origin": "https://canonical.example:8443",
+  "pg_port": 5432,
+  "read_replicas": ["replica"]
+ },
+ "nodes": {
+  "canon": {
+   "home": "/home/kura",
+   "profiles": [
+    "full"
+   ],
+   "checkout": "/home/kura/kura",
+   "venv": "/home/kura/.local/share/kura-tagger/venv",
+   "models_dir": "/home/kura/.cache/kura-tagger/models",
+   "instances": {
+    "full": {
+     "service": {
+      "Restart": "on-failure"
+     }
+    }
+   },
+   "absorbs": [
+    ".config/systemd/user/kura-tagger@full.service.d/override.conf"
+   ]
+  },
+  "worker-rocm": {
+   "home": "/home/kura",
+   "profiles": [
+    "wd14"
+   ],
+   "checkout": "/home/kura/kura",
+   "venv": "/home/kura/.local/share/kura-tagger/venv-rocm",
+   "models_dir": "/home/kura/.cache/kura-tagger/models",
+   "env": {
+    "HSA_OVERRIDE_GFX_VERSION": "11.0.0",
+    "LD_LIBRARY_PATH": "/home/kura/.local/share/kura-tagger/venv-rocm/rocm-compat:/home/kura/.local/share/kura-tagger/venv-rocm/lib/python3.12/site-packages/torch/lib"
+   },
+   "absorbs": [
+    ".config/systemd/user/kura-tagger@.service.d/rocm.conf"
+   ]
+  },
+  "worker-a": {
+   "home": "/home/kura",
+   "profiles": [
+    "wd14"
+   ],
+   "checkout": "/home/kura/kura_checkout",
+   "venv": "/home/kura/kindle-capture-venv",
+   "models_dir": "/home/kura/.cache/kura-tagger/models"
+  },
+  "worker-b": {
+   "home": "/home/other",
+   "profiles": [
+    "wd14"
+   ],
+   "checkout": "/home/other/kura_checkout",
+   "venv": "/home/other/ComfyUI/.venv",
+   "models_dir": "/home/other/.cache/kura-tagger/models"
+  },
+  "replica": {
+   "home": "/home/kura",
+   "profiles": [
+    "wd14"
+   ],
+   "checkout": "/home/kura/kura",
+   "venv": "/home/kura/.local/share/kura-tagger/venv",
+   "models_dir": "/home/kura/.cache/kura-tagger/models",
+   "service": {
+    "CPUQuota": "800%",
+    "MemoryMax": "10G"
+   },
+   "env": {
+    "KURA_MEDIA_AUTHORITY": "@canonical.origin",
+    "KURA_DISPLAY_CACHE": "/data/kura-display-cache"
+   },
+   "absorbs": [
+    ".config/systemd/user/kura-tagger@.service.d/60-rendition-authority.conf"
+   ]
+  }
+ }
+}
