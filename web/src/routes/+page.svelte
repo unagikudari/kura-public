@@ -10,6 +10,8 @@
   import { page, navigating } from '$app/state';
   import { tick, untrack, onDestroy, onMount } from 'svelte';
   import Header from '#lib/components/Header.svelte';
+  import { t } from '#lib/i18n/index.ts';
+  const m = t();
   import ImageViewer from '#lib/components/ImageViewer.svelte';
   import BulkTagBar from '#lib/components/BulkTagBar.svelte';
   import PoolTitleBar, { poolIdFromQuery } from '#lib/components/PoolTitleBar.svelte';
@@ -957,10 +959,10 @@
     } catch (e: any) {
       if (ownsRequest() && (timedOut || e?.name !== 'AbortError')) {
         const message = timedOut
-          ? 'Pool の読み込みが時間切れになりました。再試行してください。'
-          : e?.status === 401 ? 'サインインし直してから、Pool 一覧を開いてください。'
-          : e?.status === 403 ? 'Pool 一覧の閲覧権限を確認してください。'
-          : 'Pool を読み込めませんでした。再試行してください。';
+          ? m.home.grid.poolTimeout
+          : e?.status === 401 ? m.home.grid.poolSignIn
+          : e?.status === 403 ? m.home.grid.poolForbidden
+          : m.home.grid.poolFailed;
         const attempts = (previous?.attempts ?? 0) + 1;
         // Retry only transport/deadline failures and transient server refusals.
         // Malformed pages and credential/client errors need explicit review.
@@ -1064,9 +1066,9 @@
     return () => clearTimeout(timer);
   });
   const navigationLabel = $derived(navigating.to?.url.pathname === '/tags/manage'
-    ? 'タグ管理へ移動中…' : extensionNav.find(item => item.href === navigating.to?.url.pathname)?.loadingLabel
+    ? m.home.grid.navTagManage : extensionNav.find(item => item.href === navigating.to?.url.pathname)?.loadingLabel
     ?? (navigating.to?.url.pathname === '/'
-    ? '一覧を更新中…' : '画面を移動中…'));
+    ? m.home.grid.navRefreshing : m.home.grid.navMoving));
   let safePending = $state(false);
   let safeSwitchError = $state('');
   async function toggleSafeMode() {
@@ -1079,7 +1081,7 @@
       await goto(location.pathname + location.search, { refreshAll: true });
     } catch {
       setSafeCookie(previous);
-      safeSwitchError = 'セーフモードを切り替えられませんでした。もう一度お試しください。';
+      safeSwitchError = m.home.grid.safeSwitchFailed;
     } finally {
       safePending = false;
     }
@@ -1444,7 +1446,7 @@
       .filter(p => postHasTag(p) && !removeIds.has(p.id) && pinStates[p.id]?.[t] !== 'present')
       .map(p => p.id);
     if (!targets.length) { applyResult = { added: 0, removed: 0, locked: 0, fail: 0 }; return; }
-    if (!window.confirm(`${targets.length} 件 (付与済み・未選択の青) を「${t}」で施錠します。よろしいですか?`)) return;
+    if (!window.confirm(m.home.grid.confirmLockBlue(targets.length, t))) return;
     applying = true; applyResult = null;
     try {
       const r = await putTagPinBulk(t, 'present', targets);
@@ -1557,8 +1559,7 @@
   function activateFocus(tag: string) {
     if (tag === bulkTag) return;
     if ((addIds.size || removeIds.size) &&
-        !window.confirm(`「${bulkTag}」の選択 ${addIds.size + removeIds.size} 件を破棄して`
-                        + `「${tag}」に切り替えます。よろしいですか?`)) return;
+        !window.confirm(m.home.grid.confirmSwitchFocus(bulkTag, addIds.size + removeIds.size, tag))) return;
     addIds = new Set(); removeIds = new Set(); applyResult = null;
     bulkTag = tag;
     bulkInput = tag;
@@ -1744,8 +1745,7 @@
     // 「黙って選択が消える / 確認が出る」が食い違うのは事故の温床
     // (primary レビュー 34c5888a の指摘)。
     if (name !== bulkTag && (addIds.size || removeIds.size) &&
-        !window.confirm(`「${bulkTag}」の選択 ${addIds.size + removeIds.size} 件を破棄して`
-                        + `「${name}」に切り替えます。よろしいですか?`)) return;
+        !window.confirm(m.home.grid.confirmSwitchFocus(bulkTag, addIds.size + removeIds.size, name))) return;
     if (!focusTags.includes(name)) {
       // 上限超過は**アクティブでない最古を 1 件だけ**落とす (アクティブは守る)。
       // 旧実装は filter で「アクティブと新規以外」を全部落とし 3 本 → 2 本に
@@ -1775,7 +1775,7 @@
     // 施錠済みが削除候補に含まれる場合は確認 (user 2026-08-02)。削除は pin を
     // absent に反転させ正例 GT も負例へ置換される — 意図的な再判定のみ通す。
     const lockedIn = [...removeIds].filter(id => pinStates[id]?.[bulkTag!] === 'present').length;
-    if (lockedIn > 0 && !window.confirm(`施錠状態の画像が ${lockedIn} 件含まれていますがよろしいですか?\n(削除すると施錠は解除され、負例 GT に置き換わります)`)) return;
+    if (lockedIn > 0 && !window.confirm(m.home.grid.confirmRemoveLocked(lockedIn))) return;
     applying = true;
     applyResult = null;
     const toLock = lockOnApply ? [...addIds] : [];
@@ -1932,8 +1932,8 @@
   const gridTotal = $derived(poolMode ? (poolComplete ? poolsArr.length : null) : total);
   const gridBytes = $derived(poolMode ? poolTotalBytes : postTotalBytes);
   const gridSortKeys = $derived(activePoolId && !poolMode
-    ? [{ key: 'page', label: 'ページ' }, { key: 'id', label: 'ID' }, { key: 'updated', label: '更新' }]
-    : [{ key: 'id', label: 'ID' }, { key: 'updated', label: '更新' }]);
+    ? [{ key: 'page', label: m.home.grid.sortPage }, { key: 'id', label: 'ID' }, { key: 'updated', label: m.home.grid.sortUpdated }]
+    : [{ key: 'id', label: 'ID' }, { key: 'updated', label: m.home.grid.sortUpdated }]);
   function changeGridSort(key: string, dir: 'asc' | 'desc') {
     if (poolMode) { poolSort = key === 'updated' ? 'updated' : 'id'; poolSortDir = dir; }
     else { postSort = key; postSortDir = dir; }
@@ -1947,7 +1947,7 @@
 
 </script>
 
-<svelte:head><title>蔵</title></svelte:head>
+<svelte:head><title>{m.home.grid.pageTitle}</title></svelte:head>
 <svelte:window onkeydown={gridKeys} />
 
 <div class="page-col">
@@ -1995,14 +1995,14 @@
       <div class="row">
         {@render bulkTabs()}
         <input class="pool-name-input" type="text" bind:value={poolNameInput}
-          placeholder="新規プール名…" disabled={poolCreating}
+          placeholder={m.home.grid.newPoolName} disabled={poolCreating}
           onkeydown={(e) => { if (e.key === 'Enter') createVerifyPool(); }} />
         <button class="sel" onclick={() => (poolSelectIds = new Set())}
-          disabled={poolSelectIds.size === 0} title="いま選択中の post を取り消す (DB には触らない)">選択クリア</button>
-        <span class="count"><span class="count-add">{poolSelectIds.size} 件選択</span></span>
+          disabled={poolSelectIds.size === 0} title={m.home.grid.poolClearTitle}>{m.home.bulk.clearSelection}</button>
+        <span class="count"><span class="count-add">{m.home.grid.nSelected(poolSelectIds.size)}</span></span>
         <button class="apply" onclick={createVerifyPool}
           disabled={poolSelectIds.size === 0 || !poolNameInput.trim() || poolCreating}>
-          {poolCreating ? '作成中…' : '検証プールを作成'}
+          {poolCreating ? m.home.grid.creating : m.home.grid.createVerifyPool}
         </button>
         {#if poolCreateError}<span class="error" title={poolCreateError}>⚠ {poolCreateError}</span>{/if}
       </div>
@@ -2013,10 +2013,10 @@
     <BulkTagBar
       variant="grid"
       plain={bulkSubMode === 'fav'}
-      label="クリックで ★ 付与/解除を選択"
+      label={m.home.grid.favLabel}
       target={bulkTag}
       bind:input={bulkInput}
-      placeholder="タグを検索…"
+      placeholder={m.home.bulk.searchTags}
       addCount={bulkSubMode === 'tag' ? addIds.size : favAddIds.size}
       removeCount={bulkSubMode === 'tag' ? removeIds.size : favRemoveIds.size}
       applying={applying}
@@ -2031,13 +2031,13 @@
       onToggleLockOnApply={bulkSubMode === 'tag' ? toggleLockOnApply : undefined}
       pinFilter={bulkSubMode === 'tag' && bulkTag ? pinFilterMode : null}
       onPinFilter={bulkSubMode === 'tag' ? setPinFilter : undefined}
-      selectAllTitle="表示中の未付き画像を全部追加候補にする (トグル、🚫人間解除済みは除外)"
+      selectAllTitle={m.home.grid.selectAllTitle}
       deselectAllTitle={bulkSubMode === 'tag'
-        ? '表示中の付与済み画像を全部解除候補にする (適用で一覧全体からタグが外れる、トグル、🔒施錠済みは除外)'
-        : '表示中の ★付き画像を全部解除候補にする (トグル)'}
+        ? m.home.grid.deselectAllTagTitle
+        : m.home.grid.deselectAllFavTitle}
       clearTitle={bulkSubMode === 'tag'
-        ? 'いま選択中の追加/解除候補を取り消す (DB には触らない)'
-        : 'いま選択中の付与/解除候補を取り消す (DB には触らない)'}
+        ? m.home.grid.clearTagTitle
+        : m.home.grid.clearFavTitle}
       onSelectTarget={selectBulkTag}
       onSelectAll={selectAllVisible}
       onDeselectAll={bulkSubMode === 'tag' ? deselectAllVisible : favDeselectAllVisible}
@@ -2056,7 +2056,7 @@
       class="bulk-tab"
       class:active={bulkSubMode === 'tag'}
       onclick={() => switchBulkSubMode('tag')}
-    >タグ</button>
+    >{m.home.grid.tabTag}</button>
     <button
       class="bulk-tab"
       class:active={bulkSubMode === 'fav'}
@@ -2066,41 +2066,41 @@
       class="bulk-tab"
       class:active={bulkSubMode === 'pool'}
       onclick={() => switchBulkSubMode('pool')}
-    >プール</button>
+    >{m.home.grid.tabPool}</button>
   </div>
 {/snippet}
 
   {#if poolMode && poolLoadError}
     <div class="pool-load-error" role="alert">
-      <span>{poolLoadError}</span><button onclick={retryPools}>再試行</button>
+      <span>{poolLoadError}</span><button onclick={retryPools}>{m.home.grid.retry}</button>
     </div>
   {/if}
 
 {#if failedThumbnailCount}
   <div class="pool-load-error" role="alert">
-    <span>画像を読み込めない箇所が{failedThumbnailCount}件あります。</span>
-    <button onclick={retryThumbnails}>画像を再試行</button>
+    <span>{m.home.grid.thumbsFailed(failedThumbnailCount)}</span>
+    <button onclick={retryThumbnails}>{m.home.grid.retryImages}</button>
   </div>
 {/if}
 {#if visibleChunkFailure}
   <div class="pool-load-error" role="alert">
-    <span>画像一覧を読み込めませんでした</span><button onclick={retryVisibleChunks}>再試行</button>
+    <span>{m.home.grid.listFailed}</span><button onclick={retryVisibleChunks}>{m.home.grid.retry}</button>
   </div>
 {/if}
 {#if safePending || navigationNotice || pendingInitialScroll}
-  <div class="list-loading" role="status" aria-label={safePending ? 'セーフモードを切り替えています' : navigationNotice ? navigationLabel : '読み込み中'}>
+  <div class="list-loading" role="status" aria-label={safePending ? m.home.grid.safeSwitching : navigationNotice ? navigationLabel : m.home.grid.loading}>
     <span class="loading-spinner" aria-hidden="true"></span>
   </div>
 {/if}
 {#if safeSwitchError}<div class="pool-load-error" role="alert">{safeSwitchError}</div>{/if}
-<div class="vscroll" bind:this={vscrollEl} aria-busy={safePending || navigating.to?.url.pathname === '/' || pendingInitialScroll}>
+<div class="vscroll" style:--thumb-offline-msg={JSON.stringify(m.home.grid.thumbOffline)} style:--thumb-failed-msg={JSON.stringify(m.home.grid.thumbFailed)} style:--thumb-offline-short={JSON.stringify(m.home.grid.thumbOfflineShort)} style:--thumb-failed-short={JSON.stringify(m.home.grid.thumbFailedShort)} bind:this={vscrollEl} aria-busy={safePending || navigating.to?.url.pathname === '/' || pendingInitialScroll}>
 <main class:editing={bulkMode || reorderMode}>
 {#if poolMode}
   {#if poolsArr.length === 0}
     {#if poolComplete}
-      <div class="empty">該当する pool がありません</div>
+      <div class="empty">{m.home.grid.noPools}</div>
     {:else if !poolLoadError}
-      <div class="empty list-initial-loading" role="status" aria-label="一覧を読み込み中"><span class="loading-spinner" aria-hidden="true"></span></div>
+      <div class="empty list-initial-loading" role="status" aria-label={m.home.grid.listLoading}><span class="loading-spinner" aria-hidden="true"></span></div>
     {/if}
   {:else}
     {@const poolPadTop    = itemH > 0 ? Math.floor(renderStart / columnsPerRow) * itemH : 0}
@@ -2132,9 +2132,9 @@
               <span>#{pool.id}</span>
               <span class="pool-count-badge" class:complete>{obs}{exp != null && exp > 0 ? `/${exp}` : ''}</span>
               {#if pool.hasCensored}
-                <span class="pool-cz" title="censor 注釈あり（decensor 作業済/対象）">&#128162;</span>
+                <span class="pool-cz" title={m.home.grid.poolCensorAnnotated}>&#128162;</span>
               {:else if pool.hasCensoredTag}
-                <span class="pool-cz tagonly" title="censored タグを含む（未注釈）">&#128162;</span>
+                <span class="pool-cz tagonly" title={m.home.grid.poolCensoredTag}>&#128162;</span>
               {/if}
             </div>
             <!-- verify > domain > 名前 heuristic の badge 優先順位は
@@ -2151,30 +2151,30 @@
           </a>
         {:else}
           {@const failed = poolFailures[poolDatasetKey()]?.[Math.floor((renderStart + i) / LIMIT) * LIMIT]}
-          {#if failed?.terminal}<button class="thumb pool-skeleton missing-slot" onclick={retryPools}>一覧の取得に失敗<br />再試行</button>
-          {:else}<div class="thumb pool-skeleton missing-slot" role="img" aria-label={failed ? '一覧を再読み込み中' : '一覧を読み込み中'}><span class="loading-spinner" aria-hidden="true"></span></div>{/if}
+          {#if failed?.terminal}<button class="thumb pool-skeleton missing-slot" onclick={retryPools}>{m.home.grid.listFetchFailed}<br />{m.home.grid.retry}</button>
+          {:else}<div class="thumb pool-skeleton missing-slot" role="img" aria-label={failed ? m.home.grid.listReloading : m.home.grid.listLoading}><span class="loading-spinner" aria-hidden="true"></span></div>{/if}
         {/if}
       {/each}
     </div>
   {/if}
 {:else}
   {#if data.searchError}
-    <div class="empty search-error" role="alert">検索できませんでした。{data.searchError}</div>
+    <div class="empty search-error" role="alert">{m.home.grid.searchFailed}{data.searchError}</div>
   {:else if total === 0 && !data.query}
     <!-- A new library: the only way in from here is drop or paste (+layout.svelte), so say so. -->
-    <div class="empty">まだ画像がありません。<br>この画面に画像や動画のファイル・フォルダをドラッグ&ドロップするか、コピーした画像を貼り付け (Ctrl+V) て追加できます。</div>
+    <div class="empty">{m.home.grid.emptyLibrary}<br>{m.home.grid.emptyLibraryHint}</div>
   {:else if total === 0}
-    <div class="empty">投稿が見つかりません</div>
+    <div class="empty">{m.home.grid.noPosts}</div>
   {:else}
 
     {#if reorderMode}
       <!-- 並び替えモード（全件ロード済み前提） -->
       <div class="reorder-bar">
-        <span class="reorder-hint">ドラッグして並び替え</span>
+        <span class="reorder-hint">{m.home.grid.reorderHint}</span>
         <button class="reorder-apply" onclick={applyReorder} disabled={reorderApplying}>
-          {reorderApplying ? '適用中…' : '順番を保存'}
+          {reorderApplying ? m.home.bulk.applying : m.home.grid.saveOrder}
         </button>
-        <button class="reorder-cancel" onclick={exitReorderMode}>キャンセル</button>
+        <button class="reorder-cancel" onclick={exitReorderMode}>{m.home.grid.cancel}</button>
       </div>
       <div
         class="grid grid-reorder"
@@ -2246,7 +2246,7 @@
               class:bulk-hover={(bulkTagOn && st !== 'adding' && st !== 'removing')
                 || (bulkMode && bulkSubMode === 'pool' && !poolSelectIds.has(post.id))}
               class:fav-hover={bulkMode && bulkSubMode === 'fav' && !isFavAdding && !isFavRemoving}
-              title={bulkTagOn && st !== 'has' ? `ダブルクリックで「${bulkTag}」を即時付与` : undefined}
+              title={bulkTagOn && st !== 'has' ? m.home.grid.dblClickAdd(bulkTag) : undefined}
               onclick={() => handleThumbClick(post, absoluteIdx)}
               ondblclick={() => handleThumbDblClick(post)}
               onmouseenter={() => { if (isScrolling) return; preloadImage(post); if (post.type === 'video') hoverVideoId = post.id; }}
@@ -2268,31 +2268,31 @@
               {#if activePoolId}
                 <span class="excl-toggle" class:on={isExcluded(post)}
                   role="button" tabindex="0"
-                  title={isExcluded(post) ? '学習対象外（クリックで戻す）' : '学習対象外にする（低品質等）'}
+                  title={isExcluded(post) ? m.home.grid.excludedTitle : m.home.grid.excludeTitle}
                   onclick={(e) => { e.preventDefault(); e.stopPropagation(); toggleImageExclude(post, absoluteIdx); }}
                   onkeydown={(e) => { if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); toggleImageExclude(post, absoluteIdx); } }}>
-                  {isExcluded(post) ? '除' : '−'}
+                  {isExcluded(post) ? m.home.grid.excludedMark : '−'}
                 </span>
               {/if}
               {#if censorStatus.get(post.id) || isCensoredByTag(post)}
                 {@const cs = censorStatus.get(post.id)}
                 {@const n = cs?.annotationCount ?? 0}
                 {#if n > 0 || isCensoredByTag(post)}
-                  <span class="cz-badge" title="censored（検閲あり）">&#128162;{n > 0 ? n : ''}</span>
+                  <span class="cz-badge" title={m.home.grid.censoredTitle}>&#128162;{n > 0 ? n : ''}</span>
                 {/if}
                 {#if cs?.pair}
                   <span class="pair-badge" class:unconfirmed={!cs.pair.confirmed}
-                        title={`${cs.pair.role === 'censored' ? 'uncensored' : 'censored'} ペアあり: #${cs.pair.partner}${cs.pair.confirmed ? '' : ' (未確定)'} — lightbox で並置表示`}>⿻</span>
+                        title={m.home.grid.pairTitle(cs.pair.role === 'censored' ? 'uncensored' : 'censored', cs.pair.partner, !!cs.pair.confirmed)}>⿻</span>
                 {/if}
               {/if}
               {#if post.type === 'video'}
                 {#if hoverVideoId !== post.id}
-                  <span class="media-ind vid" title="動画">
+                  <span class="media-ind vid" title={m.home.grid.video}>
                     <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7z" /></svg>
                   </span>
                 {/if}
               {:else if post.type === 'animation'}
-                <span class="media-ind gif" title="GIF アニメ">GIF</span>
+                <span class="media-ind gif" title={m.home.grid.gif}>GIF</span>
               {:else if post.type === 'document'}
                 <span class="badge doc">PDF</span>
               {/if}
@@ -2310,7 +2310,7 @@
                 <span class="fav-star">★</span>
               {/if}
               {#if isCover}
-                <span class="cover-badge">カバー</span>
+                <span class="cover-badge">{m.home.grid.cover}</span>
               {/if}
               {#if bulkTagOn && bulkTagCategory}
                 <IdleMount>
@@ -2330,8 +2330,8 @@
                   class="cover-btn"
                   class:setting={coverSettingId === post.id}
                   onclick={(e) => { e.stopPropagation(); handleSetCover(post); }}
-                  title="このポストをプールのカバーに設定"
-                >カバー</button>
+                  title={m.home.grid.setCoverTitle}
+                >{m.home.grid.cover}</button>
               {/if}
               {#if isFavAdding}
                 <span class="state-mark fav-add-mark">★</span>
@@ -2348,16 +2348,16 @@
           {:else}
             {@const failure = chunkFailures.get(Math.floor(absoluteIdx / LIMIT) * LIMIT)}
             {#if failure && failure.attempts >= 3}
-              <button class="thumb thumb-placeholder missing-slot" onclick={retryVisibleChunks}>一覧の取得に失敗<br />再試行</button>
+              <button class="thumb thumb-placeholder missing-slot" onclick={retryVisibleChunks}>{m.home.grid.listFetchFailed}<br />{m.home.grid.retry}</button>
             {:else}
-              <div class="thumb thumb-placeholder missing-slot" role="img" aria-label={failure ? '一覧を再読み込み中' : '一覧を読み込み中'}><span class="loading-spinner" aria-hidden="true"></span></div>
+              <div class="thumb thumb-placeholder missing-slot" role="img" aria-label={failure ? m.home.grid.listReloading : m.home.grid.listLoading}><span class="loading-spinner" aria-hidden="true"></span></div>
             {/if}
           {/if}
         {/each}
       </div>
     {/if}
     {#if loadingChunks.size > 0}
-      <div class="loading-more" role="status" aria-label="一覧を読み込み中"><span class="loading-spinner" aria-hidden="true"></span></div>
+      <div class="loading-more" role="status" aria-label={m.home.grid.listLoading}><span class="loading-spinner" aria-hidden="true"></span></div>
     {/if}
   {/if}
 {/if}
@@ -2589,13 +2589,13 @@
   }
   .thumb:has(:global(img[data-thumbnail-state="offline"]))::before,
   .thumb:has(:global(img[data-thumbnail-state="failed"]))::before {
-    content: '通信の復旧待ち'; position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+    content: var(--thumb-offline-msg); position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
     background: #17212fee; color: #e5edf5; padding: 7px 10px; border-radius: 5px; font-size: 12px; white-space: normal; width: max-content; max-width: calc(100% - 12px); box-sizing: border-box; text-align: center; pointer-events: none; z-index: 2;
   }
-  .thumb:has(:global(img[data-thumbnail-state="failed"]))::before { content: '画像を読み込めません'; background: #4a2727ee; }
+  .thumb:has(:global(img[data-thumbnail-state="failed"]))::before { content: var(--thumb-failed-msg); background: #4a2727ee; }
   @media (max-width: 600px) {
-    .thumb:has(:global(img[data-thumbnail-state="offline"]))::before { content: '通信待ち'; padding: 4px 6px; }
-    .thumb:has(:global(img[data-thumbnail-state="failed"]))::before { content: '読込失敗'; padding: 4px 6px; }
+    .thumb:has(:global(img[data-thumbnail-state="offline"]))::before { content: var(--thumb-offline-short); padding: 4px 6px; }
+    .thumb:has(:global(img[data-thumbnail-state="failed"]))::before { content: var(--thumb-failed-short); padding: 4px 6px; }
   }
   .thumb-placeholder { background: #151515; }
 

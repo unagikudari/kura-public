@@ -2,6 +2,8 @@
   import { onMount, onDestroy } from 'svelte';
   import { collectorApi } from '#lib/collector/api.ts';
   import VideoPreview from '#lib/collector/VideoPreview.svelte';
+  import { t } from '#lib/i18n/index.ts';
+  const m = t();
   type Item = { id: number; position: number; type: string; original_name: string | null };
   type Cursor = [number, number] | null;
   let input = $state('');
@@ -25,7 +27,7 @@
   const media = (id: number, kind: string) => `/m/collector-next/legacy/pools/${pool}/media/${id}/${kind}`;
 
   async function load(id: number, target = 0, cursor: Cursor = null, fresh = false) {
-    if (!Number.isSafeInteger(id) || id <= 0) { error = '作品番号を入力してください。'; return; }
+    if (!Number.isSafeInteger(id) || id <= 0) { error = m.collector.existing.enterNumber; return; }
     controller?.abort();
     controller = new AbortController();
     const turn = ++generation;
@@ -38,9 +40,9 @@
     const query = new URLSearchParams({ limit: '40' });
     if (cursor) { query.set('after_order', String(cursor[0])); query.set('after_post', String(cursor[1])); }
     try {
-      const result = await collectorApi(`legacy/pools/${id}/entries?${query}`, { signal: controller.signal });
+      const result = await collectorApi(`legacy/pools/${id}/entries?${query}`, { signal: controller.signal }, m);
       if (turn !== generation) return;
-      if (!fresh && result.collection.version !== version) throw new Error('作品が更新されました。作品を開き直してください。');
+      if (!fresh && result.collection.version !== version) throw new Error(m.collector.existing.changed);
       if (fresh) { history = [null]; version = result.collection.version; }
       pool = id;
       input = String(id);
@@ -75,48 +77,48 @@
   onDestroy(() => { generation++; controller?.abort(); });
 </script>
 
-<svelte:head><title>既存作品の閲覧 — kura</title></svelte:head>
+<svelte:head><title>{m.collector.existing.title}</title></svelte:head>
 <main>
-  <nav><a href="/lab/collector">新ライブラリへ</a> · <a href="/?mode=pools">既存コレクションへ</a></nav>
-  <h1>既存作品の閲覧</h1>
-  <p>今ある作品を40件ずつ読み出します。画像・動画は従来の閲覧用データで、原本の検証・コピーや移行は行いません。セーフ表示と広告ページの非表示条件を引き継ぎます。</p>
+  <nav><a href="/lab/collector">{m.collector.existing.toNew}</a> · <a href="/?mode=pools">{m.collector.existing.toExisting}</a></nav>
+  <h1>{m.collector.existing.heading}</h1>
+  <p>{m.collector.existing.lead}</p>
   <form onsubmit={(e) => { e.preventDefault(); void load(Number(input), 0, null, true); }}>
-    <label>作品番号 <input type="number" min="1" step="1" bind:value={input} /></label>
-    <button disabled={busy}>作品を開く</button>
+    <label>{m.collector.existing.number} <input type="number" min="1" step="1" bind:value={input} /></label>
+    <button disabled={busy}>{m.collector.existing.open}</button>
   </form>
-  {#if pool}<h2>{title}</h2><a href={`/?q=pool:${pool}`}>従来の画面で同じ作品を開く</a>{/if}
+  {#if pool}<h2>{title}</h2><a href={`/?q=pool:${pool}`}>{m.collector.existing.openClassic}</a>{/if}
   {#if error}<p role="alert">{error}</p>{/if}
-  <p role="status">{busy ? '読み込み中…' : pool && !error ? `${items.length}件表示・${index + 1}ページ目` : ''}</p>
+  <p role="status">{busy ? m.collector.loading : pool && !error ? m.collector.existing.pageStatus(items.length, index + 1) : ''}</p>
   <div class="paging">
-    <button disabled={busy || !pool || index === 0} onclick={() => load(pool, index - 1, history[index - 1])}>前の40件</button>
-    <button disabled={busy || !next} onclick={forward}>次の40件</button>
-    {#if failures.size}<button onclick={() => { failures = new Set(); retries++; }}>画像を再試行</button>{/if}
+    <button disabled={busy || !pool || index === 0} onclick={() => load(pool, index - 1, history[index - 1])}>{m.collector.existing.prev}</button>
+    <button disabled={busy || !next} onclick={forward}>{m.collector.existing.next}</button>
+    {#if failures.size}<button onclick={() => { failures = new Set(); retries++; }}>{m.collector.existing.retryImages}</button>{/if}
   </div>
   <div class="grid" aria-busy={busy}>
     {#each items as item (item.id)}
       <article>
         {#if item.type === 'video'}
-          <VideoPreview asset={item.id} name={item.original_name ?? `投稿${item.id}`} source={media(item.id, 'preview')} poster={media(item.id, 'thumbnail')} />
+          <VideoPreview asset={item.id} name={item.original_name ?? m.collector.existing.postName(item.id)} source={media(item.id, 'preview')} poster={media(item.id, 'thumbnail')} />
         {:else if failures.has(item.id)}
-          <div class="missing">プレビューを読み込めません。<a href={`/post/${item.id}?q=pool:${pool}`}>従来画面で確認</a></div>
+          <div class="missing">{m.collector.existing.previewFailed}<a href={`/post/${item.id}?q=pool:${pool}`}>{m.collector.existing.checkClassic}</a></div>
         {:else}
           {#key retries}
-            <button class="image" onclick={() => open(item)} aria-label={`投稿${item.id}を表示`}>
-              <img src={media(item.id, 'thumbnail')} alt={item.original_name ?? `投稿${item.id}`} loading="lazy" decoding="async" onerror={() => { failures = new Set([...failures, item.id]); }} />
+            <button class="image" onclick={() => open(item)} aria-label={m.collector.existing.viewPost(item.id)}>
+              <img src={media(item.id, 'thumbnail')} alt={item.original_name ?? m.collector.existing.postName(item.id)} loading="lazy" decoding="async" onerror={() => { failures = new Set([...failures, item.id]); }} />
             </button>
           {/key}
         {/if}
-        <small>順序 {item.position} · 投稿 #{item.id}</small>
-        <p>{item.original_name ?? '元ファイル名なし'}</p>
+        <small>{m.collector.existing.meta(item.position, item.id)}</small>
+        <p>{item.original_name ?? m.collector.existing.noName}</p>
       </article>
     {/each}
   </div>
   <dialog bind:this={dialog} onclose={() => { focus = null; previewLoading = false; }}>
-    <button onclick={close} autofocus>閉じる</button>
+    <button onclick={close} autofocus>{m.collector.close}</button>
     {#if focus}
-      {#if previewLoading}<p role="status">画像を読み込み中…</p>{/if}
-      {#if previewError}<p role="alert">画像を読み込めませんでした。閉じて再試行してください。</p>{:else}
-        <img class="full" src={media(focus.id, 'preview')} alt={focus.original_name ?? `投稿${focus.id}`} onload={() => previewLoading = false} onerror={() => { previewLoading = false; previewError = true; }} />
+      {#if previewLoading}<p role="status">{m.collector.existing.loadingImage}</p>{/if}
+      {#if previewError}<p role="alert">{m.collector.existing.imageFailed}</p>{:else}
+        <img class="full" src={media(focus.id, 'preview')} alt={focus.original_name ?? m.collector.existing.postName(focus.id)} onload={() => previewLoading = false} onerror={() => { previewLoading = false; previewError = true; }} />
       {/if}
     {/if}
   </dialog>

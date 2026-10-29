@@ -3,10 +3,12 @@
   import type { Post } from '#lib/types.ts';
   import { groupByFamily } from '#lib/tagFamilies.ts';
   import { tagLocale, tagDisplayName } from '#lib/tagLocale.ts';
+  import { t } from '#lib/i18n/index.ts';
 
   let { post, open = $bindable(false) }: { post: Post; open?: boolean } = $props();
+  const m = t();
   const locale = tagLocale();
-  const families = $derived(groupByFamily(post.tags));
+  const families = $derived(groupByFamily(post.tags, m));
   let host: HTMLDivElement;
   let trigger: HTMLButtonElement;
   let top = $state(0);
@@ -45,11 +47,11 @@
 
 <div class="viewer-tag-list" bind:this={host}>
   <button type="button" class="tag-trigger" bind:this={trigger} aria-expanded={open}
-    aria-haspopup="dialog" onclick={() => { place(); open = !open; }}>タグ一覧 <span>{post.tags.length}</span></button>
+    aria-haspopup="dialog" onclick={() => { place(); open = !open; }}>{m.tags.viewer.trigger} <span>{post.tags.length}</span></button>
   {#if open}
-    <div class="viewer-tag-panel" role="dialog" tabindex="-1" aria-label="表示中の画像のタグ一覧" aria-modal="false" style:--panel-top={`${top}px`}>
-      <div class="panel-heading"><strong>タグ一覧</strong><span>#{post.id} · {post.tags.length}件</span>
-        <button type="button" aria-label="タグ一覧を閉じる" onclick={() => close(true)}>×</button></div>
+    <div class="viewer-tag-panel" role="dialog" tabindex="-1" aria-label={m.tags.viewer.dialogLabel} aria-modal="false" style:--panel-top={`${top}px`}>
+      <div class="panel-heading"><strong>{m.tags.viewer.heading}</strong><span>#{post.id} · {m.tags.viewer.count(post.tags.length)}</span>
+        <button type="button" aria-label={m.tags.viewer.close} onclick={() => close(true)}>×</button></div>
       <div class="tag-list-scroll">
         {#each families as family (family.key)}
           <div class="tag-family"><h3>{family.label}</h3><div class="tag-links">
@@ -57,7 +59,7 @@
               <a href={`/?q=${encodeURIComponent(tag.names[0])}`} title={tag.names[0]}>{tagDisplayName(tag.names[0], tag.localizedNames, $locale)}</a>
             {/each}
           </div></div>
-        {:else}<p>この画像にはタグがありません。</p>{/each}
+        {:else}<p>{m.tags.viewer.none}</p>{/each}
       </div>
     </div>
   {/if}

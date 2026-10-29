@@ -1,6 +1,8 @@
 <script lang="ts">
   import * as env from '$app/env/public';
   import { onMount } from 'svelte';
+  import { t } from '#lib/i18n/index.ts';
+  const m = t();
 
   // same-origin default — see src/lib/api.ts (avoids the '/api/api' bake bug)
   const BASE = env.PUBLIC_API_URL ?? '';
@@ -64,7 +66,7 @@
 
 <div class="page">
   <header class="top-bar">
-    <a href="/" class="back">← 蔵</a>
+    <a href="/" class="back">{m.pages.status.back}</a>
     <h1>Pipeline Status</h1>
     <div class="controls">
       <button onclick={load} class="refresh-btn">↻</button>

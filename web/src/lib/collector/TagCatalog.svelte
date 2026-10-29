@@ -1,6 +1,8 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
   import { collectorApi } from './api';
+  import { t } from '#lib/i18n/index.ts';
+  const m = t();
   let { revision = 0, safeMode = true, disabled = false, onChoose }: {
     revision?: number; safeMode?: boolean; disabled?: boolean; onChoose: (name: string) => void;
   } = $props();
@@ -17,7 +19,7 @@
     const current = ++epoch;
     loading = true; error = '';
     try {
-      const page = await collectorApi(`tags?limit=40${more && cursor ? `&after=${cursor}` : ''}`, {signal:controller.signal});
+      const page = await collectorApi(`tags?limit=40${more && cursor ? `&after=${cursor}` : ''}`, {signal:controller.signal}, m);
       if (current !== epoch) return;
       rows = more ? [...rows,...page.items] : page.items; cursor = page.next_cursor;
     } catch(e) { if(current===epoch && !(e instanceof DOMException && e.name==='AbortError')) error=(e as Error).message; }
@@ -28,19 +30,19 @@
   $effect(()=>{const version=revision; const safe=safeMode; if(mounted) void load();});
 </script>
 
-<section aria-label="整理タグ" aria-busy={loading}>
-  <h2>整理タグ</h2>
-  {#if error}<p role="alert">{error}<button onclick={()=>load()}>再試行</button></p>{/if}
-  {#if !rows.length}<p class="muted">{loading ? 'タグを取得中…' : 'タグを付けると、ここから絞り込めます。'}</p>{/if}
+<section aria-label={m.collector.catalog.heading} aria-busy={loading}>
+  <h2>{m.collector.catalog.heading}</h2>
+  {#if error}<p role="alert">{error}<button onclick={()=>load()}>{m.collector.catalog.retry}</button></p>{/if}
+  {#if !rows.length}<p class="muted">{loading ? m.collector.catalog.loading : m.collector.catalog.empty}</p>{/if}
   <div class="tags">
     {#each rows as tag (tag.id)}
       <button class="tag" {disabled} onclick={()=>onChoose(tag.name)}>
         {#if tag.thumbnail_url && !safeMode}<img src={tag.thumbnail_url} alt="" loading="lazy" />{:else}<span class="empty" aria-hidden="true">#</span>{/if}
-        <span><strong>{tag.name}</strong><small>{tag.count}件 · {(tag.logical_bytes/1024/1024).toFixed(1)} MiB</small></span>
+        <span><strong>{tag.name}</strong><small>{m.collector.catalog.count(tag.count, (tag.logical_bytes/1024/1024).toFixed(1))}</small></span>
       </button>
     {/each}
   </div>
-  {#if cursor}<button disabled={loading} onclick={()=>load(true)}>ほかのタグを表示</button>{/if}
+  {#if cursor}<button disabled={loading} onclick={()=>load(true)}>{m.collector.catalog.more}</button>{/if}
 </section>
 
 <style>

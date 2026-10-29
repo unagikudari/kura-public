@@ -5,8 +5,10 @@
   import { fetchTagsBrowse } from '#lib/api.ts';
   import type { TagDetail } from '#lib/types.ts';
   import type { PageData } from './$types';
+  import { t } from '#lib/i18n/index.ts';
 
   let { data }: { data: PageData } = $props();
+  const m = t();
 
   const STORAGE_KEY = 'kura-tag-browser-filter';
   const categories = $derived(data.categories);
@@ -181,7 +183,7 @@
         const r = await fetchTagsBrowse(q, '', 0, 60, fetch, { thumbnails: false, signal: searchController.signal });
         if (request === searchGeneration) searchResults = r.results ?? [];
       } catch {
-        if (request === searchGeneration) searchError = 'タグを取得できませんでした。入力し直して再試行してください。';
+        if (request === searchGeneration) searchError = m.tags.browse.searchFailed;
       } finally {
         if (request === searchGeneration) searchLoading = false;
       }
@@ -193,14 +195,14 @@
 
 <svelte:window onmessage={receiveSummary} />
 
-<svelte:head><title>タグブラウズ — 蔵</title></svelte:head>
+<svelte:head><title>{m.tags.browse.title}</title></svelte:head>
 
 <div class="page">
   <!-- 1段目: 共通ヘッダー (直接描画 — iframe + postMessage ハックを撤去) -->
   <Header
     total={currentSummary?.total ?? null}
     totalBytes={currentSummary?.bytes ?? 0}
-    sortKeys={[{ key: 'id', label: 'ID' }, { key: 'updated', label: '更新' }]}
+    sortKeys={[{ key: 'id', label: 'ID' }, { key: 'updated', label: m.tags.browse.sortUpdated }]}
     sort={poolMode ? poolSort : postSort}
     dir={poolMode ? poolDir : postDir}
     onSort={changeSort}
@@ -219,10 +221,10 @@
 
   <!-- 2段目: サイドバー + ギャラリー iframe -->
   <div class="body">
-    <aside class="sidebar" class:collapsed-mobile={!filtersExpanded} aria-label="タグの絞り込み">
+    <aside class="sidebar" class:collapsed-mobile={!filtersExpanded} aria-label={m.tags.browse.sidebarLabel}>
       <button class="filters-toggle" type="button" aria-expanded={filtersExpanded} aria-controls="tag-filter-body"
         onclick={() => (filtersExpanded = !filtersExpanded)}>
-        <span>タグで絞り込む <span class="filter-count">{included.size + excluded.size ? `${included.size + excluded.size}件選択` : ''}</span></span>
+        <span>{m.tags.browse.filterBy} <span class="filter-count">{included.size + excluded.size ? m.tags.browse.selectedN(included.size + excluded.size) : ''}</span></span>
         <span aria-hidden="true">{filtersExpanded ? '−' : '+'}</span>
       </button>
       <div class="filter-body" id="tag-filter-body">
@@ -232,8 +234,8 @@
           <input
             class="tag-search"
             type="search"
-            placeholder="タグを探す"
-            aria-label="絞り込むタグを検索"
+            placeholder={m.tags.browse.findPlaceholder}
+            aria-label={m.tags.browse.findLabel}
             bind:value={tagSearch}
             oninput={onTagSearch}
             autocomplete="off"
@@ -242,9 +244,9 @@
           />
         </div>
 
-        <div class="selection-mode" aria-label="タグを選んだときの操作">
-          <button type="button" class:active={selectionMode === 'include'} aria-pressed={selectionMode === 'include'} onclick={() => (selectionMode = 'include')}>含む</button>
-          <button type="button" class:active={selectionMode === 'exclude'} aria-pressed={selectionMode === 'exclude'} onclick={() => (selectionMode = 'exclude')}>除外</button>
+        <div class="selection-mode" aria-label={m.tags.browse.modeLabel}>
+          <button type="button" class:active={selectionMode === 'include'} aria-pressed={selectionMode === 'include'} onclick={() => (selectionMode = 'include')}>{m.tags.browse.include}</button>
+          <button type="button" class:active={selectionMode === 'exclude'} aria-pressed={selectionMode === 'exclude'} onclick={() => (selectionMode = 'exclude')}>{m.tags.browse.exclude}</button>
         </div>
         {#if included.size || excluded.size}
           <div class="active-bar">
@@ -254,7 +256,7 @@
             {#each [...excluded] as t}
               <button class="chip exc" onclick={() => off(t)}>-{t} ×</button>
             {/each}
-            <button class="clear" onclick={clearAll}>クリア</button>
+            <button class="clear" onclick={clearAll}>{m.tags.browse.clear}</button>
           </div>
         {/if}
       </div>
@@ -263,18 +265,18 @@
       <!-- 下部スクロール: 検索結果 + ジャンル別タグ -->
       <div class="side-scroll">
       {#if tagSearch.trim() && (searchLoading || searchError || !searchResults.length)}
-        <p class="search-status" role="status">{searchLoading ? '検索中…' : searchError || '該当するタグがありません'}</p>
+        <p class="search-status" role="status">{searchLoading ? m.tags.browse.searching : searchError || m.tags.browse.noMatches}</p>
       {/if}
       {#if searchResults.length}
         <div class="cat-section">
-          <div class="cat-head static">検索結果</div>
+          <div class="cat-head static">{m.tags.browse.results}</div>
           <div class="tag-list">
             {#each searchResults as t (t.id)}
               <TagChip variant="pill" name={t.names[0]} localizedNames={t.localizedNames} usages={t.usages}
                 color={t.categoryColor} state={stateOf(t.names[0])}
                 onclick={() => toggleTag(t.names[0])}
                 oncontextmenu={(e) => rightToggle(t.names[0], e)}
-                title={selectionMode === 'include' ? '選択: 含む / 右クリック: 除外' : '選択: 除外'} />
+                title={selectionMode === 'include' ? m.tags.browse.titleInclude : m.tags.browse.titleExclude} />
             {/each}
           </div>
         </div>
@@ -299,7 +301,7 @@
                     color={cat.color} state={stateOf(t.names[0])}
                     onclick={() => toggleTag(t.names[0])}
                     oncontextmenu={(e) => rightToggle(t.names[0], e)}
-                    title={selectionMode === 'include' ? '選択: 含む / 右クリック: 除外' : '選択: 除外'} />
+                    title={selectionMode === 'include' ? m.tags.browse.titleInclude : m.tags.browse.titleExclude} />
                 {/each}
               </div>
             {/if}
@@ -311,9 +313,9 @@
     </aside>
 
     <div class="gallery-pane" aria-busy={!currentSummary}>
-      {#if !currentSummary}<p class="gallery-loading" role="status">画像一覧を読み込み中…</p>{/if}
+      {#if !currentSummary}<p class="gallery-loading" role="status">{m.tags.browse.galleryLoading}</p>{/if}
       {#if restored}
-        <iframe class="gallery" title="絞り込み結果" src={galleryUrl} bind:this={iframeEl}></iframe>
+        <iframe class="gallery" title={m.tags.browse.galleryTitle} src={galleryUrl} bind:this={iframeEl}></iframe>
       {/if}
     </div>
   </div>

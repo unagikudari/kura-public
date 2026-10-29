@@ -3,6 +3,9 @@
   import type { Writable } from 'svelte/store';
   import Header from '#lib/components/Header.svelte';
   import { IDENTITY_CATEGORIES, IDENTITY_DISPLAY_CONTEXT, IDENTITY_DISPLAY_COOKIE, readIdentityDisplay, type IdentityDisplay } from '#lib/identityDisplay.ts';
+  import { t } from '#lib/i18n/index.ts';
+  const m = t();
+  const sm = m.pages.settings;
   const preferences = getContext<Writable<IdentityDisplay>>(IDENTITY_DISPLAY_CONTEXT);
   function save(next: IdentityDisplay) {
     const checked = readIdentityDisplay(JSON.stringify(next));
@@ -14,31 +17,31 @@
   }
 </script>
 
-<svelte:head><title>表示設定 — kura</title></svelte:head>
+<svelte:head><title>{sm.title}</title></svelte:head>
 <div class="settings-page">
   <Header />
   <main>
-    <a class="back" href="/?q=">← 画像一覧</a>
-    <h1>表示設定</h1>
-    <p><a href="/settings/backup">バックアップ状況 →</a></p>
-    <p class="intro">ビューに表示する情報を選べます。このブラウザーに保存されます。</p>
+    <a class="back" href="/?q=">{sm.back}</a>
+    <h1>{sm.heading}</h1>
+    <p><a href="/settings/backup">{sm.backupLink}</a></p>
+    <p class="intro">{sm.intro}</p>
     <section aria-labelledby="identity-settings-title">
-      <h2 id="identity-settings-title">アーティスト・キャラクター・作品</h2>
-      <fieldset><legend>表示する場所</legend>
-        <label><span>単画像・マンガビュー</span><input type="checkbox" checked={$preferences.viewer} onchange={(event) => toggle('viewer', event)} /></label>
+      <h2 id="identity-settings-title">{m.pages.identity.heading}</h2>
+      <fieldset><legend>{sm.where}</legend>
+        <label><span>{sm.viewerLabel}</span><input type="checkbox" checked={$preferences.viewer} onchange={(event) => toggle('viewer', event)} /></label>
       </fieldset>
-      <fieldset><legend>表示する情報</legend>
+      <fieldset><legend>{sm.what}</legend>
         {#each IDENTITY_CATEGORIES as category}
-          <label><span>{category.label}</span><input type="checkbox" checked={$preferences[category.key]} onchange={(event) => toggle(category.key, event)} /></label>
+          <label><span>{m.pages.identity[category.key]}</span><input type="checkbox" checked={$preferences[category.key]} onchange={(event) => toggle(category.key, event)} /></label>
         {/each}
       </fieldset>
-      <label class="limit"><span>カテゴリごとの表示件数</span>
-        <select aria-label="カテゴリごとの表示件数" value={$preferences.namesPerCategory} onchange={(event) => save({ ...$preferences, namesPerCategory: Number((event.target as HTMLSelectElement).value) as IdentityDisplay['namesPerCategory'] })}>
-          {#each [1, 2, 3, 5] as count}<option value={count}>{count}件</option>{/each}
+      <label class="limit"><span>{sm.perCategory}</span>
+        <select aria-label={sm.perCategory} value={$preferences.namesPerCategory} onchange={(event) => save({ ...$preferences, namesPerCategory: Number((event.target as HTMLSelectElement).value) as IdentityDisplay['namesPerCategory'] })}>
+          {#each [1, 2, 3, 5] as count}<option value={count}>{sm.countN(count)}</option>{/each}
         </select>
       </label>
-      <p class="hint">複数の人物・作品に対応しています。入りきらない名前は「ほか○件」と表示し、情報の帯を押すとすべて確認できます。タグの表示言語も反映されます。一覧は画像だけを表示します。</p>
-      <button class="reset" type="button" onclick={() => save(readIdentityDisplay())}>初期設定に戻す</button>
+      <p class="hint">{sm.hint}</p>
+      <button class="reset" type="button" onclick={() => save(readIdentityDisplay())}>{sm.reset}</button>
     </section>
   </main>
 </div>

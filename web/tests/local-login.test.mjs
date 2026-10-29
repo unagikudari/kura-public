@@ -27,14 +27,16 @@ async function fixture(t, status, body, origin='http://test.invalid') {
   const prelude=`const env=${JSON.stringify(env)};
     const fail=(status,data)=>({status,data});
     const redirect=(status,location)=>({status,location});
-    import {SESSION_COOKIE,signSession} from ${JSON.stringify(sessionUrl)};`;
+    import {SESSION_COOKIE,signSession} from ${JSON.stringify(sessionUrl)};
+    import { ja } from ${JSON.stringify(new URL('../src/lib/i18n/ja.ts', import.meta.url).href)};
+    const UI_LOCALE_COOKIE='kura_ui_locale'; const resolveUiLocale=()=>'ja'; const messagesFor=()=>ja;`;
   const route=await import(compile(prelude+errors+routeSource.replace(/^import .*;\r?\n/gm,'')));
   const cookies=[];
   const headers=origin?{origin}:{};
   return {session,cookies,seen:()=>seen,call:()=>route.actions.default({
     request:new Request('http://test.invalid/login',{method:'POST',headers,body:new URLSearchParams({email:'person@example.invalid',key:rawKey})}),
     url:new URL('http://test.invalid/login'),
-    cookies:{set:(...args)=>cookies.push(args)},
+    cookies:{set:(...args)=>cookies.push(args),get:()=>undefined},
   })};
 }
 

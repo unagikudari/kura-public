@@ -9,8 +9,10 @@
   import type { TagRelationEdge } from '#lib/api.ts';
   import type { TagCategory, TagDetail } from '#lib/types.ts';
   import type { PageData } from './$types';
+  import { t } from '#lib/i18n/index.ts';
 
   let { data }: { data: PageData } = $props();
+  const m = t();
   const LIMIT = 200;
 
   // URL-driven: category (?cat) and search (?q) live in the URL, so the browser
@@ -176,19 +178,19 @@
       const d = await fetchTagsBrowse(data.query, data.category, tags.length, LIMIT, fetch, { signal: moreController.signal, cleanup: data.cleanup, thumbnails: data.view !== 'list' });
       if (key === datasetKey()) appended = [...appended, ...(d.results ?? [])];
     } catch (e) {
-      if (key === datasetKey() && !(e instanceof DOMException && e.name === 'AbortError')) loadMoreError = '追加のタグを読み込めませんでした。もう一度お試しください。';
+      if (key === datasetKey() && !(e instanceof DOMException && e.name === 'AbortError')) loadMoreError = m.tags.manage.moreFailed;
     } finally { if (key === datasetKey()) loadMoreLoading = false; }
   }
   onDestroy(() => { moreController?.abort(); if (searchTimer) clearTimeout(searchTimer); });
 
 </script>
 
-<svelte:head><title>タグ管理 — 蔵</title></svelte:head>
+<svelte:head><title>{m.tags.manage.title}</title></svelte:head>
 
 {#snippet tagCard(tag: TagDetail)}
   <article class="card">
     {#if data.view !== 'list' && tag.thumbnailUrl}
-      <a class="thumb" href={`/?q=${encodeURIComponent(tag.names[0])}`} aria-label={`${tag.names[0]} の画像を見る`}>
+      <a class="thumb" href={`/?q=${encodeURIComponent(tag.names[0])}`} aria-label={m.tags.manage.viewImagesOf(tag.names[0])}>
         <img src={mediaUrl(tag.thumbnailUrl)} alt="" loading="lazy" />
       </a>
     {/if}
@@ -196,34 +198,34 @@
       <a class="name" href={`/?q=${encodeURIComponent(tag.names[0])}`} style="color:{tag.categoryColor}">{tag.names[0]}</a>
       {#if tag.names.length > 1}<div class="aliases" title={tag.names.slice(1).join(', ')}>{tag.names.slice(1).join(', ')}</div>{/if}
       {#if tag.description && data.view !== 'list'}<div class="desc">{tag.description}</div>{/if}
-      <div class="tag-summary"><span class="category-name">{tag.category}</span><span class="count">{tag.usages.toLocaleString()} 件</span></div>
+      <div class="tag-summary"><span class="category-name">{tag.category}</span><span class="count">{m.tags.manage.usages(tag.usages)}</span></div>
     </div>
     <div class="card-actions">
-      <a href={`/?q=${encodeURIComponent(tag.names[0])}`}>画像を見る</a>
-      <a href={`/?mode=pools&q=${encodeURIComponent('tag:' + tag.names[0])}`} title="このタグを持つ画像を含むPoolの一覧">Pool一覧</a>
-      {#if tag.category === 'artist'}<a href={`/artists?id=${tag.id}`}>作家管理</a>{/if}
-      <a href={editHref(tag)} aria-label={`${tag.names[0]} を編集`}>編集</a>
+      <a href={`/?q=${encodeURIComponent(tag.names[0])}`}>{m.tags.manage.viewImages}</a>
+      <a href={`/?mode=pools&q=${encodeURIComponent('tag:' + tag.names[0])}`} title={m.tags.manage.poolsTitle}>{m.tags.manage.pools}</a>
+      {#if tag.category === 'artist'}<a href={`/artists?id=${tag.id}`}>{m.tags.manage.artistManage}</a>{/if}
+      <a href={editHref(tag)} aria-label={m.tags.manage.editTag(tag.names[0])}>{m.tags.manage.edit}</a>
     </div>
   </article>
 {/snippet}
 
 <div class="page">
   <Header showSearch={false} />
-  <SectionTabs label="タグ管理の画面" tabs={[{label: "一覧",href:"/tags/manage",active:true},{label:"編集",href:editHref(),active:false}]} />
+  <SectionTabs label={m.tags.common.tabsLabel} tabs={[{label: m.tags.common.tabList,href:"/tags/manage",active:true},{label:m.tags.common.tabEdit,href:editHref(),active:false}]} />
   <div class="topbar">
-    <span class="title">タグ管理</span>
+    <span class="title">{m.tags.manage.heading}</span>
     <div class="search-wrap">
       <input type="search" bind:value={searchQ} oninput={onSearchInput}
-        aria-label="タグ名で検索" placeholder="タグ名で検索…" autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false" />
+        aria-label={m.tags.manage.searchLabel} placeholder={m.tags.common.searchPlaceholder} autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false" />
     </div>
-    <label class="display-choice">表示<select aria-label="タグ一覧の表示" value={data.view} onchange={e => changeDisplay(data.cleanup, e.currentTarget.value)}><option value="cards">カード</option><option value="list">コンパクト一覧</option></select></label>
-    <label class="display-choice">整理対象<select aria-label="整理対象" value={data.cleanup} onchange={e => changeDisplay(readTagCleanup(e.currentTarget.value), data.view)}><option value="all">すべて</option><option value="unused">未使用</option><option value="no_alias">別名なし</option></select></label>
-    <span class="stat">{total.toLocaleString()} タグ</span>
+    <label class="display-choice">{m.tags.manage.display}<select aria-label={m.tags.manage.displayLabel} value={data.view} onchange={e => changeDisplay(data.cleanup, e.currentTarget.value)}><option value="cards">{m.tags.manage.cards}</option><option value="list">{m.tags.manage.compact}</option></select></label>
+    <label class="display-choice">{m.tags.common.cleanup}<select aria-label={m.tags.manage.cleanupLabel} value={data.cleanup} onchange={e => changeDisplay(readTagCleanup(e.currentTarget.value), data.view)}><option value="all">{m.tags.common.all}</option><option value="unused">{m.tags.common.cleanupUnused}</option><option value="no_alias">{m.tags.common.cleanupNoAlias}</option></select></label>
+    <span class="stat">{m.tags.common.tagsCount(total)}</span>
   </div>
 
-  <nav class="category-tabs" aria-label="タグのカテゴリ" use:categoryTabScroll={activeCategory}>
+  <nav class="category-tabs" aria-label={m.tags.manage.categoryNav} use:categoryTabScroll={activeCategory}>
     <a class="category-tab" class:active={activeCategory === ''} aria-current={activeCategory === '' ? 'page' : undefined}
-      data-category="" href={categoryHref('')} onclick={cancelSearch} data-sveltekit-reset="false">すべて</a>
+      data-category="" href={categoryHref('')} onclick={cancelSearch} data-sveltekit-reset="false">{m.tags.common.all}</a>
     {#each categories as cat}
       <a class="category-tab" class:active={activeCategory === cat.name}
         aria-current={activeCategory === cat.name ? 'page' : undefined} data-category={cat.name}
@@ -231,16 +233,16 @@
         data-sveltekit-reset="false">{cat.name}</a>
     {/each}
   </nav>
-  {#if showLoading}<p class="category-loading" role="status">タグ一覧を更新中…</p>{/if}
+  {#if showLoading}<p class="category-loading" role="status">{m.tags.manage.updating}</p>{/if}
 
   {#if loadMoreError}<p role="alert">{loadMoreError}</p>{/if}
   <div class="scroll-area" aria-busy={categoryPending}>
     {#if tags.length === 0}
       <p class="msg">
-        該当なし{#if activeCategory} ({activeCategory} 内){/if}
+        {m.tags.manage.noMatch}{#if activeCategory}{m.tags.manage.inCategory(activeCategory)}{/if}
         {#if crossCatTotal}
-          — 全カテゴリでは {crossCatTotal} 件
-          <button class="cross-cat" onclick={() => setCategory('')}>すべてで検索</button>
+          {m.tags.manage.crossCategory(crossCatTotal)}
+          <button class="cross-cat" onclick={() => setCategory('')}>{m.tags.manage.searchAll}</button>
         {/if}
       </p>
     {:else}
@@ -259,7 +261,7 @@
         {/each}
       </div>
       {#if tags.length < total}
-        <div class="more"><button disabled={loadMoreLoading} onclick={loadMore}>{loadMoreLoading ? '…' : `さらに読み込む (${tags.length}/${total})`}</button></div>
+        <div class="more"><button disabled={loadMoreLoading} onclick={loadMore}>{loadMoreLoading ? '…' : m.tags.manage.loadMore(tags.length, total)}</button></div>
       {/if}
     {/if}
   </div>

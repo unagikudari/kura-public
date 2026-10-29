@@ -1,6 +1,8 @@
 <script lang="ts">
   import { tagLocale, tagDisplayName } from '#lib/tagLocale.ts';
+  import { t } from '#lib/i18n/index.ts';
   const locale = tagLocale();
+  const m = t();
   // TagChip.svelte — タグ chip 描画の単一実装 (plan slug:kura-web-componentization P2)。
   // dupe-ledger candidate `tag-chip-render` の 4 site (SinglePostView / Lightbox /
   // VerifyTagOverlay / tags ブラウザ) のインライン chip を置換する。見た目は site
@@ -95,7 +97,7 @@
     {#if onclick}<button class="tc-name" style="color:{color}" {onclick}>{displayName}</button>
     {:else}<span class="tc-name" style="color:{color}">{displayName}</span>{/if}
     {#if onlock}<button class="tc-lock" class:on={pinned === 'present'} type="button" onclick={onlock}
-      aria-label="lock" title={pinned === 'present' ? '施錠中 (human positive GT・タガー上書き不可) — click で解錠' : '施錠: 正しいタグとして確定 (positive GT 化+タガー上書き不可)'}>{pinned === 'present' ? '🔒' : '🔓'}</button>{/if}
+      aria-label="lock" title={pinned === 'present' ? m.tags.chip.lockedTitle : m.tags.chip.lockTitle}>{pinned === 'present' ? '🔒' : '🔓'}</button>{/if}
     {#if onremove && pinned !== 'present'}<button class="tc-x" type="button" onclick={onremove} aria-label="remove">×</button>{/if}
   </span>
 {:else}
@@ -106,7 +108,7 @@
       <span class="tc-name" style="color:{color}">{displayName}</span>
     {/if}
     {#if onlock}<button class="tc-lock" class:on={pinned === 'present'} type="button" onclick={onlock}
-      aria-label="lock" title={pinned === 'present' ? '施錠中 (human positive GT・タガー上書き不可) — click で解錠' : '施錠: 正しいタグとして確定 (positive GT 化+タガー上書き不可)'}>{pinned === 'present' ? '🔒' : '🔓'}</button>{/if}
+      aria-label="lock" title={pinned === 'present' ? m.tags.chip.lockedTitle : m.tags.chip.lockTitle}>{pinned === 'present' ? '🔒' : '🔓'}</button>{/if}
     {#if onremove && pinned !== 'present'}<button class="tc-x" onclick={onremove} aria-label="remove">&times;</button>{/if}
   </span>
 {/if}

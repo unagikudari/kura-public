@@ -8,6 +8,8 @@
   //          同じ .pool-source-badge 枠で描く。
   //   chip … PoolTitleBar の cycle ボタン (クリックで pending⇄verified、PATCH は親)。
   export type PoolVerifyStatus = 'pending' | 'verified' | 'excluded' | null;
+  import { t } from '#lib/i18n/index.ts';
+  const m = t();
 
   let {
     variant, status, taggerSource = null, domain = null, heuristic = false,
@@ -33,31 +35,31 @@
 
 {#if variant === 'card'}
   {#if status === 'excluded'}
-    <span class="pool-source-badge badge-excluded" title="検証対象外（実験用/低品質 — 学習から除外）">除</span>
+    <span class="pool-source-badge badge-excluded" title={m.home.verify.excludedTitle}>{m.home.verify.excludedBadge}</span>
   {:else if status === 'verified'}
-    <span class="pool-source-badge badge-verify-done" title="検証済み{taggerSource ? ` (${taggerSource})` : ''}">済</span>
+    <span class="pool-source-badge badge-verify-done" title={m.home.verify.verifiedTitle(taggerSource)}>{m.home.verify.verifiedBadge}</span>
   {:else if status === 'pending'}
-    <span class="pool-source-badge badge-verify-pending" title="検証待ち{taggerSource ? ` (${taggerSource})` : ''}">検</span>
+    <span class="pool-source-badge badge-verify-pending" title={m.home.verify.pendingTitle(taggerSource)}>{m.home.verify.pendingBadge}</span>
   {:else if domain}
     <span class="pool-source-badge badge-domain" style="background:{domain.color}"
           >{domain.label}</span>
   {:else if heuristic}
-    <span class="pool-source-badge badge-verify" title="検証用 pool(correction program / 自動タガー更新)">検</span>
+    <span class="pool-source-badge badge-verify" title={m.home.verify.heuristicTitle}>{m.home.verify.pendingBadge}</span>
   {/if}
 {:else}
   <button class="pool-verify-chip" class:done={status === 'verified'}
     class:unset={status == null} onclick={onToggle}
-    title={status === 'verified' ? '検証済み (クリックで検証待ちに戻す)'
-      : status === 'pending' ? '検証待ち (検証が終わったらクリック)'
-      : '検証対象ではない pool (クリックで検証待ちにする)'}>
-    {status === 'verified' ? '✓ 検証済み'
-      : status === 'pending' ? '検証待ち → 完了にする'
-      : status === 'excluded' ? '検証: 除外'
-      : '検証: 未設定'}
+    title={status === 'verified' ? m.home.verify.chipVerifiedTitle
+      : status === 'pending' ? m.home.verify.chipPendingTitle
+      : m.home.verify.chipUnsetTitle}>
+    {status === 'verified' ? m.home.verify.chipVerified
+      : status === 'pending' ? m.home.verify.chipPending
+      : status === 'excluded' ? m.home.verify.chipExcluded
+      : m.home.verify.chipUnset}
   </button>
   {#if status != null && onRelease}
     <button class="pool-verify-release" onclick={onRelease}
-      title="検証対象から解除 (未設定に戻す)">×</button>
+      title={m.home.verify.release}>×</button>
   {/if}
 {/if}
 

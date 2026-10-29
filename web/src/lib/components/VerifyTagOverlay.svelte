@@ -24,6 +24,8 @@
   import FlashMessage from '#lib/components/FlashMessage.svelte';
   import TagChip from '#lib/components/TagChip.svelte';
   import type { MicroTag } from '#lib/types.ts';
+  import { t } from '#lib/i18n/index.ts';
+  const m = t();
 
   export type VtoFlash = { name: string; kind: 'removed' | 'restored' | 'error'; message?: string };
 
@@ -125,15 +127,15 @@
 
 <svelte:window onpointerdowncapture={onWindowPointerdown} />
 
-<div class="vto" class:bottom bind:this={rootEl} aria-label="タグカテゴリ一覧オーバーレイ">
+<div class="vto" class:bottom bind:this={rootEl} aria-label={m.tags.overlay.label}>
   {#if bottom && flash}
     <!-- 直近削除のフラッシュ + undo (単発)。パネル先頭に固定表示 —
          表示シェルは FlashMessage (overlay variant)、文言はここのドメイン知識。 -->
     <FlashMessage variant="overlay" tone={flash.kind}
       text={flash.kind === 'removed' ? `− ${flash.name}`
-        : flash.kind === 'restored' ? `＋ ${flash.name} 復元`
-        : `⚠ ${flash.message ?? 'エラー'}`}
-      actionLabel={flash.kind === 'removed' && onUndo ? '元に戻す' : undefined}
+        : flash.kind === 'restored' ? m.tags.overlay.restored(flash.name)
+        : `⚠ ${flash.message ?? m.tags.overlay.error}`}
+      actionLabel={flash.kind === 'removed' && onUndo ? m.tags.overlay.undo : undefined}
       onAction={onUndo} actionDisabled={busy !== null} />
   {/if}
   {#each grouped as g (g.key)}
@@ -155,7 +157,7 @@
     </div>
   {/each}
   {#if tags.length === 0}
-    <div class="vto-empty">タグなし</div>
+    <div class="vto-empty">{m.tags.overlay.empty}</div>
   {/if}
 </div>
 
@@ -170,10 +172,10 @@
     {:else if tip.desc}
       <div class="vto-tip-desc">{tip.desc}</div>
     {:else}
-      <div class="vto-tip-desc dim">説明なし</div>
+      <div class="vto-tip-desc dim">{m.tags.common.noDescription}</div>
     {/if}
     {#if deletable}
-      <div class="vto-tip-hint">{armed === tip.name ? 'もう1回タップで削除' : 'タップで削除待機'}</div>
+      <div class="vto-tip-hint">{armed === tip.name ? m.tags.common.tapAgainToDelete : m.tags.common.tapToArmDelete}</div>
     {/if}
   </div>
 {/if}

@@ -13,28 +13,29 @@
 // カテゴリを増やしても壊れない — 未登録カテゴリは末尾の 'other' family に落ちる
 // (categoryColor.ts と同じ方針: DB に追加すればコード変更なしで UI に出る)。
 import type { MicroTag } from '#lib/types.ts';
+import type { Messages } from '#lib/i18n/index.ts';
 
-export type TagFamily = { key: string; label: string; categories: string[] };
+export type TagFamilyKey = keyof Messages['tags']['families'];
+export type TagFamily = { key: TagFamilyKey; categories: string[] };
 
 /** family の並び順がそのまま表示順。部位と行為を隣接させるのが要点。 */
 export const TAG_FAMILIES: TagFamily[] = [
-  { key: 'identity', label: '識別', categories: ['artist', 'copyright', 'character'] },
+  { key: 'identity', categories: ['artist', 'copyright', 'character'] },
   {
     key: 'region',
-    label: '部位',
     categories: [
       'breast', 'female_genitals', 'male_genitals',
       'anus', 'pubic_hair', 'genital_accessory',
     ],
   },
-  { key: 'act', label: '行為', categories: ['sex_act', 'sex_position', 'cum', 'excretion'] },
-  { key: 'posture', label: '姿勢・視点', categories: ['pose', 'viewpoint', 'expression'] },
-  { key: 'attire', label: '装い', categories: ['clothing'] },
-  { key: 'general', label: '一般', categories: ['general'] },
-  { key: 'meta', label: 'meta', categories: ['meta'] },
+  { key: 'act', categories: ['sex_act', 'sex_position', 'cum', 'excretion'] },
+  { key: 'posture', categories: ['pose', 'viewpoint', 'expression'] },
+  { key: 'attire', categories: ['clothing'] },
+  { key: 'general', categories: ['general'] },
+  { key: 'meta', categories: ['meta'] },
 ];
 
-const OTHER: TagFamily = { key: 'other', label: 'その他', categories: [] };
+const OTHER: TagFamily = { key: 'other', categories: [] };
 
 /** category → family key。未登録は 'other'。 */
 const FAMILY_OF: Record<string, string> = (() => {
@@ -43,14 +44,15 @@ const FAMILY_OF: Record<string, string> = (() => {
   return m;
 })();
 
-export type GroupedFamily = { key: string; label: string; tags: MicroTag[] };
+export type GroupedFamily = { key: TagFamilyKey; label: string; tags: MicroTag[] };
 
 /**
  * tags を family 単位にまとめる。family 内は **category 優先 → 名前順** で並べる
  * ので、同カテゴリ (例 male_genitals) のタグが必ず固まり、部位の抜けが見える。
  * 空 family は返さない。未登録カテゴリは末尾 'other' に集約。
+ * m は表示言語の messages (family の見出しに使う)。
  */
-export function groupByFamily(tags: MicroTag[]): GroupedFamily[] {
+export function groupByFamily(tags: MicroTag[], m: Messages): GroupedFamily[] {
   const buckets = new Map<string, MicroTag[]>();
   for (const t of tags) {
     const cat = t.category || 'default';
@@ -67,7 +69,7 @@ export function groupByFamily(tags: MicroTag[]): GroupedFamily[] {
       if (ca !== cb) return ca.localeCompare(cb);
       return a.names[0].localeCompare(b.names[0]);
     });
-    out.push({ key: f.key, label: f.label, tags: got });
+    out.push({ key: f.key, label: m.tags.families[f.key], tags: got });
   }
   return out;
 }

@@ -13,6 +13,15 @@
     document.cookie = `kura_tag_locale=${value}; Path=/; Max-Age=31536000; SameSite=Lax`;
   }
   import { extensionNav, hasLoraUI } from '#lib/extensions.ts';
+  import { t, uiLocale, readUiLocale, UI_LOCALE_COOKIE } from '#lib/i18n/index.ts';
+  const m = t();
+  const locale = uiLocale();
+  function changeUiLocale(event: Event) {
+    const value = readUiLocale((event.target as HTMLSelectElement).value);
+    if (!value) return;
+    document.cookie = `${UI_LOCALE_COOKIE}=${value}; Path=/; Max-Age=31536000; SameSite=Lax`;
+    location.reload();
+  }
   import { goto } from '$app/navigation';
   import { page } from '$app/state';
   import TagSuggestInput from '#lib/components/TagSuggestInput.svelte';
@@ -261,8 +270,8 @@
 
 {#snippet viewControls()}
   {#if mangaActive || singleActive || onEnterManga || onEnterSingle}
-    <label class="view-choice">表示
-      <select aria-label="表示方法" value={mangaActive ? 'manga' : singleActive ? 'single' : 'grid'}
+    <label class="view-choice">{m.header.view}
+      <select aria-label={m.header.viewHow} value={mangaActive ? 'manga' : singleActive ? 'single' : 'grid'}
         onchange={(event) => {
           const value = event.currentTarget.value;
           if (value === 'manga') onEnterManga?.();
@@ -270,25 +279,25 @@
           else returnToGrid();
           closeMenu();
         }}>
-        <option value="grid">一覧</option>
-        {#if singleActive || onEnterSingle}<option value="single">単画像</option>{/if}
-        {#if mangaActive || onEnterManga}<option value="manga">マンガ</option>{/if}
+        <option value="grid">{m.header.grid}</option>
+        {#if singleActive || onEnterSingle}<option value="single">{m.header.single}</option>{/if}
+        {#if mangaActive || onEnterManga}<option value="manga">{m.header.manga}</option>{/if}
       </select>
     </label>
   {/if}
   {#if cols > 0 && !mangaActive && !singleActive}
-    <label class="view-choice">列数
-      <select aria-label="一覧の列数" value={cols} onchange={(event) => selectCols(Number(event.currentTarget.value))}>
-        {#each COL_STEPS as c}<option value={c}>{c}列</option>{/each}
+    <label class="view-choice">{m.header.columns}
+      <select aria-label={m.header.columnsLabel} value={cols} onchange={(event) => selectCols(Number(event.currentTarget.value))}>
+        {#each COL_STEPS as c}<option value={c}>{m.header.colsN(c)}</option>{/each}
       </select>
     </label>
   {/if}
   {#if onToggleOpenMode && !poolMode && !reorderMode && !mangaActive && !singleActive}
-    <label class="view-choice">画像クリック
-      <select aria-label="画像クリック時の開き方" value={openMode}
+    <label class="view-choice">{m.header.click}
+      <select aria-label={m.header.clickLabel} value={openMode}
         onchange={(event) => { if (event.currentTarget.value !== openMode) onToggleOpenMode?.(); }}>
-        <option value="single">単画像</option>
-        <option value="manga">マンガ</option>
+        <option value="single">{m.header.single}</option>
+        <option value="manga">{m.header.manga}</option>
       </select>
     </label>
   {/if}
@@ -296,13 +305,13 @@
 
 <header class:tag-list-open={tagListOpen}>
   <div class="header-main">
-    <a class="logo" href="/" aria-label="蔵 ホーム"><span class="logo-mark"><Icon name="archive" /></span><span class="logo-name">kura</span></a>
-    <nav class="primary-nav" aria-label="メインナビゲーション" use:revealCurrent={`${page.url.pathname}|${activeSection}|${poolMode}`}>
-      <a href="/?q=" onclick={(e) => { if (page.url.pathname === '/' && poolMode && onTogglePool && !e.ctrlKey && !e.metaKey && !e.shiftKey && !e.altKey) { e.preventDefault(); onTogglePool(); } }} class:current={page.url.pathname === '/' && !poolMode} aria-current={page.url.pathname === '/' && !poolMode ? 'page' : undefined}>画像</a>
+    <a class="logo" href="/" aria-label={m.header.home}><span class="logo-mark"><Icon name="archive" /></span><span class="logo-name">kura</span></a>
+    <nav class="primary-nav" aria-label={m.header.mainNav} use:revealCurrent={`${page.url.pathname}|${activeSection}|${poolMode}`}>
+      <a href="/?q=" onclick={(e) => { if (page.url.pathname === '/' && poolMode && onTogglePool && !e.ctrlKey && !e.metaKey && !e.shiftKey && !e.altKey) { e.preventDefault(); onTogglePool(); } }} class:current={page.url.pathname === '/' && !poolMode} aria-current={page.url.pathname === '/' && !poolMode ? 'page' : undefined}>{m.header.navImages}</a>
       <a href="/?mode=pools" onclick={(e) => { if (page.url.pathname === '/' && !poolMode && onTogglePool && !e.ctrlKey && !e.metaKey && !e.shiftKey && !e.altKey) { e.preventDefault(); onTogglePool(); } }} class:current={page.url.pathname === '/' && poolMode} aria-current={page.url.pathname === '/' && poolMode ? 'page' : undefined}>Pool</a>
-      <a href="/tags" class:current={page.url.pathname === '/tags'} aria-current={page.url.pathname === '/tags' ? 'page' : undefined}>タグ</a>
-      <a href="/tags/manage" data-sveltekit-preload-code="viewport" class:current={page.url.pathname.startsWith('/tags/')} aria-current={page.url.pathname.startsWith('/tags/') ? 'page' : undefined}>タグ管理</a>
-      <a href="/artists" data-sveltekit-preload-code="viewport" class:current={(activeSection === 'artists' || page.url.pathname === '/artists')} aria-current={(activeSection === 'artists' || page.url.pathname === '/artists') ? 'page' : undefined}>アーティスト</a>
+      <a href="/tags" class:current={page.url.pathname === '/tags'} aria-current={page.url.pathname === '/tags' ? 'page' : undefined}>{m.header.navTags}</a>
+      <a href="/tags/manage" data-sveltekit-preload-code="viewport" class:current={page.url.pathname.startsWith('/tags/')} aria-current={page.url.pathname.startsWith('/tags/') ? 'page' : undefined}>{m.header.navTagManage}</a>
+      <a href="/artists" data-sveltekit-preload-code="viewport" class:current={(activeSection === 'artists' || page.url.pathname === '/artists')} aria-current={(activeSection === 'artists' || page.url.pathname === '/artists') ? 'page' : undefined}>{m.header.navArtists}</a>
       {#each extensionNav as item (item.href)}<a href={item.href} data-sveltekit-preload-code="viewport" class:current={(!activeSection && page.url.pathname.startsWith(item.href))} aria-current={(!activeSection && page.url.pathname.startsWith(item.href)) ? 'page' : undefined}>{item.label}</a>{/each}
     </nav>
   {#if showSearch}<form class="search-form" onsubmit={(e) => { e.preventDefault(); submit(); }}>
@@ -312,87 +321,92 @@
       variant="header"
       inputType="search"
       bind:value={searchInput}
-      placeholder="タグ・キーワード / #ID"
+      placeholder={m.header.searchPlaceholder}
       limit={8}
       debounceMs={220}
       inertWhenClosed
       {deriveQuery}
       onPick={(sug) => applySuggestion(sug.names[0])}
     />
-    <button type="submit" aria-label="検索" title="検索"><Icon name="search" /></button>
+    <button type="submit" aria-label={m.header.search} title={m.header.search}><Icon name="search" /></button>
   </form>{/if}
     <!-- Gear: ops menu + mobile fallback for pool/reorder/bulk -->
     <div class="menu-host">
       <button
         type="button"
         class="icon-btn gear-btn"
-        aria-label="メニュー"
+        aria-label={m.header.menu}
         onclick={() => toggleMenu('gear')}
-        title="メニュー"
+        title={m.header.menu}
         aria-expanded={openMenu === 'gear'}
       >
         <Icon name="menu" />
       </button>
       {#if openMenu === 'gear'}
-        <div class="menu menu-gear" aria-label="メニュー">
+        <div class="menu menu-gear" aria-label={m.header.menu}>
           <div class="menu-group">
-            <label class="menu-item">タグの表示言語
-              <select aria-label="タグの表示言語" value={$tagLocale} onchange={changeTagLocale}>
-                <option value="ja">日本語</option><option value="en">English</option><option value="und">原名</option>
+            <label class="menu-item">{m.header.uiLanguage}
+              <select aria-label={m.header.uiLanguage} value={locale} onchange={changeUiLocale}>
+                <option value="en">English</option><option value="ja">日本語</option>
               </select>
             </label>
-            <a class="menu-item" href="/settings" onclick={closeMenu}>表示設定</a>
-            <a class="menu-item" href="/settings/backup" onclick={closeMenu}>バックアップ</a>
-            <a class="menu-item" href="/lab/collector" onclick={closeMenu}>新ライブラリを試す</a>
-            {#if page.data.sourceUrl}<a class="menu-item" href={page.data.sourceUrl} target="_blank" rel="noopener noreferrer" onclick={closeMenu}>ソースコード (AGPL-3.0) ↗</a>{/if}
-            <div class="menu-label">ページ</div>
+            <label class="menu-item">{m.header.tagLanguage}
+              <select aria-label={m.header.tagLanguage} value={$tagLocale} onchange={changeTagLocale}>
+                <option value="ja">日本語</option><option value="en">English</option><option value="und">{m.header.tagOriginal}</option>
+              </select>
+            </label>
+            <a class="menu-item" href="/settings" onclick={closeMenu}>{m.header.displaySettings}</a>
+            <a class="menu-item" href="/settings/backup" onclick={closeMenu}>{m.header.backup}</a>
+            <a class="menu-item" href="/lab/collector" onclick={closeMenu}>{m.header.tryCollector}</a>
+            {#if page.data.sourceUrl}<a class="menu-item" href={page.data.sourceUrl} target="_blank" rel="noopener noreferrer" onclick={closeMenu}>{m.header.sourceCode}</a>{/if}
+            <div class="menu-label">{m.header.pages}</div>
             <a class="menu-item" href="/tagger-dashboard" onclick={closeMenu}>
-              <span>tagger ダッシュボード</span>
+              <span>{m.header.taggerDashboard}</span>
             </a>
             {#if onToggleHideVerify}
               <button type="button" class="menu-item" class:active={hideVerify} onclick={() => { onToggleHideVerify(); closeMenu(); }}>
-                <span>検証pool 非表示</span>{#if hideVerify}<span class="chk">✓</span>{/if}
+                <span>{m.header.hideVerifyPools}</span>{#if hideVerify}<span class="chk">✓</span>{/if}
               </button>
             {/if}
           </div>
           <div class="menu-group mobile-only">
-            <div class="menu-label">モード</div>
+            <div class="menu-label">{m.header.modes}</div>
             {#if onToggleSafe}
               <button type="button" class="menu-item" class:active={safeMode} disabled={safePending} aria-busy={safePending} onclick={() => { onToggleSafe(); closeMenu(); }}>
-                <span>{safePending ? 'セーフモード切り替え中…' : 'セーフモード'}</span>{#if safeMode}<span class="chk">✓</span>{/if}
+                <span>{safePending ? m.header.safeModeSwitching : m.header.safeMode}</span>{#if safeMode}<span class="chk">✓</span>{/if}
               </button>
             {/if}
             {#if onTogglePool}
               <button type="button" class="menu-item" class:active={poolMode} onclick={() => { onTogglePool(); closeMenu(); }}>
-                <span>Pool一覧</span>{#if poolMode}<span class="chk">✓</span>{/if}
+                <span>{m.header.poolList}</span>{#if poolMode}<span class="chk">✓</span>{/if}
               </button>
             {/if}
             {#if onToggleReorder}
               <button type="button" class="menu-item" class:active={reorderMode} onclick={() => { onToggleReorder(); closeMenu(); }}>
-                <span>並び替え</span>{#if reorderMode}<span class="chk">✓</span>{/if}
+                <span>{m.header.reorder}</span>{#if reorderMode}<span class="chk">✓</span>{/if}
               </button>
             {/if}
             {#if onToggleBulk}
               <button type="button" class="menu-item" class:active={bulkMode} onclick={() => { onToggleBulk(); closeMenu(); }}>
-                <span>一括編集</span>{#if bulkMode}<span class="chk">✓</span>{/if}
+                <span>{m.header.bulkEdit}</span>{#if bulkMode}<span class="chk">✓</span>{/if}
               </button>
             {/if}
             <div class="menu-view-controls">{@render viewControls()}</div>
           </div>
           <div class="menu-group">
-            <div class="menu-label">タグ</div>
+            <div class="menu-label">{m.header.tagsGroup}</div>
             <a class="menu-item" href="/tags" onclick={closeMenu}>
-              <span>タグブラウズ</span>
+              <span>{m.header.tagBrowse}</span>
             </a>
-            <a class="menu-item" href="/artists" data-sveltekit-preload-code="viewport" onclick={closeMenu}><span>アーティスト</span></a>
+            <a class="menu-item" href="/artists" data-sveltekit-preload-code="viewport" onclick={closeMenu}><span>{m.header.navArtists}</span></a>
             <a class="menu-item" href="/tags/manage" data-sveltekit-preload-code="viewport" onclick={closeMenu}>
-              <span>タグ管理</span>
+              <span>{m.header.navTagManage}</span>
             </a>
           </div>
           <div class="menu-group">
-            <div class="menu-label">解析</div>
+            <div class="menu-label">{m.header.analysis}</div>
             <a class="menu-item" href="/similar" onclick={closeMenu}>
-              <span>類似画像</span>
+              <span>{m.header.similar}</span>
             </a>
           </div>
           <div class="menu-group">
@@ -404,19 +418,19 @@
             {/each}
             {#if hasLoraUI}
             <a class="menu-item" href="/lora" onclick={closeMenu}>
-              <span>LoRA 管理</span>
+              <span>{m.header.lora}</span>
             </a>
             {/if}
           </div>
           <div class="menu-group">
-            <div class="menu-label">アカウント</div>
+            <div class="menu-label">{m.header.account}</div>
             {#if $currentUser}
               <div class="menu-item" title={$currentUser.name}>{$currentUser.email ?? $currentUser.name}</div>
               <form method="POST" action="/logout">
-                <button type="submit" class="menu-item" style="width:100%;text-align:left">サインアウト</button>
+                <button type="submit" class="menu-item" style="width:100%;text-align:left">{m.header.signOut}</button>
               </form>
             {:else}
-              <a class="menu-item" href="/login" onclick={closeMenu}><span>サインイン</span></a>
+              <a class="menu-item" href="/login" onclick={closeMenu}><span>{m.header.signIn}</span></a>
             {/if}
           </div>
           {#if page.data.navigationLinks?.length}
@@ -442,26 +456,26 @@
 
   </div>
   {#if hasViewControls}
-  <div class="header-right" aria-label="表示と絞り込み">
+  <div class="header-right" aria-label={m.header.viewAndFilter}>
     {#if onSort && sortKeys.length}
-      <label class="view-choice sort-control"><span class="sort-label">並び順</span>
+      <label class="view-choice sort-control"><span class="sort-label">{m.header.sortOrder}</span>
         <span class="sort-picker">
         <span class="sort-summary" aria-hidden="true">{sortKeys.find(option => option.key === sort)?.label} {dir === 'asc' ? '↑' : '↓'}<span class="sort-caret">▾</span></span>
-        <select aria-label="表示順" value={`${sort}:${dir}`}
+        <select aria-label={m.header.sortOrderLabel} value={`${sort}:${dir}`}
           onchange={(event) => {
             const [key, direction] = event.currentTarget.value.split(':');
             onSort?.(key, direction === 'asc' ? 'asc' : 'desc');
           }}>
           {#each sortKeys as option}
-            <option value={`${option.key}:desc`}>{option.label} ↓ 降順</option>
-            <option value={`${option.key}:asc`}>{option.label} ↑ 昇順</option>
+            <option value={`${option.key}:desc`}>{option.label} ↓ {m.header.desc}</option>
+            <option value={`${option.key}:asc`}>{option.label} ↑ {m.header.asc}</option>
           {/each}
         </select>
         </span>
       </label>
     {:else if sort && ['id', 'updated', 'page'].includes(sort)}
-      <span class="view-choice sort-control" aria-label="現在の表示順"><span class="sort-label">並び順</span>
-        <span class="sort-value">{sort === 'page' ? 'ページ' : sort === 'updated' ? '更新' : 'ID'} {dir === 'asc' ? '↑' : '↓'}{' '}<span class="sort-direction-text">{dir === 'asc' ? '昇順' : '降順'}</span></span>
+      <span class="view-choice sort-control" aria-label={m.header.currentSort}><span class="sort-label">{m.header.sortOrder}</span>
+        <span class="sort-value">{sort === 'page' ? m.header.sortPage : sort === 'updated' ? m.header.sortUpdated : 'ID'} {dir === 'asc' ? '↑' : '↓'}{' '}<span class="sort-direction-text">{dir === 'asc' ? m.header.asc : m.header.desc}</span></span>
       </span>
     {/if}
     <!-- Filter popover: type (radio) + favorite (checkbox) -->
@@ -469,54 +483,54 @@
       <button
         type="button"
         class="icon-btn filter-btn"
-        aria-label="絞り込み"
+        aria-label={m.header.filter}
         class:active={filterActive}
         onclick={() => toggleMenu('filter')}
-        title="絞り込み"
+        title={m.header.filter}
         aria-expanded={openMenu === 'filter'}
       >
         <Icon name="filter" />
-        {#if filterActive}<span class="dot"></span>{/if}<span class="control-label">絞り込み</span>
+        {#if filterActive}<span class="dot"></span>{/if}<span class="control-label">{m.header.filter}</span>
       </button>
       {#if openMenu === 'filter'}
-        <div class="menu menu-filter" aria-label="絞り込み">
+        <div class="menu menu-filter" aria-label={m.header.filter}>
           {#if onSort && sortKeys.length}
             <div class="menu-group menu-sort">
-              <div class="menu-label">並び順</div>
+              <div class="menu-label">{m.header.sortOrder}</div>
               <div class="sort-options">
                 {#each sortKeys as option}
                   <button type="button" class="sort-option" class:active={sort === option.key}
                     aria-pressed={sort === option.key}
-                    aria-label={`${option.label}で並び替え${sort === option.key ? (dir === 'desc' ? '・降順' : '・昇順') : ''}`}
+                    aria-label={m.header.sortBy(option.label, sort === option.key ? dir : null)}
                     onclick={() => selectSort(option.key)}>{option.label}{sort === option.key ? (dir === 'desc' ? '↓' : '↑') : ''}</button>
                 {/each}
               </div>
               {#if showEmpty !== null && onToggleEmpty}
-                <label class="menu-item"><input type="checkbox" checked={showEmpty} onchange={onToggleEmpty}>未取得も表示</label>
+                <label class="menu-item"><input type="checkbox" checked={showEmpty} onchange={onToggleEmpty}>{m.header.showEmpty}</label>
               {/if}
             </div>
           {/if}
-          {#if totalBytes > 0}<div class="menu-label storage-total">容量 {formatBytes(totalBytes)}</div>{/if}
+          {#if totalBytes > 0}<div class="menu-label storage-total">{m.header.storage} {formatBytes(totalBytes)}</div>{/if}
           <div class="menu-group">
-            <div class="menu-label">種類</div>
-            {#if activeType === 'custom'}<div class="menu-label">検索欄で詳細指定中</div>{/if}
+            <div class="menu-label">{m.header.type}</div>
+            {#if activeType === 'custom'}<div class="menu-label">{m.header.typeCustom}</div>{/if}
             <label class="menu-item">
               <input type="radio" name="type-filter" checked={activeType === null} onchange={() => { setTypeFilter(null); closeMenu(); }}>
-              <span>すべて</span>
+              <span>{m.header.typeAll}</span>
             </label>
             <label class="menu-item">
               <input type="radio" name="type-filter" checked={activeType === 'image'} onchange={() => { setTypeFilter('image'); closeMenu(); }}>
-              <span>画像のみ</span>
+              <span>{m.header.typeImages}</span>
             </label>
             <label class="menu-item">
               <input type="radio" name="type-filter" checked={activeType === 'video'} onchange={() => { setTypeFilter('video'); closeMenu(); }}>
-              <span>動画のみ</span>
+              <span>{m.header.typeVideos}</span>
             </label>
           </div>
           <div class="menu-group">
             <label class="menu-item">
               <input type="checkbox" checked={favActive} onchange={() => { toggleFavFilter(); closeMenu(); }}>
-              <span class="fav-star">★</span> <span>お気に入りのみ</span>
+              <span class="fav-star">★</span> <span>{m.header.favoritesOnly}</span>
             </label>
           </div>
         </div>
@@ -527,39 +541,39 @@
 
     <!-- Safe mode: shield icon -->
     {#if onToggleSafe}
-      <button class="icon-btn safe-toggle desk-only" class:active={safeMode} disabled={safePending} aria-busy={safePending} onclick={onToggleSafe} title={safeMode ? 'セーフモード ON (クリックで OFF)' : 'セーフモード OFF (クリックで ON)'}>
+      <button class="icon-btn safe-toggle desk-only" class:active={safeMode} disabled={safePending} aria-busy={safePending} onclick={onToggleSafe} title={safeMode ? m.header.safeOnTitle : m.header.safeOffTitle}>
         <Icon name="shield" />
-      <span class="control-label">{safePending ? '切り替え中…' : 'セーフ'}</span></button>
+      <span class="control-label">{safePending ? m.header.switching : m.header.safe}</span></button>
     {/if}
 
     <!-- 検証用 pool 非表示: フィルタ(漏斗)アイコン — pool 一覧でのみ表示 -->
     {#if onToggleHideVerify}
-      <button class="icon-btn verify-toggle desk-only" class:active={hideVerify} onclick={onToggleHideVerify} title={hideVerify ? '検証用 pool: 非表示中 (クリックで表示)' : '検証用 pool: 表示中 (クリックで非表示)'}>
+      <button class="icon-btn verify-toggle desk-only" class:active={hideVerify} onclick={onToggleHideVerify} title={hideVerify ? m.header.verifyHiddenTitle : m.header.verifyShownTitle}>
         <Icon name="filter" />
       </button>
     {/if}
 
     {#if onTogglePool && page.url.pathname !== '/'}
       <button class="icon-btn pool-toggle desk-only" class:active={poolMode} onclick={onTogglePool}
-        title="検索結果をPool表示に切替" aria-label="検索結果のPool表示" aria-pressed={poolMode}>
+        title={m.header.poolViewTitle} aria-label={m.header.poolViewLabel} aria-pressed={poolMode}>
         <Icon name="pool" />
-        <span class="control-label">Pool表示</span>
+        <span class="control-label">{m.header.poolView}</span>
       </button>
     {/if}
     {#if onToggleReorder}
-      <button class="icon-btn reorder-toggle desk-only" class:active={reorderMode} onclick={onToggleReorder} title="並び替え">
+      <button class="icon-btn reorder-toggle desk-only" class:active={reorderMode} onclick={onToggleReorder} title={m.header.reorder}>
         <Icon name="sort" />
-      <span class="control-label">並び替え</span></button>
+      <span class="control-label">{m.header.reorder}</span></button>
     {/if}
     {#if onToggleBulk}
-      <button class="icon-btn bulk-toggle desk-only" class:active={bulkMode} onclick={onToggleBulk} title="一括編集" aria-label="一括編集" aria-pressed={bulkMode}>
+      <button class="icon-btn bulk-toggle desk-only" class:active={bulkMode} onclick={onToggleBulk} title={m.header.bulkEdit} aria-label={m.header.bulkEdit} aria-pressed={bulkMode}>
         <Icon name="select" />
-      <span class="control-label">一括編集</span></button>
+      <span class="control-label">{m.header.bulkEdit}</span></button>
     {/if}
 
 
     {#if tagPost}<ViewerTagList post={tagPost} bind:open={tagListOpen} />{/if}
-    {#if total != null}<span class="total-count">{total.toLocaleString()} <span>件</span></span>{/if}
+    {#if total != null}<span class="total-count">{total.toLocaleString()} <span>{m.header.itemsUnit(total)}</span></span>{/if}
   </div>
   {/if}
 </header>

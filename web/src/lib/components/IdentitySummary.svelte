@@ -3,14 +3,17 @@
   import { identityDisplay, identityGroups } from '#lib/identityDisplay.ts';
   import { tagLocale, tagDisplayName } from '#lib/tagLocale.ts';
   import type { Post, MicroTag } from '#lib/types.ts';
+  import { t } from '#lib/i18n/index.ts';
+  const m = t();
+  const im = m.pages.identity;
 
   let { post }: { post: Post } = $props();
   const preferences = identityDisplay();
   const locale = tagLocale();
-  const groups = $derived(identityGroups(post.tags ?? [], $preferences));
+  const groups = $derived(identityGroups(post.tags ?? [], $preferences, m));
   const visible = $derived(groups.length > 0 && $preferences.viewer);
   const label = (tag: MicroTag) => tagDisplayName(tag.names[0], tag.localizedNames, $locale);
-  const fullText = $derived(groups.map(group => `${group.label}: ${group.tags.map(label).join('・')}`).join('\n'));
+  const fullText = $derived(groups.map(group => `${group.label}: ${group.tags.map(label).join(im.separator)}`).join('\n'));
   let expanded = $state(false);
   let dialog = $state<HTMLDialogElement>();
   let trigger = $state<HTMLButtonElement>();
@@ -29,25 +32,25 @@
 
 {#if visible}
   <button type="button" class="identity-summary"
-    bind:this={trigger} title={fullText} aria-label={`画像 ${post.id} のアーティスト・キャラクター・作品をすべて表示`}
+    bind:this={trigger} title={fullText} aria-label={im.showAll(post.id)}
     onkeydown={(event) => event.stopPropagation()}
     aria-haspopup="dialog" onclick={(event) => { event.stopPropagation(); expanded = true; }}>
     {#each groups as group (group.key)}
       <span class="identity-row" data-category={group.key}>
         <span class="category-icon" title={group.label}><Icon name={group.icon} /></span>
-        <span class="identity-names">{group.tags.slice(0, $preferences.namesPerCategory).map(label).join('・')}</span>
-        {#if group.tags.length > $preferences.namesPerCategory}<span class="identity-more">ほか{group.tags.length - $preferences.namesPerCategory}件</span>{/if}
+        <span class="identity-names">{group.tags.slice(0, $preferences.namesPerCategory).map(label).join(im.separator)}</span>
+        {#if group.tags.length > $preferences.namesPerCategory}<span class="identity-more">{im.more(group.tags.length - $preferences.namesPerCategory)}</span>{/if}
       </span>
     {/each}
   </button>
 {/if}
 
 {#if expanded}
-  <dialog bind:this={dialog} use:portal class="identity-dialog" aria-label={`画像 ${post.id} のタグ情報`}
+  <dialog bind:this={dialog} use:portal class="identity-dialog" aria-label={im.dialogLabel(post.id)}
     onpointerdown={(event) => event.stopPropagation()}
     onclose={close} onkeydown={(event) => event.stopPropagation()} onwheel={(event) => event.stopPropagation()}>
-    <div class="dialog-heading"><div><span class="eyebrow">画像 #{post.id}</span><h2>アーティスト・キャラクター・作品</h2></div>
-      <button class="dialog-close" type="button" onclick={() => dialog?.close()} aria-label="タグ情報を閉じる">×</button>
+    <div class="dialog-heading"><div><span class="eyebrow">{im.imageN(post.id)}</span><h2>{im.heading}</h2></div>
+      <button class="dialog-close" type="button" onclick={() => dialog?.close()} aria-label={im.close}>×</button>
     </div>
     {#each groups as group (group.key)}
       <section aria-label={group.label}><h3>{group.label} <span>{group.tags.length}</span></h3>

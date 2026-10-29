@@ -1,0 +1,7 @@
+# The web image is built from web/ (compose.yaml), where the root .dockerignore does not apply.
+# Settings reach the container through env_file; the build gets ORIGIN as an argument.
+.env*
+!.env*example
+node_modules
+build
+.svelte-kit

@@ -1,5 +1,7 @@
 <script lang="ts">
   import { collectorApi, CollectorApiError } from './api';
+  import { t } from '#lib/i18n/index.ts';
+  const m = t();
   let { disabled=false, onBusy, onRestored }: {
     disabled?: boolean;
     onBusy: (value:boolean)=>void;
@@ -11,26 +13,26 @@
   let error=$state('');
   async function restore() {
     if (!file || disabled || restoring) return;
-    if (file.size>512*1024*1024) { error='ZIP全体で512MiBまでです。';return; }
-    restoring=true;onBusy(true);error='';message='ZIPを送信・検証して復元しています。この画面を開いたままお待ちください。';
+    if (file.size>512*1024*1024) { error=m.collector.restore.tooLarge;return; }
+    restoring=true;onBusy(true);error='';message=m.collector.restore.working;
     try {
-      const result=await collectorApi('exchange/restore',{method:'POST',headers:{'content-type':'application/zip'},body:file});
+      const result=await collectorApi('exchange/restore',{method:'POST',headers:{'content-type':'application/zip'},body:file},m);
       file=null;
       await onRestored(result);
-      message=`${result.entries}ページを復元しました。`;
+      message=m.collector.restore.done(result.entries);
     } catch(e) {
       message='';
-      error=e instanceof CollectorApiError ? e.message : '結果を確認できませんでした。一覧を再読み込みし、復元済みか確認してください。';
+      error=e instanceof CollectorApiError ? e.message : m.collector.restore.unconfirmed;
     } finally { restoring=false;onBusy(false); }
   }
 </script>
 
 <details class="restore">
-  <summary>作品ZIPから復元</summary>
-  <p>Kuraで書き出した作品を、名前・ページ順・タグ履歴ごと復元します。空の新ライブラリが対象です。既存データへの追加・上書きは行いません。</p>
-  <label>作品ZIPを選択 <input type="file" accept=".zip,application/zip" disabled={disabled || restoring}
+  <summary>{m.collector.restore.summary}</summary>
+  <p>{m.collector.restore.lead}</p>
+  <label>{m.collector.restore.choose} <input type="file" accept=".zip,application/zip" disabled={disabled || restoring}
     onchange={(e)=>{file=e.currentTarget.files?.[0]??null;error='';message='';}} /></label>
-  <div class="actions"><button disabled={disabled || restoring || !file} onclick={restore}>{restoring ? '復元中…' : 'このZIPを復元'}</button><small>ZIP全体で512MiBまで</small></div>
+  <div class="actions"><button disabled={disabled || restoring || !file} onclick={restore}>{restoring ? m.collector.restore.restoring : m.collector.restore.restoreThis}</button><small>{m.collector.restore.limit}</small></div>
   {#if message}<p role="status" aria-live="polite">{message}</p>{/if}
   {#if error}<p role="alert" class="error">{error}</p>{/if}
 </details>

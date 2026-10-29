@@ -10,8 +10,10 @@
   import TagSuggestInput from '#lib/components/TagSuggestInput.svelte';
   import type { TagDetail, TagCategory, TagLink } from '#lib/types.ts';
   import type { PageData } from './$types';
+  import { t } from '#lib/i18n/index.ts';
 
   let { data }: { data: PageData } = $props();
+  const m = t();
 
   const LIMIT = 60;
 
@@ -136,7 +138,7 @@
   }
 
   async function addLink(tag: TagDetail) {
-    if (!nlUrl.trim()) { linksError = 'URL を入力してください'; return; }
+    if (!nlUrl.trim()) { linksError = m.tags.edit.urlRequired; return; }
     nlSaving = true; linksError = '';
     try {
       const created = await addTagLink(tag.names[0], {
@@ -186,7 +188,7 @@
   }
 
   function uncLabel(u: 0 | 1 | null): string {
-    return u === 1 ? '無修正' : u === 0 ? '修正' : '不明';
+    return u === 1 ? m.tags.edit.uncensored : u === 0 ? m.tags.edit.censored : m.tags.edit.unknown;
   }
 
   function closeAction() {
@@ -212,7 +214,7 @@
     if (searchTimer) clearTimeout(searchTimer);
     loading = true; readError = '';
     try { await goto(editorHref(cat, cleanup), { reset: false }); }
-    catch { readError = 'タグを読み込めませんでした。もう一度お試しください。'; }
+    catch { readError = m.tags.edit.readFailed; }
     finally { loading = false; }
   }
   function setCategory(cat: string) { void doSearch(cat); }
@@ -228,7 +230,7 @@
       if (epoch !== generation) return;
       tags = [...tags, ...(d.results ?? [])]; total = d.total ?? 0;
     } catch (e) {
-      if (epoch === generation && !(e instanceof DOMException && e.name === 'AbortError')) readError = '追加のタグを読み込めませんでした。再試行してください。';
+      if (epoch === generation && !(e instanceof DOMException && e.name === 'AbortError')) readError = m.tags.edit.moreFailed;
     } finally { if (epoch === generation) loadMoreLoading = false; }
   }
   onDestroy(() => { if (searchTimer) clearTimeout(searchTimer); moreController?.abort(); });
@@ -245,12 +247,12 @@
 
   async function saveEdit(tag: TagDetail) {
     const names = editNames.map(n => n.trim()).filter(Boolean);
-    if (!names.length) { editError = '名前は必須です'; return; }
+    if (!names.length) { editError = m.tags.edit.nameRequired; return; }
     const localizedNames: Record<string, string> = Object.create(null);
     for (const row of editLocalizations) {
       const locale = row.locale.trim().toLowerCase();
       if (!locale || !row.name.trim() || Object.hasOwn(localizedNames, locale)) {
-        editError = '言語コードと表示名を入力し、同じ言語を重複させないでください。'; return;
+        editError = m.tags.edit.localeInvalid; return;
       }
       localizedNames[locale] = row.name.trim();
     }
@@ -267,7 +269,7 @@
       if (idx >= 0) tags[idx] = updated;
       closeAction();
     } catch (e: any) {
-      editError = e.message ?? '保存失敗';
+      editError = e.message ?? m.tags.edit.saveFailed;
     } finally {
       editSaving = false;
     }
@@ -280,7 +282,7 @@
   }
 
   async function doMerge(tag: TagDetail) {
-    if (!mergeTarget.trim()) { mergeError = 'マージ先を指定してください'; return; }
+    if (!mergeTarget.trim()) { mergeError = m.tags.edit.mergeTargetRequired; return; }
     mergeConfirming = true;
     mergeError = '';
     try {
@@ -291,7 +293,7 @@
       if (tidx >= 0) tags[tidx] = updated;
       closeAction();
     } catch (e: any) {
-      mergeError = e.message ?? 'マージ失敗';
+      mergeError = e.message ?? m.tags.edit.mergeFailed;
       mergeConfirming = false;
     }
   }
@@ -307,40 +309,40 @@
       total = Math.max(0, total - 1);
       closeAction();
     } catch (e: any) {
-      deleteError = e.message ?? '削除失敗';
+      deleteError = e.message ?? m.tags.edit.deleteFailed;
       deleteConfirming = false;
     }
   }
 </script>
 
-<svelte:head><title>タグ管理(編集) — 蔵</title></svelte:head>
+<svelte:head><title>{m.tags.edit.title}</title></svelte:head>
 
 <div class="page">
   <Header showSearch={false} />
-  <SectionTabs label="タグ管理の画面" tabs={[{label: "一覧",href:"/tags/manage",active:false},{label:"編集",href:"/tags/edit",active:true}]} />
+  <SectionTabs label={m.tags.common.tabsLabel} tabs={[{label: m.tags.common.tabList,href:"/tags/manage",active:false},{label:m.tags.common.tabEdit,href:"/tags/edit",active:true}]} />
   <div class="topbar">
-    <span class="title">タグ管理(編集)</span>
-    <a class="links-nav" href={data.returnTo}>{data.returnTo.startsWith('/artists') ? 'アーティストへ戻る →' : 'タグ一覧へ戻る →'}</a>
+    <span class="title">{m.tags.edit.heading}</span>
+    <a class="links-nav" href={data.returnTo}>{data.returnTo.startsWith('/artists') ? m.tags.edit.backToArtists : m.tags.edit.backToTags}</a>
     <div class="search-wrap">
       <input
         type="search"
         bind:value={searchQ}
         oninput={onSearchInput}
-        aria-label="編集するタグを検索" placeholder="タグ名で検索…"
+        aria-label={m.tags.edit.searchLabel} placeholder={m.tags.common.searchPlaceholder}
         autocomplete="off"
         autocapitalize="none"
         autocorrect="off"
         spellcheck="false"
       />
     </div>
-    <label>整理対象 <select aria-label="編集画面の整理対象" value={data.cleanup} onchange={e => void doSearch(activeCategory, readTagCleanup(e.currentTarget.value))}><option value="all">すべて</option><option value="unused">未使用</option><option value="no_alias">別名なし</option></select></label>
-    {#if data.target}<span class="stat">選択したタグ</span>{/if}
-    <span class="stat">{total.toLocaleString()} タグ</span>
+    <label>{m.tags.common.cleanup} <select aria-label={m.tags.edit.cleanupLabel} value={data.cleanup} onchange={e => void doSearch(activeCategory, readTagCleanup(e.currentTarget.value))}><option value="all">{m.tags.common.all}</option><option value="unused">{m.tags.common.cleanupUnused}</option><option value="no_alias">{m.tags.common.cleanupNoAlias}</option></select></label>
+    {#if data.target}<span class="stat">{m.tags.edit.selected}</span>{/if}
+    <span class="stat">{m.tags.common.tagsCount(total)}</span>
   </div>
 
   {#if readError}<p role="alert">{readError}</p>{/if}
-    <nav class="cat-bar" aria-label="編集するタグのカテゴリ" use:categoryTabScroll={activeCategory}>
-      <button data-category="" aria-pressed={activeCategory === ''} class="cat-chip" class:active={activeCategory === ''} onclick={() => setCategory('')}>すべて</button>
+    <nav class="cat-bar" aria-label={m.tags.edit.categoryNav} use:categoryTabScroll={activeCategory}>
+      <button data-category="" aria-pressed={activeCategory === ''} class="cat-chip" class:active={activeCategory === ''} onclick={() => setCategory('')}>{m.tags.common.all}</button>
       {#each categories as cat}
         <button
           class="cat-chip" data-category={cat.name} aria-pressed={activeCategory === cat.name}
@@ -352,16 +354,16 @@
     </nav>
   <div class="scroll-area">
     {#if loading}
-      <div class="status-msg">読み込み中…</div>
+      <div class="status-msg">{m.tags.common.loading}</div>
     {:else if tags.length === 0}
-      <div class="status-msg">タグが見つかりません</div>
+      <div class="status-msg">{m.tags.edit.notFound}</div>
     {:else}
       <table class="tag-table">
         <thead>
           <tr>
-            <th class="col-name">名前</th>
-            <th class="col-usages">件数</th>
-            <th class="col-actions">操作</th>
+            <th class="col-name">{m.tags.edit.colName}</th>
+            <th class="col-usages">{m.tags.edit.colUsages}</th>
+            <th class="col-actions">{m.tags.edit.colActions}</th>
           </tr>
         </thead>
         {#each grouped as section (section.category)}
@@ -383,10 +385,10 @@
                 </td>
                 <td class="col-usages">{tag.usages.toLocaleString()}</td>
                 <td class="col-actions">
-                  <button class="act-btn" class:on={isActive && actionMode === 'edit'} onclick={() => openAction(tag, 'edit')}>編集</button>
-                  <button class="act-btn" class:on={isActive && actionMode === 'merge'} onclick={() => openAction(tag, 'merge')}>合併</button>
-                  <button class="act-btn" class:on={isActive && actionMode === 'links'} onclick={() => openAction(tag, 'links')}>リンク</button>
-                  <button class="act-btn red" class:on={isActive && actionMode === 'delete'} onclick={() => openAction(tag, 'delete')}>削除</button>
+                  <button class="act-btn" class:on={isActive && actionMode === 'edit'} onclick={() => openAction(tag, 'edit')}>{m.tags.edit.actEdit}</button>
+                  <button class="act-btn" class:on={isActive && actionMode === 'merge'} onclick={() => openAction(tag, 'merge')}>{m.tags.edit.actMerge}</button>
+                  <button class="act-btn" class:on={isActive && actionMode === 'links'} onclick={() => openAction(tag, 'links')}>{m.tags.edit.actLinks}</button>
+                  <button class="act-btn red" class:on={isActive && actionMode === 'delete'} onclick={() => openAction(tag, 'delete')}>{m.tags.edit.actDelete}</button>
                 </td>
               </tr>
 
@@ -397,39 +399,39 @@
                   {#if actionMode === 'edit'}
                     <div class="panel">
                       <div class="panel-col">
-                        <div class="panel-label">名前 / エイリアス</div>
+                        <div class="panel-label">{m.tags.edit.namesLabel}</div>
                         {#each editNames as _n, i}
                           <div class="name-row">
-                            <span class="badge" class:alias={i > 0}>{i === 0 ? '主' : '別'}</span>
-                            <input class="name-input" bind:value={editNames[i]} placeholder={i === 0 ? '主名 (必須)' : 'エイリアス'} />
+                            <span class="badge" class:alias={i > 0}>{i === 0 ? m.tags.edit.primaryBadge : m.tags.edit.aliasBadge}</span>
+                            <input class="name-input" bind:value={editNames[i]} placeholder={i === 0 ? m.tags.edit.primaryPlaceholder : m.tags.edit.aliasPlaceholder} />
                             {#if i > 0}<button class="rm-btn" onclick={() => removeAlias(i)}>×</button>{/if}
                           </div>
                         {/each}
-                        <button class="link-btn" onclick={addAlias}>+ エイリアス追加</button>
+                        <button class="link-btn" onclick={addAlias}>{m.tags.edit.addAlias}</button>
                       </div>
                       <div class="panel-col">
-                        <div class="panel-label">言語別表示名（正式名・aliasは変更しません）</div>
+                        <div class="panel-label">{m.tags.edit.localizedLabel}</div>
                         {#each editLocalizations as row, i}
                           <div class="name-row">
-                            <input aria-label="言語コード" class="name-input" bind:value={row.locale} placeholder="ja / en / zh-hant" maxlength="35" />
-                            <input aria-label="言語別表示名" class="name-input" bind:value={row.name} placeholder="表示名" maxlength="128" />
-                            <button class="rm-btn" aria-label="表示名を削除" onclick={() => editLocalizations = editLocalizations.filter((_, idx) => idx !== i)}>×</button>
+                            <input aria-label={m.tags.edit.localeCode} class="name-input" bind:value={row.locale} placeholder="ja / en / zh-hant" maxlength="35" />
+                            <input aria-label={m.tags.edit.localizedName} class="name-input" bind:value={row.name} placeholder={m.tags.edit.displayNamePlaceholder} maxlength="128" />
+                            <button class="rm-btn" aria-label={m.tags.edit.removeLocalized} onclick={() => editLocalizations = editLocalizations.filter((_, idx) => idx !== i)}>×</button>
                           </div>
                         {/each}
-                        <button class="link-btn" onclick={() => editLocalizations = [...editLocalizations, { locale: '', name: '' }]}>+ 言語を追加</button>
+                        <button class="link-btn" onclick={() => editLocalizations = [...editLocalizations, { locale: '', name: '' }]}>{m.tags.edit.addLocale}</button>
                       </div>
                       <div class="panel-col">
-                        <div class="panel-label">カテゴリ</div>
+                        <div class="panel-label">{m.tags.edit.category}</div>
                         <select class="panel-select" bind:value={editCategory}>
                           {#each categories as cat}<option value={cat.name}>{cat.name}</option>{/each}
                         </select>
-                        <div class="panel-label" style="margin-top:0.5rem">説明</div>
-                        <textarea class="panel-textarea" bind:value={editDesc} rows="2" placeholder="任意"></textarea>
+                        <div class="panel-label" style="margin-top:0.5rem">{m.tags.edit.description}</div>
+                        <textarea class="panel-textarea" bind:value={editDesc} rows="2" placeholder={m.tags.edit.optional}></textarea>
                       </div>
                       <div class="panel-col panel-col--btns">
                         {#if editError}<div class="err">{editError}</div>{/if}
-                        <button class="save-btn" disabled={editSaving} onclick={() => saveEdit(tag)}>{editSaving ? '…' : '保存'}</button>
-                        <button class="cancel-btn" onclick={closeAction}>キャンセル</button>
+                        <button class="save-btn" disabled={editSaving} onclick={() => saveEdit(tag)}>{editSaving ? '…' : m.tags.edit.save}</button>
+                        <button class="cancel-btn" onclick={closeAction}>{m.tags.edit.cancel}</button>
                       </div>
                     </div>
                   {/if}
@@ -437,21 +439,21 @@
                   <!-- merge -->
                   {#if actionMode === 'merge'}
                     <div class="panel panel--row">
-                      <span class="panel-label">「{tag.names[0]}」を別タグへ合併（元タグは削除）</span>
+                      <span class="panel-label">{m.tags.edit.mergeLabel(tag.names[0])}</span>
                       <TagSuggestInput
                         variant="merge"
                         plainAttrs
                         colored={false}
                         bind:value={mergeTarget}
-                        placeholder="合併先タグ名"
+                        placeholder={m.tags.edit.mergePlaceholder}
                         limit={8}
                         debounceMs={220}
                         onInput={() => (mergeConfirming = false)}
                         onPick={(sug) => applyMergeSuggestion(sug.names[0])}
                       />
                       {#if mergeError}<div class="err">{mergeError}</div>{/if}
-                      <button class="save-btn red" disabled={mergeConfirming} onclick={() => doMerge(tag)}>{mergeConfirming ? '…' : '実行'}</button>
-                      <button class="cancel-btn" onclick={closeAction}>キャンセル</button>
+                      <button class="save-btn red" disabled={mergeConfirming} onclick={() => doMerge(tag)}>{mergeConfirming ? '…' : m.tags.edit.run}</button>
+                      <button class="cancel-btn" onclick={closeAction}>{m.tags.edit.cancel}</button>
                     </div>
                   {/if}
 
@@ -459,15 +461,15 @@
                   {#if actionMode === 'delete'}
                     <div class="panel panel--row">
                       {#if tag.usages > 0}
-                        <span class="warn">「{tag.names[0]}」は {tag.usages} 件の投稿に使用中。削除すると全投稿からタグが除去されます。</span>
+                        <span class="warn">{m.tags.edit.inUseWarn(tag.names[0], tag.usages)}</span>
                         {#if deleteError}<div class="err">{deleteError}</div>{/if}
-                        <button class="save-btn red" disabled={deleteConfirming} onclick={() => doDelete(tag, true)}>{deleteConfirming ? '…' : '強制削除'}</button>
+                        <button class="save-btn red" disabled={deleteConfirming} onclick={() => doDelete(tag, true)}>{deleteConfirming ? '…' : m.tags.edit.forceDelete}</button>
                       {:else}
-                        <span>「{tag.names[0]}」を削除しますか？</span>
+                        <span>{m.tags.edit.confirmDelete(tag.names[0])}</span>
                         {#if deleteError}<div class="err">{deleteError}</div>{/if}
-                        <button class="save-btn red" disabled={deleteConfirming} onclick={() => doDelete(tag, false)}>{deleteConfirming ? '…' : '削除'}</button>
+                        <button class="save-btn red" disabled={deleteConfirming} onclick={() => doDelete(tag, false)}>{deleteConfirming ? '…' : m.tags.edit.delete}</button>
                       {/if}
-                      <button class="cancel-btn" onclick={closeAction}>キャンセル</button>
+                      <button class="cancel-btn" onclick={closeAction}>{m.tags.edit.cancel}</button>
                     </div>
                   {/if}
 
@@ -475,12 +477,12 @@
                   {#if actionMode === 'links'}
                     <div class="panel panel--links">
                       {#if linksLoading}
-                        <div class="panel-label">読み込み中…</div>
+                        <div class="panel-label">{m.tags.common.loading}</div>
                       {:else}
                         {#if links.length > 0}
                           <table class="links-tbl">
                             <thead>
-                              <tr><th>platform</th><th>URL</th><th>censor</th><th>検証</th><th></th></tr>
+                              <tr><th>platform</th><th>URL</th><th>censor</th><th>{m.tags.edit.colVerified}</th><th></th></tr>
                             </thead>
                             <tbody>
                               {#each links as l (l.id)}
@@ -489,11 +491,11 @@
                                   <td class="lk-url"><a href={l.url} target="_blank" rel="noopener noreferrer">{l.handle ?? l.url}</a></td>
                                   <td>
                                     <button class="unc-badge" class:unc={l.uncensored === 1} class:cen={l.uncensored === 0}
-                                      title="クリックで 不明→無修正→修正 を切替" onclick={() => cycleUncensored(l)}>{uncLabel(l.uncensored)}</button>
+                                      title={m.tags.edit.uncensoredTitle} onclick={() => cycleUncensored(l)}>{uncLabel(l.uncensored)}</button>
                                   </td>
                                   <td>
                                     <button class="ver-badge" class:on={l.verified}
-                                      title="サンプル実証済みか" onclick={() => toggleVerified(l)}>{l.verified ? '✓実証' : '推定'}</button>
+                                      title={m.tags.edit.verifiedTitle} onclick={() => toggleVerified(l)}>{l.verified ? m.tags.edit.verified : m.tags.edit.estimated}</button>
                                   </td>
                                   <td><button class="rm-btn" onclick={() => removeLink(l)}>×</button></td>
                                 </tr>
@@ -501,7 +503,7 @@
                             </tbody>
                           </table>
                         {:else}
-                          <div class="panel-label">外部リンクは未登録</div>
+                          <div class="panel-label">{m.tags.edit.noLinks}</div>
                         {/if}
 
                         <div class="nl-form">
@@ -511,12 +513,12 @@
                           </select>
                           <input class="nl-url" bind:value={nlUrl} placeholder="URL" />
                           <select class="nl-sel" bind:value={nlUncensored}>
-                            <option value="unknown">不明</option>
-                            <option value="1">無修正</option>
-                            <option value="0">修正</option>
+                            <option value="unknown">{m.tags.edit.unknown}</option>
+                            <option value="1">{m.tags.edit.uncensored}</option>
+                            <option value="0">{m.tags.edit.censored}</option>
                           </select>
-                          <label class="nl-ver"><input type="checkbox" bind:checked={nlVerified} /> 実証</label>
-                          <button class="save-btn" disabled={nlSaving} onclick={() => addLink(tag)}>{nlSaving ? '…' : '追加'}</button>
+                          <label class="nl-ver"><input type="checkbox" bind:checked={nlVerified} /> {m.tags.edit.verify}</label>
+                          <button class="save-btn" disabled={nlSaving} onclick={() => addLink(tag)}>{nlSaving ? '…' : m.tags.edit.add}</button>
                         </div>
                       {/if}
                       {#if linksError}<div class="err">{linksError}</div>{/if}
@@ -533,7 +535,7 @@
       {#if tags.length < total}
         <div class="load-more-wrap">
           <button class="load-more-btn" disabled={loadMoreLoading} onclick={loadMore}>
-            {loadMoreLoading ? '読み込み中…' : `さらに読み込む (${tags.length} / ${total})`}
+            {loadMoreLoading ? m.tags.common.loading : m.tags.edit.loadMore(tags.length, total)}
           </button>
         </div>
       {/if}

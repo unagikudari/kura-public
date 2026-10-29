@@ -23,6 +23,10 @@
   import type { VariantStatus } from '#lib/api.ts';
   import type { Post, MicroTag } from '#lib/types.ts';
   import type { PageData } from './$types';
+  import { t } from '#lib/i18n/index.ts';
+
+  const m = t();
+  const pm = m.pages.post;
 
   let { data }: { data: PageData } = $props();
 
@@ -721,7 +725,7 @@
       .filter(p => hasTarget(p) && !vRemoveIds.has(p.id) && vPinStates[p.id]?.[t] !== 'present')
       .map(p => p.id);
     if (!targets.length) { vResult = { added: 0, removed: 0, locked: 0, fail: 0 }; return; }
-    if (!window.confirm(`${targets.length} 件 (付与済み・未選択) を「${t}」で施錠します。よろしいですか?`)) return;
+    if (!window.confirm(pm.lockConfirm(targets.length, t))) return;
     vApplying = true; vResult = null;
     try {
       const r = await putTagPinBulk(t, 'present', targets);
@@ -767,7 +771,7 @@
     const target = $verifyTarget;
     if (!target || vSelected === 0 || vApplying) return;
     const lockedIn = [...vRemoveIds].filter(id => vPinStates[id]?.[target] === 'present').length;
-    if (lockedIn > 0 && !window.confirm(`施錠状態の画像が ${lockedIn} 件含まれていますがよろしいですか?\n(削除すると施錠は解除され、負例 GT に置き換わります)`)) return;
+    if (lockedIn > 0 && !window.confirm(pm.lockedRemoveConfirm(lockedIn))) return;
     vApplying = true; vResult = null;
     vProgress = { done: 0, total: vAddIds.size + vRemoveIds.size };
     // 選択 Set が真実、posts (±20 の nearby 窓) はキャッシュに過ぎない。
@@ -823,7 +827,7 @@
       vFlashBox.set({ postId: target.id, name, kind: 'removed' });
     } catch (e) {
       console.error('vRemoveChip failed', name, e);
-      vFlashBox.set({ postId: target.id, name, kind: 'error', message: `${name} の削除に失敗: ${String(e)}` }, 10000);
+      vFlashBox.set({ postId: target.id, name, kind: 'error', message: pm.removeFailed(name, String(e)) }, 10000);
     } finally { vChipBusy = null; }
   }
   async function vUndoChip() {
@@ -838,7 +842,7 @@
       vFlashBox.set({ postId: f.postId, name: f.name, kind: 'restored' }, 3000);
     } catch (e) {
       console.error('vUndoChip failed', e);
-      vFlashBox.set({ postId: f.postId, name: f.name, kind: 'error', message: `${f.name} の復元に失敗: ${String(e)}` }, 10000);
+      vFlashBox.set({ postId: f.postId, name: f.name, kind: 'error', message: pm.restoreFailed(f.name, String(e)) }, 10000);
     } finally { vChipBusy = null; }
   }
   // 現在フォーカス中のページを stream 内で再アンカーする。ヘッダーの
@@ -953,40 +957,40 @@
       <span class="bd">{post.canvasWidth}&times;{post.canvasHeight}</span>
     {/if}
     <span class="bd">{idx + 1}/{postsTotal}</span>
-    <button class="dir-btn" onclick={toggleDir} title={scrollDir === 'v' ? '横スクロールに切替' : '縦スクロールに切替'}>
-      {scrollDir === 'v' ? '縦' : '横'}
+    <button class="dir-btn" onclick={toggleDir} title={scrollDir === 'v' ? pm.toHorizontal : pm.toVertical}>
+      {scrollDir === 'v' ? pm.vertical : pm.horizontal}
     </button>
     {#if scrollDir === 'h'}
       <button class="dir-btn" onclick={toggleRead}
-        title={readDir === 'rtl' ? '右綴じ(左キーで次) → 左綴じに切替' : '左綴じ(右キーで次) → 右綴じに切替'}>
-        {readDir === 'rtl' ? '右→左' : '左→右'}
+        title={readDir === 'rtl' ? pm.rtlTitle : pm.ltrTitle}>
+        {readDir === 'rtl' ? pm.rtl : pm.ltr}
       </button>
     {/if}
     <button class="dir-btn" class:on={dimUnfocused} aria-pressed={dimUnfocused}
       onclick={() => dimUnfocused = !dimUnfocused}
-      title="フォーカスしていない画像を暗くする">周辺を暗く</button>
+      title={pm.dimTitle}>{pm.dim}</button>
     {#if reconCount > 0}
       <button class="dir-btn recon-bar" class:on={showRecon} onclick={() => showRecon = !showRecon}
-        title="AI復元(decensored)と原画を切替。原画は無傷で別アセット。">
-        {showRecon ? '🟢 復元' : '⚪ 原画'}{reconCount > 1 ? ` ×${reconCount}` : ''}
+        title={pm.reconTitle}>
+        {showRecon ? pm.reconOn : pm.reconOff}{reconCount > 1 ? ` ×${reconCount}` : ''}
       </button>
     {/if}
     {#if variantStatus[post.id] && variantStatus[post.id].reviewState !== 'approved'}
       <button class="dir-btn" disabled={reconBusy} onclick={() => reviewRecon('approved')}
-        title="この復元を承認（viewer に表示可になる）">✓承認</button>
+        title={pm.approveTitle}>{pm.approve}</button>
     {/if}
     {#if variantStatus[post.id] && variantStatus[post.id].reviewState === 'approved'}
       <button class="dir-btn" disabled={reconBusy} onclick={() => reviewRecon('rejected')}
-        title="承認を取り消す">✗却下</button>
+        title={pm.rejectTitle}>{pm.reject}</button>
     {/if}
     <span class="spacer-bar"></span>
     <button class="dir-btn" class:on={$verifyOverlayOn} onclick={() => verifyOverlayOn.update(v => !v)}
-      title="タグカテゴリ一覧を画像に重ねる (t)">{$verifyOverlayOn ? '🏷 タグ' : '⚪ タグ'}</button>
+      title={pm.tagsTitle}>{$verifyOverlayOn ? pm.tagsOn : pm.tagsOff}</button>
     <button class="dir-btn" class:on={$verifyHeaderOn} onclick={toggleVerifyHeader}
-      title="タグ一括編集バー (e) — クリック=選択、まとめて付与/削除">{$verifyHeaderOn ? '✎ 一括' : '⚪ 一括'}</button>
+      title={pm.bulkTitle}>{$verifyHeaderOn ? pm.bulkOn : pm.bulkOff}</button>
     <button class="dir-btn" class:on={showRegions} onclick={() => showRegions = !showRegions}
-      title="編集済み censor 領域を画像に重ねて確認（半透明・読み取り専用）">{showRegions ? '🎯 領域' : '⚪ 領域'}</button>
-    <a class="dir-btn annot-bar" href={`/post/${post.id}/censor`} title="censor を注釈する">&#9998; 注釈</a>
+      title={pm.regionsTitle}>{showRegions ? pm.regionsOn : pm.regionsOff}</button>
+    <a class="dir-btn annot-bar" href={`/post/${post.id}/censor`} title={pm.annotateTitle}>&#9998; {pm.annotate}</a>
     {#if deleteConfirm}
       <button class="dc" onclick={confirmDelete} disabled={deleting}>{deleting ? '...' : 'DEL'}</button>
       <button class="dx" onclick={cancelDelete}>&#10005;</button>
@@ -999,11 +1003,11 @@
     <!-- 共通バー (#lib/components/BulkTagBar) — グリッド ?bulk=1 と同一実装 -->
     <BulkTagBar
       variant="manga"
-      title="一括編集"
+      title={pm.bulkBarTitle}
       target={$verifyTarget || null}
       focusCategory={$verifyTarget && vTargetCategory ? { [$verifyTarget]: vTargetCategory } : null}
       bind:input={vInput}
-      placeholder="target タグを検索…"
+      placeholder={pm.targetPlaceholder}
       addCount={vAddIds.size}
       removeCount={vRemoveIds.size}
       applying={vApplying}
@@ -1011,9 +1015,9 @@
       result={vResult}
       onLockSelected={vLockSelected}
       onUndoLock={vLastBulkLock ? vUndoBulkLock : undefined}
-      selectAllTitle="ロード済みページの未付与を全部追加候補にする (トグル、🚫人間解除済みは除外)"
-      deselectAllTitle="ロード済みページの付与済みを全部解除候補にする (適用でまとめて削除、トグル、🔒施錠済みは除外)"
-      clearTitle="いまの選択を取り消す (DB には触らない)"
+      selectAllTitle={pm.selectAllTitle}
+      deselectAllTitle={pm.deselectAllTitle}
+      clearTitle={pm.clearTitle}
       onSelectTarget={selectVTarget}
       onSelectAll={vSelectAll}
       onDeselectAll={vDeselectAll}
@@ -1073,7 +1077,7 @@
             <div class="pdf-overlay">
               <span class="pdf-meta">
                 PDF
-                {#if p.fileSize}・{(p.fileSize / 1024 / 1024).toFixed(1)} MB{/if}
+                {#if p.fileSize}{pm.pdfSize((p.fileSize / 1024 / 1024).toFixed(1))}{/if}
               </span>
               <a class="pdf-open" href={mediaUrl(p.contentUrl)} target="_blank" rel="noopener">Open</a>
             </div>
@@ -1096,33 +1100,33 @@
         {/if}
         <span class="ov-id">#{p.id}</span>
         {#if vOn}
-          {#if vAdd}<span class="v-mark v-add" title="追加選択中">＋</span>
-          {:else if vRem}<span class="v-mark v-rem" title="解除選択中">−</span>
-          {:else if vHas}<span class="v-mark v-dot" title="target タグ付与済み">●</span>{/if}
+          {#if vAdd}<span class="v-mark v-add" title={pm.markAdd}>＋</span>
+          {:else if vRem}<span class="v-mark v-rem" title={pm.markRemove}>−</span>
+          {:else if vHas}<span class="v-mark v-dot" title={pm.markHas}>●</span>{/if}
         {/if}
         {#if reconFor(p)}
-          <span class="ov-recon" class:on={showRecon} title={showRecon ? 'AI復元を表示中（原画は無傷）' : 'AI復元あり（推定・非復元）'}>
-            {showRecon ? '復元' : 'AI'}
+          <span class="ov-recon" class:on={showRecon} title={showRecon ? pm.reconShownTitle : pm.reconAvailTitle}>
+            {showRecon ? pm.reconBadge : 'AI'}
           </span>
         {/if}
         {#if censorStatus[p.id] || isCensoredByTag(p)}
           {@const cs = censorStatus[p.id]}
           {@const n = cs?.annotationCount ?? 0}
           {#if n > 0 || isCensoredByTag(p)}
-            <span class="ov-cz" title="censored（検閲あり）">&#128162;{n > 0 ? n : ''}</span>
+            <span class="ov-cz" title={pm.censoredTitle}>&#128162;{n > 0 ? n : ''}</span>
           {/if}
         {/if}
         <button class="ov-fav" class:active={p.ownFavorite}
           onclick={(e) => { e.stopPropagation(); handleToggleFav(p); }}>&#9733;</button>
         <a class="ov-annot" href={`/post/${p.id}/censor`}
           onclick={(e) => e.stopPropagation()}
-          title="censor を注釈する">&#9998;</a>
+          title={pm.annotateTitle}>&#9998;</a>
         {#if p.pools?.length}
           <div class="ov-pools">
             {#each p.pools as pool}
               <a class="ov-pool" href={`/?q=pool:${pool.id}`}
                 onclick={(e) => e.stopPropagation()}
-                title={`pool「${pool.names[0] ?? `#${pool.id}`}」を開く (${pool.postCount}件)`}>
+                title={pm.openPool(pool.names[0] ?? `#${pool.id}`, pool.postCount)}>
                 <span class="ov-pool-k">pool</span>{pool.names[0] ?? `#${pool.id}`}
               </a>
             {/each}
@@ -1132,8 +1136,8 @@
           <div class="video-actions">
             <button class="va-thumb"
               onclick={(e) => { e.stopPropagation(); setThumbFromButton(p); }}
-              title="現在再生中のフレームをサムネイルにする (動画上で右クリックからも可)">
-              📷 現在フレームをサムネに
+              title={pm.frameThumbTitle}>
+              {pm.frameThumb}
             </button>
             {#if thumbStatus[p.id]}<span class="va-status" class:err={thumbStatus[p.id].startsWith('✗')}>{thumbStatus[p.id]}</span>{/if}
           </div>
@@ -1160,7 +1164,7 @@
     <div class="ctx-overlay" onclick={closeVideoMenu} oncontextmenu={(e) => { e.preventDefault(); closeVideoMenu(); }} role="presentation"></div>
     <div class="ctx-menu" style="left:{videoMenu.x}px; top:{videoMenu.y}px">
       <button class="ctx-item" onclick={setThumbFromMenu}>
-        📷 現在のフレーム ({videoMenu.time.toFixed(1)}s) をサムネに
+        {pm.frameThumbAt(videoMenu.time.toFixed(1))}
       </button>
     </div>
   {/if}

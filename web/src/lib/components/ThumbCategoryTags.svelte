@@ -14,6 +14,8 @@
   import { tagRelations } from '#lib/tagRelations.ts';
   import { verifyTarget } from '#lib/verify.ts';
   import type { Post } from '#lib/types.ts';
+  import { t } from '#lib/i18n/index.ts';
+  const m = t();
 
   let { post, category, deps, onUpdated, pins = null, onToggleLock = null, focusTag = null, stacked = false }: {
     post: Post;
@@ -132,9 +134,9 @@
 <svelte:window onpointerdowncapture={onWindowPointerdown} />
 
 {#if tags.length > 0 || (bandTag && pins?.[bandTag] === 'absent')}
-  <div class="tct" class:stacked bind:this={rootEl} role="group" aria-label="同カテゴリタグ">
+  <div class="tct" class:stacked bind:this={rootEl} role="group" aria-label={m.tags.thumb.groupLabel}>
     {#if bandTag && pins?.[bandTag] === 'absent'}
-      <span class="tct-negated" title="「{bandTag}」は人間が解除済み (このタグのみ負例GT)">🚫{bandTag}</span>
+      <span class="tct-negated" title={m.tags.thumb.negatedTitle(bandTag)}>🚫{bandTag}</span>
     {/if}
     {#each tags as t (t.names[0])}
       {@const name = t.names[0]}
@@ -143,16 +145,16 @@
         <TagChip localizedNames={t.localizedNames} {name} color={catColor(t.category)} variant="overlay"
           emphasis={emphasisFor(t.names)}
           armed={armed === name} busy={busy === name}
-          title={pin === 'present' ? '施錠中 — 削除するには先に解錠'
-            : armed === name ? 'もう1回タップで削除' : 'タップで削除待機'}
+          title={pin === 'present' ? m.tags.thumb.lockedNoDelete
+            : armed === name ? m.tags.common.tapAgainToDelete : m.tags.common.tapToArmDelete}
           onclick={pin === 'present' ? null : (e: MouseEvent) => chipClick(e, name)}
           onpointerenter={(e: PointerEvent) => chipEnter(e, name)}
           onpointerleave={hideTip} />
         {#if onToggleLock}
           <button class="tct-lock" class:on={pin === 'present'} type="button"
             title={pin === 'present'
-              ? `「${name}」施錠済 (このタグのみ正例GT・タガー上書き不可) — クリックで解錠`
-              : `「${name}」を施錠: このタグのみ正例GTとして確定+タガー上書き不可`}
+              ? m.tags.thumb.lockedTitle(name)
+              : m.tags.thumb.lockTitle(name)}
             onclick={(e) => { e.stopPropagation(); e.preventDefault(); onToggleLock?.(name); }}>{pin === 'present' ? '🔒' : '🔓'}</button>
         {/if}
       </span>
@@ -168,7 +170,7 @@
     {:else if tip.desc}
       <div class="tct-tip-desc">{tip.desc}</div>
     {:else}
-      <div class="tct-tip-desc dim">説明なし</div>
+      <div class="tct-tip-desc dim">{m.tags.common.noDescription}</div>
     {/if}
   </div>
 {/if}

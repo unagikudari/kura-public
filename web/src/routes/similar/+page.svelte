@@ -4,6 +4,10 @@
   import { mediaUrl, setTeacherExclusion } from '#lib/api.ts';
   import type { PageData } from './$types';
 
+  import { t } from '#lib/i18n/index.ts';
+  const m = t();
+  const sm = m.pages.similar;
+
   let { data }: { data: PageData } = $props();
 
   // local copy so exclude toggles reflect immediately without a reload
@@ -14,10 +18,10 @@
   const pages = $derived(Math.max(1, Math.ceil(data.total / data.limit)));
 
   const MODES = [
-    { key: 'suspect', label: '怪しい順' },
-    { key: 'all', label: '全部' },
-    { key: 'kept', label: '残す' },
-    { key: 'excluded', label: '除外済' },
+    { key: 'suspect', label: sm.modeSuspect },
+    { key: 'all', label: sm.modeAll },
+    { key: 'kept', label: sm.modeKept },
+    { key: 'excluded', label: sm.modeExcluded },
   ];
   const href = (only: string, off: number) => `?only=${only}&off=${off}`;
 
@@ -39,49 +43,49 @@
 <div class="page">
   <Header />
   <div class="content">
-    <h1>教師選別
-      <span class="sub">{data.total.toLocaleString()} 件 · 自動取り込み censor を正誤判定 → 修正 or 教師から除外</span>
+    <h1>{sm.heading}
+      <span class="sub">{sm.sub(data.total.toLocaleString())}</span>
     </h1>
 
     <div class="modes">
-      {#each MODES as m}
-        <a class="mode" class:active={data.only === m.key} href={href(m.key, 0)}>{m.label}</a>
+      {#each MODES as mode}
+        <a class="mode" class:active={data.only === mode.key} href={href(mode.key, 0)}>{mode.label}</a>
       {/each}
     </div>
 
     {#if items.length === 0}
-      <p class="empty">該当なし。</p>
+      <p class="empty">{sm.empty}</p>
     {/if}
 
     <div class="grid">
       {#each items as it (it.postId)}
         <figure class="cell" class:ex={it.excluded}>
           <div class="thumbwrap">
-            <a href={`/post/${it.postId}/censor`} title={`#${it.postId} を編集`}>
+            <a href={`/post/${it.postId}/censor`} title={sm.editTitle(it.postId)}>
               <img src={mediaUrl(it.thumbnailUrl)} alt={`post ${it.postId}`} loading="lazy" />
               <CensorRegions postId={it.postId} w={it.canvasWidth} h={it.canvasHeight}
                 show={true} enabled={true} />
             </a>
             <span class="score" class:hot={it.score >= 6}>s{it.score}</span>
-            {#if it.excluded}<span class="exbadge">除外</span>{/if}
+            {#if it.excluded}<span class="exbadge">{sm.excludedBadge}</span>{/if}
           </div>
           <figcaption>
             <span class="pid">#{it.postId}</span>
             <span class="rs">n{it.annotationCount} {(it.reasons ?? []).join(' ')}</span>
           </figcaption>
           <div class="row">
-            <a class="edit" href={`/post/${it.postId}/censor`}>✎ 編集</a>
+            <a class="edit" href={`/post/${it.postId}/censor`}>{sm.edit}</a>
             <button class="ex-btn" class:on={it.excluded} disabled={busy[it.postId]}
-              onclick={() => toggle(it)}>{it.excluded ? '↩ 戻す' : '教師から外す'}</button>
+              onclick={() => toggle(it)}>{it.excluded ? sm.restore : sm.exclude}</button>
           </div>
         </figure>
       {/each}
     </div>
 
     <nav class="pager">
-      {#if data.offset > 0}<a href={href(data.only, data.offset - data.limit)}>← 前</a>{:else}<span class="off">← 前</span>{/if}
+      {#if data.offset > 0}<a href={href(data.only, data.offset - data.limit)}>{sm.prev}</a>{:else}<span class="off">{sm.prev}</span>{/if}
       <span class="pageno">{pageNo} / {pages}</span>
-      {#if data.offset + data.limit < data.total}<a href={href(data.only, data.offset + data.limit)}>次 →</a>{:else}<span class="off">次 →</span>{/if}
+      {#if data.offset + data.limit < data.total}<a href={href(data.only, data.offset + data.limit)}>{sm.next}</a>{:else}<span class="off">{sm.next}</span>{/if}
     </nav>
   </div>
 </div>

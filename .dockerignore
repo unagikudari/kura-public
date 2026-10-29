@@ -1,0 +1,17 @@
+# Settings and secrets reach containers through env_file, never through an image.
+**/.env*
+!**/.env*example
+api/env
+api/env.*
+!api/env.example
+tagger/env
+tagger/env.*
+.git
+**/node_modules
+**/__pycache__
+web/build
+web/.svelte-kit
+data
+data-images
+tmp
+kura-admin.key

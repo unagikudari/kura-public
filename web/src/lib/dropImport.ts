@@ -1,8 +1,9 @@
 import { MAX_IMPORT_FILES, type ImportFile } from './collector/importFiles.ts';
+import type { Messages } from './i18n/index.ts';
 const natural = new Intl.Collator('en', { numeric: true, sensitivity: 'variant' });
 /** Same image/video allowance as ordinary drops, including files with no MIME. */
-export function planDropImport(files: ImportFile[]) {
-  if (files.length > MAX_IMPORT_FILES) throw new Error('一度に取り込めるのは10,000ファイルまでです。');
+export function planDropImport(files: ImportFile[], m: Messages) {
+  if (files.length > MAX_IMPORT_FILES) throw new Error(m.home.drop.tooManyFiles);
   const supported = files.filter(({ file }) => file.type.startsWith('image/') || file.type.startsWith('video/')
     || /\.(jpe?g|png|webp|gif|avif|bmp|tiff?|webm|mp4|m4v|mov)$/i.test(file.name));
   supported.sort((a,b) => natural.compare(a.relativePath ?? a.file.name, b.relativePath ?? b.file.name));

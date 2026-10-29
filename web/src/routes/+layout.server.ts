@@ -3,6 +3,7 @@ import { parseNavigationLinks } from '#lib/navigationLinks.ts';
 import { readSession, SESSION_COOKIE } from '#lib/server/session.ts';
 import { readIdentityDisplay, IDENTITY_DISPLAY_COOKIE } from '#lib/identityDisplay.ts';
 import { readTagLocale } from '#lib/tagLocale.ts';
+import { resolveUiLocale, UI_LOCALE_COOKIE } from '#lib/i18n/index.ts';
 import type { LayoutServerLoad } from './$types';
 
 const INTERNAL_API = env.INTERNAL_API_URL ?? 'http://kura-api:8000';
@@ -18,7 +19,7 @@ const SOURCE_URL = env.KURA_SOURCE_URL || 'https://github.com/unagikudari/kura-p
 // setCategoryColors() で categoryColor.ts に注入する。取得失敗時は null を
 // 返してページは殺さない (categoryColor.ts のリフト表 fallback が同一画素で
 // 引き受ける)。localhost の軽量 SELECT なので per-request で許容。
-export const load: LayoutServerLoad = async ({ cookies }) => {
+export const load: LayoutServerLoad = async ({ cookies, request }) => {
   const s = readSession(cookies.get(SESSION_COOKIE));
   let categoryColors: Record<string, string> | null = null;
   try {
@@ -34,5 +35,5 @@ export const load: LayoutServerLoad = async ({ cookies }) => {
   } catch {
     // kura-api down / timeout → fallback (明示、二重真実ではない)
   }
-  return { navigationLinks: parseNavigationLinks(env.KURA_NAV_LINKS), identityDisplay: readIdentityDisplay(cookies.get(IDENTITY_DISPLAY_COOKIE)), tagLocale: readTagLocale(cookies.get('kura_tag_locale')), user: s ? { email: s.e, name: s.u } : null, categoryColors, sourceUrl: SOURCE_URL };
+  return { navigationLinks: parseNavigationLinks(env.KURA_NAV_LINKS), identityDisplay: readIdentityDisplay(cookies.get(IDENTITY_DISPLAY_COOKIE)), tagLocale: readTagLocale(cookies.get('kura_tag_locale')), uiLocale: resolveUiLocale(cookies.get(UI_LOCALE_COOKIE), request.headers.get('accept-language')), user: s ? { email: s.e, name: s.u } : null, categoryColors, sourceUrl: SOURCE_URL };
 };

@@ -12,7 +12,8 @@ plan:kura-tagger-registry: tagger_patch は tagger/patches/<tag>/v<N>.json の m
 トランザクションで sync_registry() を呼ぶ。手動再同期は python3 -m tagger.sync_patch_registry。
 
 gt/head_type は 0070 で metrics 畳み込み(band-aid)から専用列へ昇格。content-head
-(chastity_cage/belt、WD14 語彙外で logit patch 不能)も head_type=content_head で登録。
+(WD14 語彙外で logit patch 不能なタグの head)も patches/content_heads.json から
+head_type=content_head で登録する。patches/ の無い install では何も登録しない。
 """
 from __future__ import annotations
 import datetime as _dt
@@ -23,16 +24,10 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 PATCHES = REPO_ROOT / "tagger" / "patches"
 MODELS = Path(os.environ.get("KURA_MODELS_DIR", Path.home() / ".cache" / "kura-tagger" / "models"))
 
-_CONTENT_HEADS = [
-    {"tag": "chastity_cage", "version": 2, "ckpt": "chastity-cage/chastity_cage-content-head-v2.pt",
-     "metrics": {"loo_auc": 0.988, "apply_gate": {"lo": 0.05, "hi": 0.50}},
-     "gt": {"n_train": 744, "n_real": 400, "n_fp": 344, "pools": ["6356", "6357"]},
-     "why": "PixAI(csv idx 8981)が chastity_cage を過検知(GT136でFP73-75%)。WD14語彙外で logit patch 不能→content-head が唯一の経路。wd-swinv2 penultimate linear probe(LOO AUC 0.988)。Apply Gate LO0.05/HI0.50。"},
-    {"tag": "chastity_belt", "version": 1, "ckpt": "chastity-belt/chastity_belt-content-head-v1.pt",
-     "metrics": {"loo_auc": 0.998, "apply_gate": {"lo": 0.05, "hi": 0.50}},
-     "gt": {"n_train": 377, "n_real": 63, "n_fp": 314},
-     "why": "ml-danbooru 語彙タグの過検知を cage gate 同型 Apply Gate で検証。wd-swinv2 penultimate linear probe(LOO AUC 0.998)。"},
-]
+# Content heads this deployment registers next to its logit patches (tag, version, ckpt under
+# KURA_MODELS_DIR, metrics, gt, why, created_at/by). Like the patches, they are this
+# deployment's artifacts, not code: an install without the file registers none.
+CONTENT_HEADS = PATCHES / "content_heads.json"
 
 # tagger_patch is governed (0079) -- this calls tagger_governed_upsert_patch
 # (0087, extended by 0089 with p_model_data) instead of writing the table
@@ -72,7 +67,7 @@ async def sync_registry(conn) -> int:
             # weights are baked into a release, not distributed separately.
             "model_data": None})
         n += 1
-    for ch in _CONTENT_HEADS:
+    for ch in (json.loads(CONTENT_HEADS.read_text()) if CONTENT_HEADS.is_file() else []):
         ckpt = MODELS / ch["ckpt"]
         ckpt_bytes = ckpt.read_bytes() if ckpt.is_file() else None
         sha = (hashlib.sha256(ckpt_bytes).hexdigest() if ckpt_bytes is not None
@@ -82,8 +77,8 @@ async def sync_registry(conn) -> int:
             "why": ch["why"], "why_rejected": None,
             "metrics": json.dumps(ch["metrics"]), "gt": json.dumps(ch["gt"]),
             "head_type": "content_head", "base_repo": "SmilingWolf/wd-swinv2-tagger-v3",
-            "base_revision": None, "logit_index": None, "created_at": _as_date("2026-07-19"),
-            "created_by": "desk-cc-2",
+            "base_revision": None, "logit_index": None, "created_at": _as_date(ch["created_at"]),
+            "created_by": ch["created_by"],
             # Opportunistic (Step 19, minimal pass): populated only when
             # the checkpoint exists locally on this host (primary). No fetch
             # client consumes this yet -- storage only, for now.

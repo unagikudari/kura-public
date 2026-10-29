@@ -1,5 +1,7 @@
 <script lang="ts">
   import { collectorApi, CollectorApiError, parseTagInput } from './api';
+  import { t } from '#lib/i18n/index.ts';
+  const m = t();
   let { targets, currentTags = [], disabled = false, onchanged, onbusy }: {
     targets: { asset_id: number; revision: number }[];
     currentTags?: string[];
@@ -25,49 +27,49 @@
       if (!targets.length || !tags.length) return;
       pending = { request_key: crypto.randomUUID(), targets: targets.map(t => ({ ...t })), add: remove ? [] : tags, remove: remove ? tags : [] };
     }
-    busy = true; onbusy(true); error = ''; status = `${pending.targets.length}件のタグを適用中…`;
+    busy = true; onbusy(true); error = ''; status = m.collector.tagEditor.applying(pending.targets.length);
     try {
-      const result = await collectorApi('labels/change', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(pending) });
+      const result = await collectorApi('labels/change', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(pending) }, m);
       pending = null; input = '';
       await onchanged();
-      status = `${result.targets.length}件のタグを更新しました`;
+      status = m.collector.tagsUpdated(result.targets.length);
     } catch (e) {
       error = (e as Error).message;
-      if (e instanceof CollectorApiError && !e.retryable) { pending = null; status = 'タグは適用されていません。一覧を再読み込みして選び直してください。'; }
-      else status = '適用結果を確認できません。同じ受付で再試行できます。';
+      if (e instanceof CollectorApiError && !e.retryable) { pending = null; status = m.collector.tagEditor.notApplied; }
+      else status = m.collector.tagEditor.unconfirmed;
     } finally { busy = false; onbusy(pending !== null); }
   }
   async function showHistory() {
     if (busy || disabled || pending || targets.length !== 1) return;
     busy = true; onbusy(true); error = '';
-    try { history = await collectorApi(`media/${targets[0].asset_id}/label-history`); }
+    try { history = await collectorApi(`media/${targets[0].asset_id}/label-history`, undefined, m); }
     catch (e) { error = (e as Error).message; }
     finally { busy = false; onbusy(false); }
   }
 </script>
 
-<section aria-label="選択したメディアのタグ整理" class="editor">
-  <strong>{targets.length}件選択</strong>
-  <input aria-label="付け外しするタグ" placeholder="タグをカンマで区切る（例：旅行, 未整理）" bind:value={input} maxlength="2000" disabled={disabled || busy || pending !== null} />
+<section aria-label={m.collector.tagEditor.label} class="editor">
+  <strong>{m.collector.tagEditor.selected(targets.length)}</strong>
+  <input aria-label={m.collector.tagEditor.inputLabel} placeholder={m.collector.tagEditor.placeholder} bind:value={input} maxlength="2000" disabled={disabled || busy || pending !== null} />
   {#if pending && !busy}
-    <button onclick={() => apply()}>同じタグ操作を再試行</button>
+    <button onclick={() => apply()}>{m.collector.tagEditor.retry}</button>
   {:else}
-    <button disabled={disabled || busy || !targets.length || !parseTagInput(input).length} onclick={() => apply()}>タグを付ける</button>
-    <button disabled={disabled || busy || !targets.length || !parseTagInput(input).length} onclick={() => apply(true)}>タグを外す</button>
+    <button disabled={disabled || busy || !targets.length || !parseTagInput(input).length} onclick={() => apply()}>{m.collector.tagEditor.add}</button>
+    <button disabled={disabled || busy || !targets.length || !parseTagInput(input).length} onclick={() => apply(true)}>{m.collector.tagEditor.remove}</button>
   {/if}
-  <button disabled={disabled || busy || pending !== null || targets.length !== 1} onclick={showHistory}>変更履歴</button>
+  <button disabled={disabled || busy || pending !== null || targets.length !== 1} onclick={showHistory}>{m.collector.tagEditor.history}</button>
   {#if targets.length === 1 && currentTags.length}
-    <div class="current"><span>現在のタグ：</span>{#each currentTags as tag}
+    <div class="current"><span>{m.collector.tagEditor.current}</span>{#each currentTags as tag}
       <button disabled={disabled || busy || pending !== null} onclick={() => { input = tag; }}>{tag}</button>
     {/each}</div>
   {/if}
   {#if status}<p role="status">{status}</p>{/if}
   {#if error}<p role="alert" class="error">{error}</p>{/if}
   {#if history.length}
-    <details open><summary>最近のタグ変更（最大30件）</summary>
+    <details open><summary>{m.collector.tagEditor.recent}</summary>
       <table><tbody>{#each history as event (event.id)}
         <tr><td>{new Date(event.observed_at).toLocaleString()}</td><td>{event.name}</td>
-          <td>{event.present ? (event.prior_present ? '付与を確認' : '付けた') : (event.prior_present ? '外した' : '不在を確認')}</td></tr>
+          <td>{event.present ? (event.prior_present ? m.collector.tagEditor.confirmedPresent : m.collector.tagEditor.added) : (event.prior_present ? m.collector.tagEditor.removed : m.collector.tagEditor.confirmedAbsent)}</td></tr>
       {/each}</tbody></table>
     </details>
   {/if}

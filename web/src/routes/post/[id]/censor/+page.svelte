@@ -11,6 +11,10 @@
     getCensorReview,
     putCensorReview,
   } from '#lib/api.ts';
+  import { t } from '#lib/i18n/index.ts';
+
+  const m = t();
+  const cm = m.pages.censor;
 
   let { data } = $props();
   const post = data.post;
@@ -40,7 +44,7 @@
   let selected = $state<number | null>(null);
   let penWidth = $state(_savedPenW > 0 ? _savedPenW : 0.025);   // normalized to image width
   let dispW = $state(1);          // displayed image width (px) for on-screen stroke
-  const PEN_WIDTHS = [{ k: '極細', v: 0.004 }, { k: '細', v: 0.012 }, { k: '中', v: 0.025 }, { k: '太', v: 0.05 }];
+  const PEN_WIDTHS = [{ k: cm.penXs, v: 0.004 }, { k: cm.penS, v: 0.012 }, { k: cm.penM, v: 0.025 }, { k: cm.penL, v: 0.05 }];
   let svgEl: SVGSVGElement;
 
   // remember the chosen tool / type / pen width for the next page of the pool
@@ -178,7 +182,7 @@
     </div>
     <div class="grp">
       <button class="erase" class:on={eraseMode} onclick={() => (eraseMode = !eraseMode)}>
-        🧹 消しゴム{eraseMode ? ' ON' : ''}
+        {cm.eraser}{eraseMode ? ' ON' : ''}
       </button>
     </div>
     <div class="grp">
@@ -187,7 +191,7 @@
     </div>
   </div>
 
-  <p class="hint"><b>rect</b>: 矩形ドラッグ / <b>polygon</b>: 頂点タップ→✓ で囲む / <b>pen</b>: 太さを選んでなぞる。<b>🧹消しゴム</b>: ON にして同じ道具で囲むと、その領域を既存マスクから<b>差し引く</b>(赤・破線)。過剰被覆のトリム用。</p>
+  <p class="hint"><b>rect</b>{cm.hintRect}<b>polygon</b>{cm.hintPolygon}<b>pen</b>{cm.hintPen}<b>{cm.hintEraser}</b>{cm.hintEraserBefore}<b>{cm.hintSubtract}</b>{cm.hintEraserAfter}</p>
 
   <div class="stage">
     <img src={mediaUrl(post.contentUrl)} alt={`post ${post.id}`} draggable="false" onload={measureDispW} />
@@ -232,7 +236,7 @@
         onclick={() => (selected = selected === a.id ? null : a.id)}>
         <span class="num" style:background={shapeColor(a)}>{a.negative ? '🧹' : i + 1}</span>
         <span class="meta">{a.negative ? 'erase' : a.censorType} · {a.shapeType}{a.stale ? ' · ⚠ stale' : ''}</span>
-        <button class="del" onclick={(e) => { e.stopPropagation(); remove(a); }}>🗑 削除</button>
+        <button class="del" onclick={(e) => { e.stopPropagation(); remove(a); }}>{cm.delete}</button>
       </li>
     {:else}
       <li class="empty">no annotations yet — draw on the image</li>

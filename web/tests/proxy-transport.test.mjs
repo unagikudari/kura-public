@@ -23,7 +23,9 @@ async function fixture(t, respond, envExtra = {}, identity = { authorization: 'T
     await new Promise(resolve => server.close(resolve));
   });
   const prelude = `const env={INTERNAL_API_URL:'http://127.0.0.1:${server.address().port}'${Object.entries(envExtra).map(([k, v]) => `,${k}:${JSON.stringify(v)}`).join('')}};
-    const SESSION_COOKIE='session'; const credential=async()=>(${JSON.stringify(identity)});`;
+    const SESSION_COOKIE='session'; const credential=async()=>(${JSON.stringify(identity)});
+    import { ja as pagesJa } from ${JSON.stringify(new URL('../src/lib/i18n/parts/pages.ts', import.meta.url).href)};
+    const UI_LOCALE_COOKIE='kura_ui_locale'; const resolveUiLocale=()=>'ja'; const messagesFor=()=>({ pages: pagesJa });`;
   const javascript = ts.transpileModule(prelude + source.replace(/^import .*;\r?\n/gm, ''), {
     compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 },
   }).outputText;

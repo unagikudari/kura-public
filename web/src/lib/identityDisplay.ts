@@ -1,13 +1,14 @@
 import { getContext } from 'svelte';
 import { readable, type Readable } from 'svelte/store';
 import type { MicroTag } from './types';
+import type { Messages } from '#lib/i18n/index.ts';
 
 export const IDENTITY_DISPLAY_CONTEXT = Symbol('identity display');
 export const IDENTITY_DISPLAY_COOKIE = 'kura_identity_display';
 export const IDENTITY_CATEGORIES = [
-  { key: 'artist', label: 'アーティスト', icon: 'artist' },
-  { key: 'character', label: 'キャラクター', icon: 'character' },
-  { key: 'copyright', label: '作品', icon: 'manga' },
+  { key: 'artist', icon: 'artist' },
+  { key: 'character', icon: 'character' },
+  { key: 'copyright', icon: 'manga' },
 ] as const;
 export type IdentityCategory = typeof IDENTITY_CATEGORIES[number]['key'];
 export type IdentityDisplay = Record<IdentityCategory, boolean> & {
@@ -28,7 +29,7 @@ export function readIdentityDisplay(raw?: string): IdentityDisplay {
 export function identityDisplay(): Readable<IdentityDisplay> {
   return getContext<Readable<IdentityDisplay>>(IDENTITY_DISPLAY_CONTEXT) ?? readable(readIdentityDisplay());
 }
-export function identityGroups(tags: MicroTag[], prefs: IdentityDisplay) {
+export function identityGroups(tags: MicroTag[], prefs: IdentityDisplay, m: Messages) {
   return IDENTITY_CATEGORIES.filter(category => prefs[category.key]).map(category => {
     const seen = new Set<string>();
     const matches = tags.filter(tag => {
@@ -38,6 +39,6 @@ export function identityGroups(tags: MicroTag[], prefs: IdentityDisplay) {
       if (seen.has(key)) return false;
       seen.add(key); return true;
     });
-    return { ...category, tags: matches };
+    return { ...category, label: m.pages.identity[category.key], tags: matches };
   }).filter(group => group.tags.length > 0);
 }

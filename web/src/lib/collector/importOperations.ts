@@ -1,4 +1,5 @@
 import type { ImportFile } from './importFiles';
+import type { Messages } from '#lib/i18n/index.ts';
 export type ImportItem = { position:number; request_key:string; original_name:string; relative_path:string|null; byte_size:number; sha256:string|null; collection_id:number|null; state:'pending'|'registered'|'rejected'; error_message?:string|null };
 export type ImportOperation = { request_key:string; item_count:number; registered_count:number; rejected_count:number; remaining_count:number; state:string; created_at:string };
 export type ImportPlan = { request_key:string; collection:number|null; items:{request_key:string; original_name:string; relative_path:string|null; byte_size:number; sha256:string|null}[] };
@@ -9,15 +10,15 @@ export async function digest(file:File):Promise<string|null> {
   const value=await crypto.subtle.digest('SHA-256',await file.arrayBuffer());
   return Array.from(new Uint8Array(value),b=>b.toString(16).padStart(2,'0')).join('');
 }
-export async function readImportItems(key:string):Promise<ImportItem[]> {
+export async function readImportItems(key:string,m:Messages):Promise<ImportItem[]> {
   const { collectorApi }=await import('./api');
   const items:ImportItem[]=[];let after=0;
   for (;;) {
-    const page=await collectorApi(`imports/${key}/items?after=${after}&limit=200`);
+    const page=await collectorApi(`imports/${key}/items?after=${after}&limit=200`,undefined,m);
     items.push(...page.items);
-    if (items.length>10000) throw new Error('取り込み計画の件数上限を超えています。');
+    if (items.length>10000) throw new Error(m.collector.operations.planTooLarge);
     if (!page.next_cursor) return items;
-    if (page.next_cursor<=after) throw new Error('取り込み計画の続きを確認できません。');
+    if (page.next_cursor<=after) throw new Error(m.collector.operations.planIncomplete);
     after=page.next_cursor;
   }
 }
@@ -30,7 +31,7 @@ export async function planImport(files:ImportFile[],collection:number|null,progr
   }
   return {request_key:crypto.randomUUID(),collection,items};
 }
-export async function matchImportFiles(manifest:ImportItem[],files:ImportFile[],progress:(n:number)=>void) {
+export async function matchImportFiles(manifest:ImportItem[],files:ImportFile[],progress:(n:number)=>void,m:Messages) {
   const indexed=new Map(manifest.map(item=>[item.relative_path ?? item.original_name,item]));
   const matched:{input:ImportFile;item:ImportItem}[]=[];let ignored=0;let checked=0;
   for (const input of files) {
@@ -38,7 +39,7 @@ export async function matchImportFiles(manifest:ImportItem[],files:ImportFile[],
     if (!item) { ignored++;continue; }
     progress(++checked);
     if (input.file.size!==item.byte_size || await digest(input.file)!==item.sha256)
-      throw new Error(`${fileIdentity(input)} の内容が保存済みの計画と異なります。元のファイルを選び直してください。`);
+      throw new Error(m.collector.operations.mismatch(fileIdentity(input)));
     matched.push({input,item});
   }
   const keys=new Set(matched.map(m=>m.item.request_key));

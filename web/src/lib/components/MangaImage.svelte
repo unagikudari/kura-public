@@ -1,5 +1,7 @@
 <script lang="ts">
   import { untrack } from 'svelte';
+  import { t } from '#lib/i18n/index.ts';
+  const m = t();
   let { src, thumbnail, near, focused = false, width, height, selectable = false, onclick }: {
     src: string; thumbnail: string; near: boolean; focused?: boolean;
     width?: number; height?: number; selectable?: boolean; onclick: () => void;
@@ -61,10 +63,10 @@
       onerror={(e) => { if (!e.currentTarget.isConnected) return; if (full) { failed = true; ready = ''; } else previewFailed = true; }} />
   {/key}
   {#if near && !full && previewFailed}
-    <span class="loading" role="status">{failed ? '画像を読み込めませんでした' : '画像を読み込み中…'}</span>
+    <span class="loading" role="status">{failed ? m.home.manga.loadFailed : m.home.manga.loading}</span>
   {/if}
   {#if near && (failed || previewFailed)}
-    <button class="retry" onclick={(e) => { e.stopPropagation(); retry++; }}>画像を再読み込み</button>
+    <button class="retry" onclick={(e) => { e.stopPropagation(); retry++; }}>{m.home.manga.reload}</button>
   {/if}
 </div>
 

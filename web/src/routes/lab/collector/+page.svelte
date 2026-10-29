@@ -1,12 +1,15 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { droppedFiles, planFiles, selectedFiles, type ImportFile } from '#lib/collector/importFiles.ts';
-  import { collectorApi as api, CollectorApiError as ApiError, parseTagInput } from '#lib/collector/api.ts';
+  import { collectorApi, CollectorApiError as ApiError, parseTagInput } from '#lib/collector/api.ts';
   import { planImport, readImportItems, matchImportFiles, type ImportPlan, type ImportItem, type ImportOperation } from '#lib/collector/importOperations.ts';
   import RestoreArchive from '#lib/collector/RestoreArchive.svelte';
   import VideoPreview from '#lib/collector/VideoPreview.svelte';
   import TagCatalog from '#lib/collector/TagCatalog.svelte';
   import TagEditor from '#lib/collector/TagEditor.svelte';
+  import { t } from '#lib/i18n/index.ts';
+  const m = t();
+  const api = (path: string, init?: RequestInit) => collectorApi(path, init, m);
 
   type Collection = { id: number; title: string };
   type Media = { id: number; entry_id?: number; position?: number; original_name: string; relative_path?: string; media_type: string; width: number; height: number; tags: string[]; tag_revision: number };
@@ -17,11 +20,11 @@
   let title = $state('');
   let creationKey = '';
   let cursor = $state<number | null>(null);
-  let message = $state('読み込み中…');
+  let message = $state(m.collector.loading);
   let error = $state('');
   let busy = $state(false);
   let importProgress = $state<{ total:number; registered:number; rejected:number; phase:'uploading'|'stopped'|'done' } | null>(null);
-  const destination = $derived(collections.find(c => String(c.id)===selected)?.title ?? 'ライブラリ（フォルダは作品ごとに整理）');
+  const destination = $derived(collections.find(c => String(c.id)===selected)?.title ?? m.collector.page.defaultDestination);
   let tagBusy = $state(false);
   let catalogRevision = $state(0);
   let chosen = $state(new Set<number>());
@@ -49,7 +52,7 @@
     const next = new Set(chosen);
     if (next.has(item.id)) next.delete(item.id);
     else if (next.size < 100) next.add(item.id);
-    else { error = '一度に選択できるメディアは100件までです。'; return; }
+    else { error = m.collector.page.selectLimit; return; }
     chosen = next;
   }
   async function filter(tags = parseTagInput(filterInput)) {
@@ -61,12 +64,12 @@
   async function labelsChanged() {
     const count = tagTargets.length;
     catalogRevision++;
-    await refresh(); message = `${count}件のタグを更新しました`;
+    await refresh(); message = m.collector.tagsUpdated(count);
   }
   async function load(more = false) {
     const current = ++epoch;
     error = '';
-    message = '読み込み中…';
+    message = m.collector.loading;
     try {
       const path = selected ? `collections/${selected}/entries` : 'media';
       const query = new URLSearchParams({ limit: '40' });
@@ -77,7 +80,7 @@
       if (current !== epoch) return;
       items = more ? [...items, ...page.items] : page.items;
       cursor = page.next_cursor;
-      message = items.length ? `${items.length}件を表示` : filterTags.length || activeKind ? '条件に一致するメディアがありません' : 'まだメディアがありません';
+      message = items.length ? m.collector.page.showing(items.length) : filterTags.length || activeKind ? m.collector.page.noMatch : m.collector.page.empty;
     } catch (e) { if (current === epoch) { error = (e as Error).message; message = ''; } }
   }
   onMount(() => {
@@ -99,7 +102,7 @@
   }
   async function create() {
     if (!title.trim() || busy || tagBusy) return;
-    busy = true; error = ''; message = '作品を作成中…';
+    busy = true; error = ''; message = m.collector.page.creating;
     try {
       creationKey ||= crypto.randomUUID();
       const created = await api('collections', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ title, request_key: creationKey }) });
@@ -114,30 +117,30 @@
   async function showImportIssues(key:string) {
     if (busy || tagBusy) return;
     busy=true;operationsError='';
-    try { importIssues=(await readImportItems(key)).filter(item=>item.state==='rejected'); }
+    try { importIssues=(await readImportItems(key, m)).filter(item=>item.state==='rejected'); }
     catch(e) { operationsError=(e as Error).message; }
     finally { busy=false; }
   }
   async function resume(operation:ImportOperation) {
     if (busy || tagBusy) return;
-    if (pending.some(p=>!p.done && !p.rejected)) { error='先の取り込みを再試行してから選んでください。';return; }
+    if (pending.some(p=>!p.done && !p.rejected)) { error=m.collector.page.retryBeforeResume;return; }
     busy=true;error='';
-    try { resumeManifest=await readImportItems(operation.request_key);resumeKey=operation.request_key;message='元のフォルダ・ファイルを選び直してください。内容を照合して未完了分だけ続けます。'; }
+    try { resumeManifest=await readImportItems(operation.request_key,m);resumeKey=operation.request_key;message=m.collector.page.reselectToResume; }
     catch(e) { error=(e as Error).message; }
     finally { busy=false; }
   }
   function newImport() { resumeManifest=null;resumeKey=null; }
   async function deferImport() {
     pending=[];pendingPlan=null;activeOperation=null;newImport();
-    message='取り込み履歴に保存しました。元のファイルを選び直して後から再開できます。';await refreshImports();
+    message=m.collector.page.deferred;await refreshImports();
   }
   async function syncPending() {
     if (!activeOperation) return;
-    const manifest=await readImportItems(activeOperation);
+    const manifest=await readImportItems(activeOperation,m);
     const indexed=new Map(manifest.map(item=>[item.request_key,item]));
     for (const p of pending) {
       const item=indexed.get(p.key);
-      if (!item) throw new Error('保存済みの取り込み計画を確認できません。');
+      if (!item) throw new Error(m.collector.page.planUnverified);
       p.collection=item.collection_id;p.done=item.state==='registered';p.rejected=item.state==='rejected';p.reason=item.error_message ?? (item.state==='pending' ? p.reason : undefined);
     }
     const operation:ImportOperation=await api(`imports/${activeOperation}`);
@@ -146,32 +149,32 @@
   }
   async function accept(source: () => ImportFile[] | Promise<ImportFile[]>) {
     if (busy || tagBusy) return;
-    if (pending.some(p => !p.done && !p.rejected)) { error = '先の取り込みを再試行してから追加してください'; return; }
-    busy = true; error = ''; importProgress = null; message = 'フォルダ・ファイルを確認中…';
+    if (pending.some(p => !p.done && !p.rejected)) { error = m.collector.page.retryBeforeAdd; return; }
+    busy = true; error = ''; importProgress = null; message = m.collector.page.checkingFiles;
     let ready = false;
     try {
-      const planned = planFiles(await source());skipped=planned.skipped;
-      if (!planned.files.length) { message=`取り込めるファイルがありません（対象外${skipped}件）。`;return; }
+      const planned = planFiles(await source(), m);skipped=planned.skipped;
+      if (!planned.files.length) { message=m.collector.page.nothingImportable(skipped);return; }
       if (resumeManifest && resumeKey) {
-        const result=await matchImportFiles(resumeManifest,planned.files,n=>{message=`再開する原本を照合中… ${n}ファイル`;});
+        const result=await matchImportFiles(resumeManifest,planned.files,n=>{message=m.collector.page.matching(n);},m);
         skipped+=result.ignored;
         pending=result.matched.map(({input,item})=>({...input,key:item.request_key,collection:item.collection_id,done:item.state==='registered',rejected:item.state==='rejected',reason:item.error_message ?? undefined}));
-        if (!pending.some(p=>!p.done && !p.rejected)) { message=`今回選択したファイルに未完了分はありません。未選択の未完了分は${result.missing}件です。`;return; }
+        if (!pending.some(p=>!p.done && !p.rejected)) { message=m.collector.page.nothingUnfinished(result.missing);return; }
         activeOperation=resumeKey;pendingPlan=null;newImport();
       } else {
-        pendingPlan=await planImport(planned.files,selected ? Number(selected):null,n=>{message=`原本の内容を確認中… ${n} / ${planned.files.length}`;});
+        pendingPlan=await planImport(planned.files,selected ? Number(selected):null,n=>{message=m.collector.page.hashing(n, planned.files.length);});
         activeOperation=null;
         pending=planned.files.map((input,i)=>({...input,key:pendingPlan!.items[i].request_key,collection:selected ? Number(selected):null,done:false}));
       }
       ready=true;
-    } catch(e) { error=(e as Error).message;message='取り込みは開始していません。'; }
+    } catch(e) { error=(e as Error).message;message=m.collector.page.notStarted; }
     finally { busy=false; }
     if (ready) await upload();
   }
   function drop(event: DragEvent) {
     event.preventDefault(); event.stopPropagation();
     const transfer = event.dataTransfer;
-    if (transfer) void accept(() => droppedFiles(transfer, count => { message = `フォルダ内を確認中… ${count}ファイル`; }));
+    if (transfer) void accept(() => droppedFiles(transfer, count => { message = m.collector.page.scanningFolder(count); }, m));
   }
   async function upload() {
     if (busy || tagBusy) return;
@@ -186,7 +189,7 @@
       await syncPending();
       for (let i = 0; i < pending.length; i++) {
         const p = pending[i]; if (p.done || p.rejected) continue;
-        message = `原本を取り込み中 ${i + 1} / ${pending.length} — ${p.relativePath ?? p.file.name}`;
+        message = m.collector.page.uploading(i + 1, pending.length, p.relativePath ?? p.file.name);
         try {
           const form = new FormData(); form.set('file', p.file); form.set('request_key', p.key);
           if (activeOperation) form.set('operation_key',activeOperation);
@@ -208,84 +211,84 @@
       if (!selected && collectionsUsed.length===1) selected=String(collectionsUsed[0]);
       await load();
       message = stopped
-        ? `${count}件登録済み。通信または保存先の問題で停止しています。未完了分を再試行できます。`
-        : rejected ? `${count}件登録、${rejected}件を取り込めませんでした。ほかの画像は続けて追加できます。`
-        : `${count}件の原本を確認・登録しました`;
-      if (skipped) message += ` 対象外の${skipped}ファイルは除外しました。`;
-      if (operation?.remaining_count) message+=` 未完了${operation.remaining_count}件。未送信分は元のファイルを選び直して再開できます。`;
+        ? m.collector.page.resultStopped(count)
+        : rejected ? m.collector.page.resultRejected(count, rejected)
+        : m.collector.page.resultDone(count);
+      if (skipped) message += m.collector.page.resultSkipped(skipped);
+      if (operation?.remaining_count) message+=m.collector.page.resultRemaining(operation.remaining_count);
       if (!stopped) pending = pending.filter(p => p.rejected);
       await refreshImports();
-    } catch (e) { if (importProgress) importProgress.phase='stopped'; error = (e as Error).message; message = '処理状況を確認できませんでした。'; await refreshImports(); }
+    } catch (e) { if (importProgress) importProgress.phase='stopped'; error = (e as Error).message; message = m.collector.page.statusUnknown; await refreshImports(); }
     finally { busy = false; }
   }
 </script>
 
-<svelte:head><title>新ライブラリを試す — kura</title></svelte:head>
+<svelte:head><title>{m.collector.page.title}</title></svelte:head>
 <main>
-  <nav><a href="/">← コレクションへ戻る</a></nav>
+  <nav><a href="/">{m.collector.page.back}</a></nav>
   <header class="intro">
-    <div><span class="preview-label">新ライブラリ · 試用版</span><h1>集めた画像を、自分のライブラリへ。</h1><p>フォルダを取り込み、タグで整理。見たい作品をすぐに見つける。</p></div>
-    <a href="/lab/collector/existing">既存作品を開く →</a>
+    <div><span class="preview-label">{m.collector.page.previewLabel}</span><h1>{m.collector.page.heading}</h1><p>{m.collector.page.lead}</p></div>
+    <a href="/lab/collector/existing">{m.collector.page.openExisting}</a>
   </header>
-  <details class="import-help"><summary>原本の保存方法・対応ファイル</summary>
-    <p>元のファイルを変更せず、原本をコピーして保存します。JPEG・PNG・WebP・GIF・WebM、1ファイル64MiB・4000万画素まで。既存コレクションとは独立しています。</p>
-    <p>作品が未選択ならフォルダ名で作品を作り、選択済みならその作品へ追加します。相対パスを保持し、ファイル名の自然順に並べます。同じ原本でも作品内のページ位置は残します。</p>
-    <p>取り込み中はこの画面を開いたままにしてください。同じ画面から未完了分を再試行できます。画面を閉じた後は「取り込み履歴」から元のファイルを選び直すと、保存済みの内容と照合して未完了分を再開できます。まだ送信していないファイルは自動取得しません。</p>
+  <details class="import-help"><summary>{m.collector.page.helpSummary}</summary>
+    <p>{m.collector.page.help1}</p>
+    <p>{m.collector.page.help2}</p>
+    <p>{m.collector.page.help3}</p>
   </details>
-  {#if safeMode}<p class="notice">セーフ表示が有効です。ここで取り込んだ未判定画像は表示しません。既存画面のセーフ設定を解除してから戻ってください。</p>{/if}
-  <section class="controls" aria-label="ライブラリと取り込み先">
-    <label>表示・取り込み先 <select bind:value={selected} disabled={busy || tagBusy} onchange={refresh}>
-      <option value="">すべてのメディア</option>
+  {#if safeMode}<p class="notice">{m.collector.page.safeNotice}</p>{/if}
+  <section class="controls" aria-label={m.collector.page.controlsLabel}>
+    <label>{m.collector.page.destinationLabel} <select bind:value={selected} disabled={busy || tagBusy} onchange={refresh}>
+      <option value="">{m.collector.page.allMedia}</option>
       {#each collections as c}<option value={String(c.id)}>{c.title}</option>{/each}
     </select></label>
     <form onsubmit={(e) => { e.preventDefault(); void create(); }}>
-      <input aria-label="新しい作品名" placeholder="新しい作品名" bind:value={title} oninput={() => { creationKey = ''; }} maxlength="200" disabled={busy || tagBusy} />
-      <button disabled={busy || tagBusy || !title.trim()}>作品を作る</button>
+      <input aria-label={m.collector.page.newWorkTitle} placeholder={m.collector.page.newWorkTitle} bind:value={title} oninput={() => { creationKey = ''; }} maxlength="200" disabled={busy || tagBusy} />
+      <button disabled={busy || tagBusy || !title.trim()}>{m.collector.page.createWork}</button>
     </form>
   </section>
   {#if selected && !safeMode}
     <p class="export">
-      <a href={`/m/collector-next/collections/${selected}/export`} target="_blank" rel="noopener">作品をZIPで書き出す</a>
-      <small>表示の絞り込みに関係なく作品全体を出力します。原本・並び順・元の相対パス・整理タグと変更履歴を含みます。別タブで原本を照合してからダウンロードが始まります（最大10,000件・原本合計2GiB）。空の新ライブラリへは「作品ZIPから復元」で戻せます。</small>
+      <a href={`/m/collector-next/collections/${selected}/export`} target="_blank" rel="noopener">{m.collector.page.exportZip}</a>
+      <small>{m.collector.page.exportNote}</small>
     </p>
   {/if}
   <input class="file" type="file" multiple accept="image/jpeg,image/png,image/webp,image/gif,video/webm,.webm" bind:this={picker}
     onchange={() => { const files = selectedFiles(picker.files ?? []); picker.value = ''; void accept(() => files); }} />
   <input class="file" type="file" webkitdirectory multiple bind:this={folderPicker}
     onchange={() => { const files = selectedFiles(folderPicker.files ?? []); folderPicker.value = ''; void accept(() => files); }} />
-  {#if resumeKey}<div class="notice" role="status">保存済みの取り込みを再開します。元のフォルダ・ファイルを選び直してください。<button disabled={busy} onclick={newImport}>新しい取り込みに戻る</button></div>{/if}
+  {#if resumeKey}<div class="notice" role="status">{m.collector.page.resumeNotice}<button disabled={busy} onclick={newImport}>{m.collector.page.backToNew}</button></div>{/if}
   <button class="drop" disabled={busy || tagBusy} onclick={() => picker.click()}
     ondragover={(e) => { e.preventDefault(); e.stopPropagation(); }}
     ondrop={drop}>
     <svg viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M4 11h10l3 3h11v13H4zM16 4v14m-5-9 5-5 5 5"/></svg>
-    <strong>{busy ? '処理中…' : '画像・WebM・フォルダをここへ'}</strong><span>{busy ? 'この画面を開いたままお待ちください' : 'ドロップ、またはクリックしてファイルを選択'}</span>
+    <strong>{busy ? m.collector.page.working : m.collector.page.dropHere}</strong><span>{busy ? m.collector.page.keepOpen : m.collector.page.dropHint}</span>
   </button>
-  <div class="import-footer"><span class="destination">取り込み先：{resumeKey ? '保存済みの取り込み先（変更しません）' : destination}</span><button class="folder" disabled={busy || tagBusy} onclick={() => folderPicker.click()}>フォルダを選択</button></div>
+  <div class="import-footer"><span class="destination">{m.collector.page.destination(resumeKey ? m.collector.page.savedDestination : destination)}</span><button class="folder" disabled={busy || tagBusy} onclick={() => folderPicker.click()}>{m.collector.page.chooseFolder}</button></div>
   <RestoreArchive disabled={busy || tagBusy} onBusy={(value)=>{busy=value;}} onRestored={restored} />
-  <section class="import-status" aria-label="取り込み状況" aria-busy={importProgress?.phase==='uploading'}>
-    {#if importProgress}<div class="progress-heading"><strong>{importProgress.phase==='uploading' ? '取り込み中' : importProgress.phase==='stopped' ? '取り込みが停止しています' : '取り込み結果'}</strong><span>{importProgress.registered}件登録{importProgress.rejected ? ` · ${importProgress.rejected}件要確認` : ''} / {importProgress.total}件</span></div><progress max={importProgress.total} value={importProgress.registered+importProgress.rejected} aria-label="取り込み処理済み件数"></progress>{/if}
+  <section class="import-status" aria-label={m.collector.page.statusLabel} aria-busy={importProgress?.phase==='uploading'}>
+    {#if importProgress}<div class="progress-heading"><strong>{importProgress.phase==='uploading' ? m.collector.page.phaseUploading : importProgress.phase==='stopped' ? m.collector.page.phaseStopped : m.collector.page.phaseDone}</strong><span>{m.collector.page.progressCounts(importProgress.registered, importProgress.rejected, importProgress.total)}</span></div><progress max={importProgress.total} value={importProgress.registered+importProgress.rejected} aria-label={m.collector.page.progressLabel}></progress>{/if}
     <p role="status" aria-live="polite">{message}</p>
   </section>
   <TagCatalog revision={catalogRevision} {safeMode} disabled={busy || tagBusy} onChoose={(name)=>{void filter([name]);}} />
-  <section class="import-history" aria-label="取り込み履歴"><h2>取り込み履歴</h2>
-    {#if operationsError}<p role="alert">{operationsError}<button disabled={busy || tagBusy} onclick={()=>refreshImports()}>履歴を再読み込み</button></p>{/if}
-    {#if !operations.length && !operationsError}<p class="muted">取り込みを始めると、ここから状況確認・再開できます。</p>{/if}
-    {#each operations as operation (operation.request_key)}<div class="history-row"><div><strong>{operation.remaining_count ? 'ファイルの再選択で再開できます' : operation.rejected_count ? '要確認のファイルがあります' : '登録完了'}</strong><small>{new Date(operation.created_at).toLocaleString('ja-JP')} · {operation.registered_count}件登録 / {operation.item_count}件{operation.rejected_count ? ` · ${operation.rejected_count}件要確認` : ''}{operation.remaining_count ? ` · 未完了${operation.remaining_count}件` : ''}</small></div>{#if operation.rejected_count}<button disabled={busy || tagBusy} onclick={()=>showImportIssues(operation.request_key)}>要確認の内訳</button>{/if}{#if operation.remaining_count}<button disabled={busy || tagBusy || !!resumeKey} onclick={()=>resume(operation)}>再開する</button>{/if}</div>{/each}
-    {#if operationsCursor}<button disabled={busy || tagBusy} onclick={()=>refreshImports(true)}>以前の取り込みを表示</button>{/if}
-    {#if importIssues.length}<details open><summary>要確認のファイル（{importIssues.length}件）</summary><ul>{#each importIssues.slice(0,50) as item (item.request_key)}<li>{item.relative_path ?? item.original_name}：{item.error_message}</li>{/each}</ul>{#if importIssues.length>50}<p>先頭50件を表示しています。</p>{/if}<button onclick={()=>importIssues=[]}>閉じる</button></details>{/if}
+  <section class="import-history" aria-label={m.collector.page.history}><h2>{m.collector.page.history}</h2>
+    {#if operationsError}<p role="alert">{operationsError}<button disabled={busy || tagBusy} onclick={()=>refreshImports()}>{m.collector.page.reloadHistory}</button></p>{/if}
+    {#if !operations.length && !operationsError}<p class="muted">{m.collector.page.historyEmpty}</p>{/if}
+    {#each operations as operation (operation.request_key)}<div class="history-row"><div><strong>{operation.remaining_count ? m.collector.page.historyResumable : operation.rejected_count ? m.collector.page.historyNeedsReview : m.collector.page.historyComplete}</strong><small>{m.collector.page.historyDate(operation.created_at)} · {m.collector.page.historyCounts(operation.registered_count, operation.item_count, operation.rejected_count, operation.remaining_count)}</small></div>{#if operation.rejected_count}<button disabled={busy || tagBusy} onclick={()=>showImportIssues(operation.request_key)}>{m.collector.page.showIssues}</button>{/if}{#if operation.remaining_count}<button disabled={busy || tagBusy || !!resumeKey} onclick={()=>resume(operation)}>{m.collector.page.resume}</button>{/if}</div>{/each}
+    {#if operationsCursor}<button disabled={busy || tagBusy} onclick={()=>refreshImports(true)}>{m.collector.page.olderImports}</button>{/if}
+    {#if importIssues.length}<details open><summary>{m.collector.page.issuesSummary(importIssues.length)}</summary><ul>{#each importIssues.slice(0,50) as item (item.request_key)}<li>{item.relative_path ?? item.original_name}{m.collector.page.separator}{item.error_message}</li>{/each}</ul>{#if importIssues.length>50}<p>{m.collector.page.first50}</p>{/if}<button onclick={()=>importIssues=[]}>{m.collector.close}</button></details>{/if}
   </section>
   <form class="search" onsubmit={(e) => { e.preventDefault(); void filter(); }}>
-    <input aria-label="タグで絞り込み" placeholder="タグで絞り込み（カンマ区切りはすべて一致）" bind:value={filterInput} disabled={busy || tagBusy} />
-    <select aria-label="メディア種別" bind:value={kind} disabled={busy || tagBusy}>
-      <option value="">画像と動画</option><option value="image">画像</option><option value="video">動画</option>
+    <input aria-label={m.collector.page.filterLabel} placeholder={m.collector.page.filterPlaceholder} bind:value={filterInput} disabled={busy || tagBusy} />
+    <select aria-label={m.collector.page.kindLabel} bind:value={kind} disabled={busy || tagBusy}>
+      <option value="">{m.collector.page.kindAll}</option><option value="image">{m.collector.page.kindImage}</option><option value="video">{m.collector.page.kindVideo}</option>
     </select>
-    <button disabled={busy || tagBusy}>検索</button>
-    <button type="button" disabled={busy || tagBusy} onclick={() => { kind = ''; void filter([]); }}>絞り込みを解除</button>
+    <button disabled={busy || tagBusy}>{m.collector.page.search}</button>
+    <button type="button" disabled={busy || tagBusy} onclick={() => { kind = ''; void filter([]); }}>{m.collector.page.clearFilter}</button>
   </form>
-  <section class="selection" aria-label="メディア選択">
-    <button disabled={busy || tagBusy || !items.length} onclick={() => { chosen = new Set([...new Set(items.map(item => item.id))].slice(0, 100)); }}>表示中の最大100件を選ぶ</button>
-    <button disabled={busy || tagBusy || !chosen.size} onclick={() => { chosen = new Set(); }}>選択を解除</button>
-    <button disabled={busy || tagBusy} onclick={refresh}>一覧を再読み込み</button>
+  <section class="selection" aria-label={m.collector.page.selectionLabel}>
+    <button disabled={busy || tagBusy || !items.length} onclick={() => { chosen = new Set([...new Set(items.map(item => item.id))].slice(0, 100)); }}>{m.collector.page.selectShown}</button>
+    <button disabled={busy || tagBusy || !chosen.size} onclick={() => { chosen = new Set(); }}>{m.collector.page.clearSelection}</button>
+    <button disabled={busy || tagBusy} onclick={refresh}>{m.collector.page.reloadList}</button>
   </section>
   {#if tagTargets.length || tagBusy}
     <TagEditor targets={tagTargets} currentTags={tagTargets.length === 1 ? items.find(item => item.id === tagTargets[0].asset_id)?.tags ?? [] : []}
@@ -293,24 +296,24 @@
   {/if}
   {#if error}<p role="alert" class="error">{error}</p>{/if}
   {#if pending.some(p => p.reason)}
-    <ul class="failures" aria-label="取り込めなかったファイル">
+    <ul class="failures" aria-label={m.collector.page.failuresLabel}>
       {#each pending.filter(p => p.reason) as p (p.key)}
-        <li><strong>{p.relativePath ?? p.file.name}</strong>：{p.reason}
-          {#if p.rejected}<button disabled={busy || tagBusy} onclick={() => { pending = pending.filter(item => item.key !== p.key); }}>一覧から外す</button>{/if}
+        <li><strong>{p.relativePath ?? p.file.name}</strong>{m.collector.page.separator}{p.reason}
+          {#if p.rejected}<button disabled={busy || tagBusy} onclick={() => { pending = pending.filter(item => item.key !== p.key); }}>{m.collector.page.removeFromList}</button>{/if}
         </li>
       {/each}
     </ul>
   {/if}
-  {#if pending.some(p => !p.done && !p.rejected) && !busy && !tagBusy}<button onclick={upload}>未完了分を再試行</button>{#if activeOperation}<button onclick={deferImport}>あとで再開</button>{/if}{/if}
+  {#if pending.some(p => !p.done && !p.rejected) && !busy && !tagBusy}<button onclick={upload}>{m.collector.page.retryUnfinished}</button>{#if activeOperation}<button onclick={deferImport}>{m.collector.page.resumeLater}</button>{/if}{/if}
   <div class="grid">
     {#each items as item (item.entry_id ?? item.id)}
       <article>
-        <label class="choose"><input type="checkbox" aria-label={`${item.relative_path ?? item.original_name}を選択`} checked={chosen.has(item.id)} disabled={busy || tagBusy} onchange={() => toggle(item)} />選択</label>
+        <label class="choose"><input type="checkbox" aria-label={m.collector.page.selectItem(item.relative_path ?? item.original_name)} checked={chosen.has(item.id)} disabled={busy || tagBusy} onchange={() => toggle(item)} />{m.collector.page.select}</label>
         {#if item.media_type.startsWith('video/')}
           <VideoPreview asset={item.id} name={item.original_name} />
-          <a href={`/m/collector-next/media/${item.id}/original`}>原本をダウンロード</a>
+          <a href={`/m/collector-next/media/${item.id}/original`}>{m.collector.page.downloadOriginal}</a>
         {:else}
-          <a href={`/m/collector-next/media/${item.id}/original`} title="原本をダウンロード">
+          <a href={`/m/collector-next/media/${item.id}/original`} title={m.collector.page.downloadOriginal}>
             <img src={`/m/collector-next/media/${item.id}/thumbnail`} alt={item.original_name} loading="lazy" />
           </a>
         {/if}
@@ -318,12 +321,12 @@
         <small>{item.width} × {item.height}</small>
         <div class="tags" title={item.tags.join(', ')}>
           {#each item.tags.slice(0, 8) as tag}<button disabled={busy || tagBusy} onclick={() => filter([tag])}>{tag}</button>{/each}
-          {#if item.tags.length > 8}<small>ほか{item.tags.length - 8}タグ</small>{/if}
+          {#if item.tags.length > 8}<small>{m.collector.page.moreTags(item.tags.length - 8)}</small>{/if}
         </div>
       </article>
     {/each}
   </div>
-  {#if cursor}<button disabled={busy || tagBusy} onclick={() => load(true)}>続きを表示</button>{/if}
+  {#if cursor}<button disabled={busy || tagBusy} onclick={() => load(true)}>{m.collector.page.loadMore}</button>{/if}
 </main>
 
 <style>

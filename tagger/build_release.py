@@ -13,7 +13,7 @@ pinned copy of the base wd14 model. Before saving anything, every row NOT named 
 allowlist must be byte-identical to the base model (tagger/registry_freeze.py) — this is
 what lets "N tags fixed" mean exactly that, instead of "a different, unverified model".
 
-    python3 build_release.py [--output-dir DIR] [--pin-revision SHA] [--venv-python PATH]
+    python3 build_release.py [--output-dir DIR] [--pin-revision SHA] [--venv-python PATH] [--base-only]
 
 A build that fails ANY check prints why to stderr and exits 1 without writing anything —
 publish_release.py (Step 4) only ever sees a release.json that already passed this gate.
@@ -132,7 +132,12 @@ def _patch_set_digest(entries: list[dict]) -> str:
 
 
 def _git_commit_sha() -> str:
-    return subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=REPO_ROOT, text=True).strip()
+    # A container build has no .git (.dockerignore): "unknown", as api/build_info.py says then.
+    try:
+        return subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=REPO_ROOT, text=True,
+                                       stderr=subprocess.DEVNULL).strip()
+    except (OSError, subprocess.CalledProcessError):
+        return "unknown"
 
 
 def merge(base_rows, stock_weight, stock_bias, loaded):
@@ -143,7 +148,7 @@ def merge(base_rows, stock_weight, stock_bias, loaded):
     import torch  # noqa: PLC0415
 
     n_stock = len(base_rows)
-    max_idx = max(meta["logit_index"] for _, meta, _, _ in loaded)
+    max_idx = max((meta["logit_index"] for _, meta, _, _ in loaded), default=-1)  # none: base only
     n_out = max(max_idx + 1, n_stock)
 
     new_weight = torch.zeros(n_out, stock_weight.shape[1], dtype=stock_weight.dtype)
@@ -196,20 +201,32 @@ def _vectors(rows: list[dict], weight, bias) -> dict:
     }
 
 
+#: The base a --base-only release is the unmodified copy of (the base every patch here names).
+BASE_REPO = "SmilingWolf/wd-swinv2-tagger-v3"
+
+
 def build_and_save(output_dir: Path, pin_revision: str | None = None,
-                    venv_python: str | None = None) -> dict:
+                    venv_python: str | None = None, base_only: bool = False) -> dict:
     import timm  # noqa: PLC0415
     import torch  # noqa: PLC0415
     import torch.nn as nn  # noqa: PLC0415
     from huggingface_hub import HfApi, hf_hub_download  # noqa: PLC0415
 
-    entries = _read_manifest()
-    if not entries:
-        raise BuildError("MANIFEST.json has no approved entries -- nothing to build")
-    loaded = [(entry, *_load_patch(entry["tag"], entry["version"], entry["patch_sha256"]))
-              for entry in entries]
-    metas = [meta for _, meta, _, _ in loaded]
-    base_repo, pinned = _resolve_base(metas)
+    if base_only:
+        # A new install has no patches (tagger/patches is this deployment's, not the
+        # product's): its first release is the base model itself. Asked for by name, so an
+        # emptied MANIFEST on a deployment that has patches still refuses below.
+        loaded, base_repo, pinned = [], BASE_REPO, None
+    else:
+        if not MANIFEST_PATH.is_file():
+            raise BuildError(f"{MANIFEST_PATH} does not exist -- a new install builds its "
+                             "first release with --base-only")
+        entries = _read_manifest()
+        if not entries:
+            raise BuildError("MANIFEST.json has no approved entries -- nothing to build")
+        loaded = [(entry, *_load_patch(entry["tag"], entry["version"], entry["patch_sha256"]))
+                  for entry in entries]
+        base_repo, pinned = _resolve_base([meta for _, meta, _, _ in loaded])
     resolved_revision = pin_revision or pinned or HfApi().model_info(base_repo).sha
     if not resolved_revision:
         raise BuildError(f"could not resolve a pinned revision for {base_repo}")
@@ -251,8 +268,9 @@ def build_and_save(output_dir: Path, pin_revision: str | None = None,
     from tagger.veto_apply import load_veto_dir  # noqa: PLC0415
     _veto_dir = Path(_os.environ.get("KURA_MODELS_DIR")
                      or (Path.home() / ".cache" / "kura-tagger" / "models")) / "veto-heads"
-    veto_heads = load_veto_dir(_veto_dir)
-    _retired = _load_retired_gates()
+    # A base-only release is the unmodified base: no veto heads either, whatever this host has.
+    veto_heads = {} if base_only else load_veto_dir(_veto_dir)
+    _retired = {} if base_only else _load_retired_gates()
     if _retired:
         _skipped = sorted(g for g in veto_heads if g in _retired)
         veto_heads = {g: v for g, v in veto_heads.items() if g not in _retired}
@@ -282,7 +300,7 @@ def build_and_save(output_dir: Path, pin_revision: str | None = None,
         "commit_sha": _git_commit_sha(),
         "base_model_repo": base_repo,
         "base_model_revision": resolved_revision,
-        "patch_set_digest": _patch_set_digest(entries),
+        "patch_set_digest": _patch_set_digest([entry for entry, *_ in loaded]),
         "model_sha256": model_sha256,
         "n_stock": n_stock,
         "n_out": n_out,
@@ -305,10 +323,13 @@ def main() -> int:
                           "else: resolve the repo's current HEAD)")
     ap.add_argument("--venv-python", default=None,
                      help="python of the build venv, captured as the release lockfile")
+    ap.add_argument("--base-only", action="store_true",
+                     help=f"release the unmodified base model ({BASE_REPO}) without reading "
+                          "tagger/patches: a new install's first release")
     args = ap.parse_args()
     try:
         release = build_and_save(Path(args.output_dir), pin_revision=args.pin_revision,
-                                  venv_python=args.venv_python)
+                                  venv_python=args.venv_python, base_only=args.base_only)
     except (BuildError, rf.FreezeViolation) as e:
         print(f"[build_release] REFUSED: {e}", file=sys.stderr)
         return 1

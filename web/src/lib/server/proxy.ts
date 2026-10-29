@@ -1,6 +1,7 @@
 import * as env from '$app/env/private';
 import { credential, SESSION_COOKIE } from './access';
 import type { RequestHandler } from '@sveltejs/kit';
+import { messagesFor, resolveUiLocale, UI_LOCALE_COOKIE, type Messages } from '#lib/i18n/index.ts';
 
 // Server-side auth proxy.
 //
@@ -52,11 +53,11 @@ function isUnreplayableAuthChallenge(err: unknown): boolean {
 // An auth challenge is refusal, not an unknown outcome: kura-api's key gate and its
 // token auth are both router-level dependencies, so they answer before any handler
 // runs and nothing was applied.
-function authChallenge(): Response {
+function authChallenge(m: Messages): Response {
   return new Response(JSON.stringify({
     detail: {
       error: 'upstream_auth_rejected',
-      fix: '認証が拒否されました。送信は行われていません。サインインし直してから再実行してください。',
+      fix: m.pages.proxy.authRejected,
     },
   }), { status: 401, headers: { 'content-type': 'application/json' } });
 }
@@ -71,19 +72,20 @@ function logProxyFailure(method: string, path: string, err: unknown, retried: bo
     + `${retried ? ' (retry)' : ''}: ${e?.name ?? 'Error'}: ${e?.message ?? String(err)}${cause}`);
 }
 
-function transportFailure(safeRead: boolean, retried: boolean): Response {
+function transportFailure(m: Messages, safeRead: boolean, retried: boolean): Response {
   return new Response(JSON.stringify({
     detail: {
       error: safeRead ? 'upstream_response_unavailable' : 'upstream_result_unknown',
       context: { retried },
       fix: safeRead
-        ? '応答を確認できませんでした。しばらく置いて読み込み直してください。'
-        : '処理結果を確認できませんでした。送信済みの可能性があります。一覧や処理状況を確認してから、必要な場合だけ再実行してください。',
+        ? m.pages.proxy.responseUnavailable
+        : m.pages.proxy.resultUnknown,
     },
   }), { status: 502, headers: { 'content-type': 'application/json' } });
 }
 
 const handler: RequestHandler = async ({ params, request, url, cookies }) => {
+  const m = messagesFor(resolveUiLocale(cookies.get(UI_LOCALE_COOKIE), request.headers.get('accept-language')));
   const path = params.path ?? '';
   // Path-traversal guard: params.path is percent-decoded, and fetch() would
   // normalize `..` segments, letting `/m/%2e%2e/<route>` escape the `/api/`
@@ -98,9 +100,9 @@ const handler: RequestHandler = async ({ params, request, url, cookies }) => {
   const login = !media && path === 'auth/login' && method === 'POST';
   let identity;
   try { identity = login ? null : await credential(request, cookies.get(SESSION_COOKIE)); }
-  catch { return new Response(JSON.stringify({ detail: { error: 'authentication_unavailable', fix: '認証サービスの復旧後に再試行してください。' } }), { status: 503, headers: { 'content-type': 'application/json', 'cache-control': 'no-store' } }); }
+  catch { return new Response(JSON.stringify({ detail: { error: 'authentication_unavailable', fix: m.pages.proxy.authUnavailable } }), { status: 503, headers: { 'content-type': 'application/json', 'cache-control': 'no-store' } }); }
   if (!login && !identity) {
-    return new Response(JSON.stringify({ detail: 'サインインが必要です' }), {
+    return new Response(JSON.stringify({ detail: m.pages.proxy.signInRequired }), {
       status: 401,
       headers: { 'content-type': 'application/json' },
     });
@@ -138,14 +140,14 @@ const handler: RequestHandler = async ({ params, request, url, cookies }) => {
     upstream = await fetch(target, init);
   } catch (err) {
     logProxyFailure(method, path, err, false);
-    if (isUnreplayableAuthChallenge(err)) return authChallenge();
-    if (!safeRead) return transportFailure(false, false);
+    if (isUnreplayableAuthChallenge(err)) return authChallenge(m);
+    if (!safeRead) return transportFailure(m, false, false);
     try {
       upstream = await fetch(target, init);
     } catch (retryErr) {
       logProxyFailure(method, path, retryErr, true);
-      if (isUnreplayableAuthChallenge(retryErr)) return authChallenge();
-      return transportFailure(true, true);
+      if (isUnreplayableAuthChallenge(retryErr)) return authChallenge(m);
+      return transportFailure(m, true, true);
     }
   }
 

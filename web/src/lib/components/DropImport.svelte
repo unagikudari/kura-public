@@ -2,6 +2,8 @@
   import { uploadPost } from '#lib/api.ts';
   import { droppedFiles, type ImportFile } from '#lib/collector/importFiles.ts';
   import { planDropImport, duplicateUpload, POSTS_ADDED_EVENT } from '#lib/dropImport.ts';
+  import { t } from '#lib/i18n/index.ts';
+  const m = t();
   let { onbusy }: { onbusy: (busy: boolean) => void } = $props();
   type Item = ImportFile & { state: 'pending'|'uploading'|'added'|'duplicate'|'failed'; reason?: string };
   let items = $state<Item[]>([]);
@@ -21,19 +23,19 @@
   function setBusy(value:boolean) { busy=value;onbusy(value); }
   function close() { if (busy) return;items=[];error='';skipped=0;lastId=null; }
   export function accept(transfer: DataTransfer) {
-    return acceptInputs(() => droppedFiles(transfer,()=>{}));
+    return acceptInputs(() => droppedFiles(transfer,()=>{},m));
   }
   export function acceptFiles(files: File[]) {
     return acceptInputs(async () => files.map(file => ({file})));
   }
   async function acceptInputs(read: () => Promise<ImportFile[]>) {
-    if (busy || unsettled) { error='先の取り込みを続けるか、終了してから追加してください。';return; }
+    if (busy || unsettled) { error=m.home.drop.finishFirst;return; }
     close();setBusy(true);enumerating=true;
     try {
       // Enumeration captures browser entry handles before the drop event ends.
-      const plan=planDropImport(await read());
+      const plan=planDropImport(await read(), m);
       skipped=plan.skipped;items=plan.files.map(input=>({...input,state:'pending'}));
-      if (!items.length) error='取り込める画像・動画がありません。';
+      if (!items.length) error=m.home.drop.nothingToImport;
     } catch(e) { error=(e as Error).message; }
     finally { enumerating=false;setBusy(false); }
     if (items.length) await run();
@@ -50,7 +52,7 @@
         try { const result=await uploadPost(item.file);lastId=result.id;item.state='added';addedNow++; }
         catch(e) {
           if (duplicateUpload(e)) { item.state='duplicate';continue; }
-          item.state='failed';item.reason=(e as Error).message || '取り込めませんでした';
+          item.state='failed';item.reason=(e as Error).message || m.home.drop.importFailed;
           const status=(e as {status?:number}).status;
           // Network/unknown outcomes stop the batch. Only an explicit click can
           // retry, and checksum duplicates make a previously accepted file safe.
@@ -69,19 +71,19 @@
 </script>
 <svelte:window onbeforeunload={beforeUnload} />
 {#if busy || items.length || error}
-  <section class="import-panel" aria-label="ファイル取り込み" aria-busy={busy}>
-    <div class="heading"><strong>{enumerating ? 'ファイルを確認中' : busy ? '取り込み中' : unsettled ? '取り込みを中断しています' : items.length ? '取り込み完了' : '取り込み'}</strong>
-      {#if busy && !enumerating}<button class="quiet" disabled={stop} onclick={()=>stop=true}>{stop ? '停止待ち' : '一時停止'}</button>
-      {:else if !busy}<button class="quiet" aria-label={unsettled ? '未完了の取り込みを破棄して閉じる' : '取り込み結果を閉じる'} onclick={close}>終了</button>{/if}
+  <section class="import-panel" aria-label={m.home.drop.panel} aria-busy={busy}>
+    <div class="heading"><strong>{enumerating ? m.home.drop.checkingFiles : busy ? m.home.drop.importing : unsettled ? m.home.drop.interrupted : items.length ? m.home.drop.done : m.home.drop.title}</strong>
+      {#if busy && !enumerating}<button class="quiet" disabled={stop} onclick={()=>stop=true}>{stop ? m.home.drop.stopping : m.home.drop.pause}</button>
+      {:else if !busy}<button class="quiet" aria-label={unsettled ? m.home.drop.discardAndClose : m.home.drop.closeResults} onclick={close}>{m.home.drop.finish}</button>{/if}
     </div>
-    {#if enumerating}<progress aria-label="ファイルを確認中"></progress>
-    {:else if items.length}<progress max={items.length} value={added+duplicates+failed.length} aria-label="取り込み処理済み件数"></progress>{/if}
-    <div class="counts" role="status"><span>追加 <b>{added}</b></span><span>登録済み <b>{duplicates}</b></span>{#if failed.length}<span class="error">失敗 <b>{failed.length}</b></span>{/if}{#if remaining}<span>残り <b>{remaining}</b></span>{/if}{#if skipped}<span>対象外 {skipped}</span>{/if}</div>
+    {#if enumerating}<progress aria-label={m.home.drop.checkingFiles}></progress>
+    {:else if items.length}<progress max={items.length} value={added+duplicates+failed.length} aria-label={m.home.drop.processedCount}></progress>{/if}
+    <div class="counts" role="status"><span>{m.home.drop.added} <b>{added}</b></span><span>{m.home.drop.duplicates} <b>{duplicates}</b></span>{#if failed.length}<span class="error">{m.home.drop.failed} <b>{failed.length}</b></span>{/if}{#if remaining}<span>{m.home.drop.remaining} <b>{remaining}</b></span>{/if}{#if skipped}<span>{m.home.drop.skipped} {skipped}</span>{/if}</div>
     {#if current}<div class="filename" title={current.relativePath ?? current.file.name}>{current.relativePath ?? current.file.name}</div>{/if}
     {#if error}<p class="error" role="alert">{error}</p>{/if}
-    {#if failed.length}<button class="quiet details" aria-expanded={expanded} onclick={()=>expanded=!expanded}>失敗したファイル {expanded ? '▴' : '▾'}</button>{#if expanded}<ul>{#each failed.slice(0,20) as item}<li><b>{item.relativePath ?? item.file.name}</b><span>{item.reason}</span></li>{/each}</ul>{#if failed.length>20}<small>先頭20件を表示</small>{/if}{/if}{/if}
-    <div class="actions">{#if !busy && unsettled}<button onclick={run}>{remaining ? '未完了分を続ける' : '失敗分だけ再試行'}</button>{/if}{#if lastId}<a href={`/post/${lastId}`}>追加した画像を開く ↗</a>{/if}</div>
-    {#if unsettled || busy}<small>このタブを開いたままにしてください。画面を移動しても取り込みは続きます。</small>{/if}
+    {#if failed.length}<button class="quiet details" aria-expanded={expanded} onclick={()=>expanded=!expanded}>{m.home.drop.failedFiles} {expanded ? '▴' : '▾'}</button>{#if expanded}<ul>{#each failed.slice(0,20) as item}<li><b>{item.relativePath ?? item.file.name}</b><span>{item.reason}</span></li>{/each}</ul>{#if failed.length>20}<small>{m.home.drop.first20}</small>{/if}{/if}{/if}
+    <div class="actions">{#if !busy && unsettled}<button onclick={run}>{remaining ? m.home.drop.continueRest : m.home.drop.retryFailed}</button>{/if}{#if lastId}<a href={`/post/${lastId}`}>{m.home.drop.openAdded}</a>{/if}</div>
+    {#if unsettled || busy}<small>{m.home.drop.keepTabOpen}</small>{/if}
   </section>
 {/if}
 <style>

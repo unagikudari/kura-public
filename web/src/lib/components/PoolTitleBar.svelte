@@ -18,6 +18,8 @@
   import PoolVerifyBadge from '#lib/components/PoolVerifyBadge.svelte';
   import type { PoolSource, PoolSummary } from '#lib/types.ts';
   import { tagLocale, tagDisplayName } from '#lib/tagLocale.ts';
+  import { t } from '#lib/i18n/index.ts';
+  const m = t();
 
   let { poolId }: { poolId: number } = $props();
 
@@ -167,43 +169,43 @@
     <summary class="pool-title-bar" title={poolName}>
       <span class="pool-title-label">Pool #{poolId}</span>
       <bdi class="pool-title-name">{poolName}</bdi>
-      {#if artists.length}<bdi class="pool-title-artists" title={`アーティスト: ${artistNames}`}>{artistNames}</bdi>{/if}
+      {#if artists.length}<bdi class="pool-title-artists" title={m.home.poolTitle.artistsTitle(artistNames)}>{artistNames}</bdi>{/if}
       <span class="pool-title-chevron" aria-hidden="true">⌄</span>
     </summary>
     <div class="pool-details">
       <bdi class="pool-full-name">{poolName}</bdi>
       {#if artists.length}
-        <div class="pool-artists" aria-label="アーティスト">
-          <span class="pool-artists-label">アーティスト</span>
+        <div class="pool-artists" aria-label={m.home.poolTitle.artists}>
+          <span class="pool-artists-label">{m.home.poolTitle.artists}</span>
           {#each artists as artist (artist.id)}
             <a href={`/?q=${encodeURIComponent(artist.names[0])}`}><bdi>{tagDisplayName(artist.names[0], artist.localizedNames, $locale)}</bdi></a>
           {/each}
         </div>
       {/if}
       <div class="pool-actions">
-    <a href={`/lab/collector/existing?pool=${poolId}`}>新しい閲覧で開く</a>
+    <a href={`/lab/collector/existing?pool=${poolId}`}>{m.home.poolTitle.openInCollector}</a>
     <PoolVerifyBadge variant="chip" status={verifyStatus} onToggle={toggleVerifyStatus} onRelease={releaseVerifyStatus} />
     {#if taggerSource}
-      <span class="pool-tagger-source" title="この検証 pool を生成した tagger 世代">{taggerSource}</span>
+      <span class="pool-tagger-source" title={m.home.poolTitle.taggerSource}>{taggerSource}</span>
     {/if}
     {#if poolSource}
       <a class="pool-title-source" href={poolSource} target="_blank" rel="noopener noreferrer">{poolSource}</a>
     {/if}
     {#if sources.length > 1}
       <button class="pool-sources-toggle" onclick={() => sourcesExpanded = !sourcesExpanded}
-              title="このpoolを構成する全source">
+              title={m.home.poolTitle.allSources}>
         +{sources.length - 1} sources {sourcesExpanded ? '▴' : '▾'}
       </button>
     {/if}
     <button class="pool-pair-scope" class:on={pairScopeEnabled === true}
             disabled={pairScopeBusy} onclick={togglePairScope}
-            title="この pool をペア探索 (censored↔uncensored 自動対応付け) の対象にする/外す">
-      ⿻ ペア探索: {pairScopeEnabled === true ? 'ON' : pairScopeEnabled === false ? 'OFF' : '未設定'}
+            title={m.home.poolTitle.pairScopeTitle}>
+      ⿻ {m.home.poolTitle.pairScope}: {pairScopeEnabled === true ? 'ON' : pairScopeEnabled === false ? 'OFF' : m.home.poolTitle.unset}
     </button>
     <button class="pool-tagger-exclude" class:on={taggerExcluded === true}
             disabled={taggerExcludeBusy} onclick={toggleTaggerExclude}
-            title="自分の生成物/写真管理用など、この pool を tagger 自動タグ付けパイプラインから恒久的に除外する/戻す">
-      🚫学習除外: {taggerExcluded === true ? 'ON' : '未設定'}
+            title={m.home.poolTitle.taggerExcludeTitle}>
+      🚫{m.home.poolTitle.taggerExclude}: {taggerExcluded === true ? 'ON' : m.home.poolTitle.unset}
     </button>
       </div>
   {#if sourcesExpanded && sources.length > 1}
@@ -222,7 +224,7 @@
           {#if !s.isPrimary && s.isExternal}
             <button class="pool-source-promote" disabled={promotingUrl === s.url}
                     onclick={() => handlePromoteSource(s.url)}>
-              {promotingUrl === s.url ? '…' : 'primaryにする'}
+              {promotingUrl === s.url ? '…' : m.home.poolTitle.makePrimary}
             </button>
           {/if}
         </li>
@@ -233,12 +235,11 @@
     </div>
   </details>
   {#if focusTag}
-    <div class="pool-focus"><span class="pool-focus-tag" title="このプールの検証対象タグ">🎯 {focusTag}</span></div>
+    <div class="pool-focus"><span class="pool-focus-tag" title={m.home.poolTitle.focusTag}>🎯 {focusTag}</span></div>
   {/if}
   {#if focusTag && verifyStatus === 'pending'}
     <div class="pool-mission">
-      任務: 各投稿で「<strong>{focusTag}</strong>」の当否だけを確認する — 誤検出は外す・見落としは付ける(他のタグは対象外)。
-      完了したら上の検証チップを「検証済」に切り替えると GT に反映される。
+      {m.home.poolTitle.missionBefore}<strong>{focusTag}</strong>{m.home.poolTitle.missionAfter}
     </div>
   {/if}
 {/if}

@@ -1,6 +1,8 @@
 <script lang="ts">
   import { tagLocale, tagDisplayName } from '#lib/tagLocale.ts';
+  import { t } from '#lib/i18n/index.ts';
   const locale = tagLocale();
+  const m = t();
   // タグ検索オートコンプリート (input + dropdown + keyboard nav) — P3 抽出
   // (plan kura-web-componentization、2026-07-19)。旧 6 site (BulkTagBar /
   // Header / Lightbox / SinglePostView / post/[id](dead) / tags/edit merge) の
@@ -182,7 +184,7 @@
       onfocus={handleFocus}
       oncompositionstart={handleCompositionStart}
       oncompositionend={handleCompositionEnd}
-      aria-label={placeholder || 'タグを検索'}
+      aria-label={placeholder || m.tags.suggest.searchLabel}
       autocomplete="off"
       autocapitalize="none"
       autocorrect="off"
@@ -200,7 +202,7 @@
       onfocus={handleFocus}
       oncompositionstart={handleCompositionStart}
       oncompositionend={handleCompositionEnd}
-      aria-label={placeholder || 'タグを検索'}
+      aria-label={placeholder || m.tags.suggest.searchLabel}
       autocomplete="off"
     />
   {:else}
@@ -214,7 +216,7 @@
       onfocus={handleFocus}
       oncompositionstart={handleCompositionStart}
       oncompositionend={handleCompositionEnd}
-      aria-label={placeholder || 'タグを検索'}
+      aria-label={placeholder || m.tags.suggest.searchLabel}
       autocomplete="off"
       autocapitalize="none"
       autocorrect="off"
@@ -238,8 +240,8 @@
           <!-- この数は「このタグが付いた **post** の数」。pool 一覧の件数 (pool 数)
                とは別物で、単なる数字だと 5,431 と出た語が pool mode で 16 件に
                なる理由が読めない (2026-09-05 の実測)。単位を書いて取り違えを消す。 -->
-          <span class="tsi-usage" title="このタグが付いた post の数">
-            {sug.usages.toLocaleString()} post</span>
+          <span class="tsi-usage" title={m.tags.suggest.usageTitle}>
+            {m.tags.suggest.posts(sug.usages)}</span>
         </button>
       {/each}
     </div>

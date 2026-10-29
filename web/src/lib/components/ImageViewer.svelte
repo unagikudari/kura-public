@@ -9,6 +9,8 @@
   import TagChip from '#lib/components/TagChip.svelte';
   import TagSuggestInput from '#lib/components/TagSuggestInput.svelte';
   import type { MicroTag, Post, TagSuggestion } from '#lib/types.ts';
+  import { t } from '#lib/i18n/index.ts';
+  const m = t();
 
   let {
     posts = $bindable<(Post | null)[]>([]),
@@ -131,10 +133,7 @@
       .then((si) => { if (searchForId === id) searchInfo = si; })
       .catch(() => { if (searchForId === id) searchInfo = null; });
   });
-  const SEARCH_LABEL: Record<string, string> = {
-    pending: '探索対象', excluded: '対象外', found: '発見済',
-    not_found: '相手なし', review: '要確認',
-  };
+  const SEARCH_LABEL: Record<string, string> = m.home.viewer.searchStatus;
   async function toggleSearchFlag() {
     const p = displayPost;
     if (!p || searchBusy) return;
@@ -371,7 +370,7 @@
     // A submitted save cannot be discarded; finish it before leaving this view.
     if (saveStatus === 'saving') return false;
     if (!tagsDirty) return true;
-    if (!window.confirm('保存していないタグの変更を破棄して移動しますか？')) return false;
+    if (!window.confirm(m.home.viewer.discardUnsaved)) return false;
     // Clear the discarded draft before the route callback runs: one navigation
     // must not prompt both here and in beforeNavigate. This never writes tags.
     pendingTags = [...(displayPost?.tags ?? [])];
@@ -419,7 +418,7 @@
     } catch (e) {
       if (displayPost?.id === p.id) {
         saveStatus = 'error';
-        saveMsg = e instanceof Error ? e.message : 'タグの固定を変更できませんでした';
+        saveMsg = e instanceof Error ? e.message : m.home.viewer.lockFailed;
       }
     } finally {
       lockBusy = null;
@@ -644,18 +643,18 @@
   ontouchcancel={() => swiping = false}
   role="dialog"
   aria-modal="true"
-  aria-label="画像ビューア"
+  aria-label={m.home.viewer.label}
   tabindex="-1"
 >
   <!-- Top bar -->
   <div class="lb-top" bind:clientHeight={toolbarHeight}>
     <div class="lb-toolbar-scroll">
     {#if displayPost}
-      <button class="lb-detail" onclick={() => showDetails = !showDetails} aria-expanded={showDetails}>詳細</button>
-      <button class="lb-detail" disabled={isVideo(displayPost) || isPdf(displayPost) || !(naturalSizes[displayPost.id]?.width || displayPost.canvasWidth)} onclick={() => { zoomed = !zoomed; if (zoomed) showPair = false; }} aria-pressed={zoomed}>{zoomed ? '全体' : '原寸'}</button>
+      <button class="lb-detail" onclick={() => showDetails = !showDetails} aria-expanded={showDetails}>{m.home.viewer.details}</button>
+      <button class="lb-detail" disabled={isVideo(displayPost) || isPdf(displayPost) || !(naturalSizes[displayPost.id]?.width || displayPost.canvasWidth)} onclick={() => { zoomed = !zoomed; if (zoomed) showPair = false; }} aria-pressed={zoomed}>{zoomed ? m.home.viewer.fit : m.home.viewer.actualSize}</button>
       {#if topOffset === 0 && displayPost}<ViewerTagList post={displayPost} />{/if}
-      <button class="lb-detail" onclick={() => setSidebar(!sidebarVisible)} aria-pressed={sidebarVisible}>タグ</button>
-      <a class="lb-detail" href={postUrl(displayPost.id, true)}>マンガ</a>
+      <button class="lb-detail" onclick={() => setSidebar(!sidebarVisible)} aria-pressed={sidebarVisible}>{m.home.viewer.tags}</button>
+      <a class="lb-detail" href={postUrl(displayPost.id, true)}>{m.home.viewer.manga}</a>
     {/if}
     {#if displayPost}
       <span class="lb-id">#{displayPost.id}</span>
@@ -676,14 +675,14 @@
         onclick={toggleFav}
         disabled={favBusy}
         aria-pressed={displayPost.ownFavorite}
-        title={displayPost.ownFavorite ? 'お気に入りから外す' : 'お気に入りに追加'}
+        title={displayPost.ownFavorite ? m.home.viewer.unfavorite : m.home.viewer.favorite}
       >★{#if displayPost.favoriteCount > 0}<span class="lb-fav-n">{displayPost.favoriteCount}</span>{/if}</button>
       <button
         class="lb-fav"
         class:active={showRegions}
         onclick={() => (showRegions = !showRegions)}
         aria-pressed={showRegions}
-        title="編集済み censor 領域を重ねて確認 (c)"
+        title={m.home.viewer.showRegions}
       >🎯</button>
       {#if pairInfo}
         <button
@@ -691,7 +690,7 @@
           class:active={showPair}
           onclick={() => { showPair = !showPair; if (showPair) zoomed = false; }}
           aria-pressed={showPair}
-          title="censored↔uncensored ペア表示 (p)"
+          title={m.home.viewer.showPair}
         >⿻</button>
       {:else if searchInfo}
         <button
@@ -699,26 +698,26 @@
           class:excluded={searchInfo.status === 'excluded'}
           onclick={toggleSearchFlag}
           disabled={searchBusy}
-          title={`ペア探索: ${SEARCH_LABEL[searchInfo.status] ?? '未登録'} — クリックで探索対象⇔対象外${searchInfo.bestCandidate ? ` (候補 #${searchInfo.bestCandidate} score ${searchInfo.bestScore?.toFixed?.(2) ?? searchInfo.bestScore})` : ''}`}
-        >🔍{SEARCH_LABEL[searchInfo.status] ?? '未'}</button>
+          title={m.home.viewer.pairSearchTitle(SEARCH_LABEL[searchInfo.status] ?? m.home.viewer.searchUnregistered, searchInfo.bestCandidate, String(searchInfo.bestScore?.toFixed?.(2) ?? searchInfo.bestScore))}
+        >🔍{SEARCH_LABEL[searchInfo.status] ?? m.home.viewer.searchUnset}</button>
       {/if}
     {/if}
     </div>
-    <button class="lb-close" onclick={close} title="閉じる (Esc)">✕</button>
+    <button class="lb-close" onclick={close} title={m.home.viewer.close}>✕</button>
   </div>
 
   {#if showDetails && displayPost}
-    <aside class="image-details" style:top={`${toolbarHeight + 8}px`} aria-label="画像の詳細">
-      <a href={postUrl(displayPost.id)}>画像URL #{displayPost.id}</a>
+    <aside class="image-details" style:top={`${toolbarHeight + 8}px`} aria-label={m.home.viewer.imageDetails}>
+      <a href={postUrl(displayPost.id)}>{m.home.viewer.imageUrl} #{displayPost.id}</a>
       <p>{displayPost.originalFilename ?? ''}</p>
       <p>{displayPost.mimeType ?? ''} {displayPost.fileSize ?? 0} bytes</p>
       <p>{displayPost.canvasWidth ?? '?'} × {displayPost.canvasHeight ?? '?'}</p>
-      {#if displayPost.creationTime}<p>登録: {displayPost.creationTime}</p>{/if}
+      {#if displayPost.creationTime}<p>{m.home.viewer.created}: {displayPost.creationTime}</p>{/if}
       {#if displayPost.score}<p>score: {displayPost.score}</p>{/if}
       {#if related.length}
-        <nav class="related-images" aria-label="同じPoolの画像">
+        <nav class="related-images" aria-label={m.home.viewer.samePool}>
           {#each related as item, at (item.id)}
-            <a href={`/post/${item.id}?q=${encodeURIComponent(`pool:${displayPost.pools![0].id}`)}&idx=${at}`} aria-label={`画像 ${item.id}`}>
+            <a href={`/post/${item.id}?q=${encodeURIComponent(`pool:${displayPost.pools![0].id}`)}&idx=${at}`} aria-label={m.home.viewer.imageN(item.id)}>
               <img src={mediaUrl(item.thumbnailUrl)} alt={`#${item.id}`} loading="lazy" />
             </a>
           {/each}
@@ -735,8 +734,8 @@
       type="button"
       class="lb-nav lb-prev"
       onclick={(e) => { e.stopPropagation(); go(-1); }}
-      title="前 (←)"
-      aria-label="前"
+      title={m.home.viewer.prevTitle}
+      aria-label={m.home.viewer.prev}
     >‹</button>
   {/if}
   {#if idx >= 0 && idx < total - 1}
@@ -744,8 +743,8 @@
       type="button"
       class="lb-nav lb-next"
       onclick={(e) => { e.stopPropagation(); go(1); }}
-      title="次 (→)"
-      aria-label="次"
+      title={m.home.viewer.nextTitle}
+      aria-label={m.home.viewer.next}
     >›</button>
   {/if}
 
@@ -766,7 +765,7 @@
         {#each displayPost.pools as pool}
           <a class="lb-pool" href={`/?q=pool:${pool.id}`}
             onclick={(e) => e.stopPropagation()}
-            title={`pool「${pool.names[0] ?? `#${pool.id}`}」を開く (${pool.postCount}件)`}>
+            title={m.home.viewer.openPool(pool.names[0] ?? `#${pool.id}`, pool.postCount)}>
             <span class="lb-pool-k">pool</span>{pool.names[0] ?? `#${pool.id}`}
           </a>
         {/each}
@@ -790,7 +789,7 @@
       {:else if isPdf(displayPost)}
         <div class="lb-pdf">
           <img class="lb-pdf-thumb" src={mediaUrl(displayPost.thumbnailUrl)} alt="" />
-          <a class="lb-pdf-open" href={mediaUrl(displayPost.contentUrl)} target="_blank" rel="noopener">PDF を開く ↗</a>
+          <a class="lb-pdf-open" href={mediaUrl(displayPost.contentUrl)} target="_blank" rel="noopener">{m.home.viewer.openPdf}</a>
         </div>
       {:else if pairInfo && showPair && pairCen && pairUnc}
         <!-- censor_pair two-up: censored (left, censor 領域 overlay 可) | uncensored (right)。
@@ -801,7 +800,7 @@
             <img class="lb-media" src={mediaUrl(pairCen.contentUrl)} alt={`#${pairCen.id}`} draggable="false" decoding="async" />
             <CensorRegions postId={pairCen.id} w={pairCen.canvasWidth} h={pairCen.canvasHeight}
               show={showRegions} enabled={true} fit="xMaxYMid" />
-            <span class="lb-pair-label">#{pairCen.id} censored{pairInfo.confirmed ? '' : ' (未確定)'}</span>
+            <span class="lb-pair-label">#{pairCen.id} censored{pairInfo.confirmed ? '' : m.home.viewer.unconfirmed}</span>
           </div>
           <div class="lb-pair-cell unc">
             <img class="lb-media" src={mediaUrl(pairUnc.contentUrl)} alt={`#${pairUnc.id}`} draggable="false" decoding="async" />
@@ -840,7 +839,7 @@
         </div>
       {/if}
     {:else}
-      <div class="lb-loading">読み込み中…</div>
+      <div class="lb-loading">{m.home.viewer.loading}</div>
     {/if}
   </div>
 
@@ -848,15 +847,15 @@
   {#if displayPost && sidebarVisible}
     {@const dp = displayPost}
     {@const isV = isVideo(dp)}
-    <aside class="lb-tag-sidebar" class:mobile-open={mobileSidebarOpen} style:top={`${toolbarHeight + 8}px`} style:--tag-sidebar-top={`${toolbarHeight + topOffset + 8}px`} class:focused={sugOpen} aria-label="タグ編集">
-      <div class="lb-tag-heading"><strong>タグ</strong><span>{pendingTags.length}</span>
-        <button type="button" aria-label="タグ編集を閉じる" onclick={() => setSidebar(false)}>×</button>
+    <aside class="lb-tag-sidebar" class:mobile-open={mobileSidebarOpen} style:top={`${toolbarHeight + 8}px`} style:--tag-sidebar-top={`${toolbarHeight + topOffset + 8}px`} class:focused={sugOpen} aria-label={m.home.viewer.tagEdit}>
+      <div class="lb-tag-heading"><strong>{m.home.viewer.tags}</strong><span>{pendingTags.length}</span>
+        <button type="button" aria-label={m.home.viewer.closeTagEdit} onclick={() => setSidebar(false)}>×</button>
       </div>
       <!-- タグ chip 一覧だけをスクロール対象にする — 入力欄・サジェスト・save は
            この外側 (常に全表示、overflow-y:auto に切り取られない)。 -->
       <div class="lb-tag-scroll">
         <IdentitySummary post={dp} />
-        {#each groupByFamily(pendingTags) as fam (fam.key)}
+        {#each groupByFamily(pendingTags, m) as fam (fam.key)}
           <!-- family 単位でまとめる。部位 → 行為 を隣接させるので「anilingus が
                付いているのに anus が無い」のような対象の錯誤が目で拾える。 -->
           <div class="lb-tag-fam">
@@ -875,8 +874,8 @@
       </div>
       <div class="lb-tag-controls">
         {#if isV}
-          <button class="lb-thumb-btn" type="button" onclick={setThumbFromButton} title="現在再生中のフレームをサムネにする (動画上の右クリックからも可)">
-            📷 サムネ
+          <button class="lb-thumb-btn" type="button" onclick={setThumbFromButton} title={m.home.viewer.thumbTitle}>
+            {m.home.viewer.thumb}
           </button>
           {#if thumbStatus[dp.id]}
             <span class="lb-thumb-status" class:err={thumbStatus[dp.id].startsWith('✗')}>{thumbStatus[dp.id]}</span>
@@ -896,9 +895,9 @@
           onEnterNoPick={(raw) => { if (raw.trim()) addTagByName(raw); else saveTags(); }}
         />
         <button class="lb-save" type="button" onclick={saveTags} disabled={!tagsDirty || saveStatus === 'saving' || lockBusy !== null}>
-          {saveStatus === 'saving' ? '保存中…' : '保存'}
+          {saveStatus === 'saving' ? m.home.viewer.saving : m.home.viewer.save}
         </button>
-        <button class="lb-undo" type="button" onclick={undoTagChanges} disabled={!tagsDirty || saveStatus === 'saving'}>変更を戻す</button>
+        <button class="lb-undo" type="button" onclick={undoTagChanges} disabled={!tagsDirty || saveStatus === 'saving'}>{m.home.viewer.undo}</button>
         {#if saveMsg}
           <span role="status" class="lb-save-msg" class:err={saveStatus === 'error'}>{saveMsg}</span>
         {/if}
@@ -917,7 +916,7 @@
   <div class="lb-ctx-overlay" onclick={closeVideoMenu} oncontextmenu={(e) => { e.preventDefault(); closeVideoMenu(); }} role="presentation"></div>
   <div class="lb-ctx-menu" style="left:{videoMenu.x}px; top:{videoMenu.y}px">
     <button class="lb-ctx-item" type="button" onclick={setThumbFromMenu}>
-      📷 現在のフレーム ({videoMenu.time.toFixed(1)}s) をサムネに
+      {m.home.viewer.frameToThumb(videoMenu.time.toFixed(1))}
     </button>
   </div>
 {/if}

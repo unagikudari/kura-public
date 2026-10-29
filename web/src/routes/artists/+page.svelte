@@ -6,6 +6,9 @@
   import { artistIntegration, artistEditHref, externalUrl, type ArtistSource } from '#lib/artistWorkspace.ts';
   import type { TagDetail } from '#lib/types.ts';
   import type { PageData } from './$types';
+  import { t } from '#lib/i18n/index.ts';
+  const m = t();
+  const a = m.pages.artists;
   let { data }: { data: PageData } = $props();
   let busy = $state<string | null>(null);
   let message = $state('');
@@ -29,22 +32,22 @@
     }
     return [...groups].map(([url, rows]) => ({ url, rows }));
   }
-  const time = (value: string | null) => value ? new Date(value).toLocaleString('ja-JP', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '未確認';
+  const time = (value: string | null) => value ? new Date(value).toLocaleString('ja-JP', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : a.unconfirmed;
   const coreKind = (source: ArtistSource) => source.kind === 'search' || source.kind === 'creator';
   const unverified = (source: ArtistSource) => artistIntegration?.describe?.(source)?.unverified ?? (!coreKind(source) && source.active && !source.lastAt);
-  const kindLabel = (source: ArtistSource) => artistIntegration?.describe?.(source)?.label ?? (source.kind === 'search' ? '検索' : 'アカウント巡回');
-  const label = (source: ArtistSource) => unverified(source) ? '未確認' : source.state === 'partial' ? '一部巡回中' : source.state === 'dead' ? '要確認' : source.state === 'walking' ? '確認中' : source.active ? '巡回中' : '停止中';
+  const kindLabel = (source: ArtistSource) => artistIntegration?.describe?.(source)?.label ?? (source.kind === 'search' ? a.kindSearch : a.kindAccount);
+  const label = (source: ArtistSource) => unverified(source) ? a.unconfirmed : source.state === 'partial' ? a.statePartial : source.state === 'dead' ? a.stateDead : source.state === 'walking' ? a.stateWalking : source.active ? a.stateActive : a.stateStopped;
   function location(raw: string) { try { const u = new URL(raw); return u.host + u.pathname + u.search; } catch { return raw; } }
   async function act(key: string, work: () => Promise<unknown>) {
     if (busy) return;
     busy = key; message = ''; receiptHref = null;
     try { const result = await work(); receiptHref = artistIntegration?.receiptHref?.(result) ?? null; await invalidateAll(); }
-    catch (error) { message = error instanceof Error ? error.message : '更新できませんでした。'; }
+    catch (error) { message = error instanceof Error ? error.message : a.updateFailed; }
     finally { busy = null; }
   }
   async function attach(artist: TagDetail, url: string, explicitPlatform = '') {
     const valid = externalUrl(url);
-    if (!valid) throw new Error('httpまたはhttpsのURLを入力してください。');
+    if (!valid) throw new Error(a.needHttpUrl);
     const host = new URL(valid).hostname.replace(/^www\./, '');
     const reference = artistIntegration ? await artistIntegration.reference(url.trim()) : { url:url.trim(), platform:host };
     await addTagLink(artist.names[0], { url: reference.url, platform: explicitPlatform.trim() || reference.platform || host });
@@ -53,79 +56,79 @@
   function href(page: number) { const p = new URLSearchParams({ q: data.query, page: String(page) }); if (data.assignUrl) p.set('source', data.assignUrl); return '/artists?' + p; }
 </script>
 
-<svelte:head><title>アーティスト — kura</title></svelte:head>
+<svelte:head><title>{a.title}</title></svelte:head>
 <div class="page">
 <Header showSearch={false} />
-<SectionTabs label="アーティストの管理" tabs={[
-  {label:'作家一覧',href:'/artists',active:data.view === 'artists'},
-  {label:`未整理 ${unassigned.length + data.unclassified.length}`,href:'/artists?view=unassigned',active:data.view === 'unassigned'},
-  ...(artistIntegration?.advancedHref ? [{label:'詳細設定',href:artistIntegration.advancedHref}] : [])
+<SectionTabs label={a.sectionLabel} tabs={[
+  {label:a.tabArtists,href:'/artists',active:data.view === 'artists'},
+  {label:a.tabUnassigned(unassigned.length + data.unclassified.length),href:'/artists?view=unassigned',active:data.view === 'unassigned'},
+  ...(artistIntegration?.advancedHref ? [{label:a.tabAdvanced,href:artistIntegration.advancedHref}] : [])
 ]} />
 <div class="artist-scroll">
 <main>
   <div class="toolbar">
-    <div><h1>アーティスト</h1>{#if data.tags}<span class="muted">{data.tags.total?.toLocaleString()} 作家</span>{/if}</div>
-    {#if data.id}<a class="advanced" href="/artists">一覧へ戻る</a>{/if}
+    <div><h1>{a.heading}</h1>{#if data.tags}<span class="muted">{a.artistCount(data.tags.total?.toLocaleString() ?? '')}</span>{/if}</div>
+    {#if data.id}<a class="advanced" href="/artists">{a.backToList}</a>{/if}
     <form action="/artists" method="GET" class="search">
-      <input type="search" name="q" value={data.query} placeholder="作家名・別名" aria-label="作家名・別名で検索" />
+      <input type="search" name="q" value={data.query} placeholder={a.searchPlaceholder} aria-label={a.searchLabel} />
       {#if data.assignUrl}<input type="hidden" name="source" value={data.assignUrl} />{/if}
-      <button type="submit">検索</button>
+      <button type="submit">{a.search}</button>
     </form>
-    <a class="button" href="/tags/edit?cat=artist&from=%2Fartists">作家タグを追加</a>
-    <button disabled={busy !== null} onclick={() => act('refresh', () => Promise.resolve())} aria-label="更新">↻</button>
+    <a class="button" href="/tags/edit?cat=artist&from=%2Fartists">{a.addArtistTag}</a>
+    <button disabled={busy !== null} onclick={() => act('refresh', () => Promise.resolve())} aria-label={a.refresh}>↻</button>
   </div>
-  {#if receiptHref}<p class="receipt" role="status"><a href={receiptHref}>受け付けた取得の記録を見る →</a></p>{/if}
+  {#if receiptHref}<p class="receipt" role="status"><a href={receiptHref}>{a.receipt}</a></p>{/if}
   {#if message}<p class="error" role="alert">{message}</p>{/if}
   {#if data.catalogError}<p class="error" role="alert">{data.catalogError}</p>{/if}
   {#if data.linksError}<p class="error" role="alert">{data.linksError}</p>{/if}
   {#if data.unclassifiedError}<p class="error" role="alert">{data.unclassifiedError}</p>{/if}
-  {#if data.linksLimited}<p class="muted">リンクの表示上限に達しました。作家を絞り込んでください。</p>{/if}
+  {#if data.linksLimited}<p class="muted">{a.linksLimited}</p>{/if}
   {#if data.sourcesError}<p class="error" role="alert">{data.sourcesError}</p>{/if}
-  {#if data.sources?.limited}<p class="muted">巡回は最大300件ずつ表示しています。表示外の巡回は{#if artistIntegration?.listHref}<a href={artistIntegration.listHref}>巡回一覧</a>{:else}巡回一覧{/if}で確認できます。</p>{/if}
+  {#if data.sources?.limited}<p class="muted">{a.sourcesLimitedBefore}{#if artistIntegration?.listHref}<a href={artistIntegration.listHref}>{a.patrolList}</a>{:else}{a.patrolList}{/if}{a.sourcesLimitedAfter}</p>{/if}
   {#if data.assignUrl && data.view === 'artists'}
-    <aside class="assignment"><strong>関連付ける作家を選択</strong><span>{location(data.assignUrl)}</span><a href="/artists">解除</a></aside>
+    <aside class="assignment"><strong>{a.assignHeading}</strong><span>{location(data.assignUrl)}</span><a href="/artists">{a.assignCancel}</a></aside>
   {/if}
   {#if data.view === 'unassigned'}
-    <p class="muted">{artistIntegration ? '巡回を作家に関連付けると、外部アカウントと一緒に管理できます。' : 'アカウントが付いたタグのカテゴリを確認できます。'}</p>
-    {#if artistIntegration}<form class="patrol-add" onsubmit={(event) => { event.preventDefault(); act('add-patrol', async () => { const value = externalUrl(patrolUrl); if (!value) throw new Error('URLを確認してください。'); await artistIntegration!.register(value); patrolUrl = ''; }); }}><input type="url" required disabled={busy !== null} bind:value={patrolUrl} placeholder="検索・作家ページのURL" aria-label="新しい巡回のURL" /><button disabled={busy !== null}>巡回を登録</button></form>{/if}
+    <p class="muted">{artistIntegration ? a.unassignedIntroIntegration : a.unassignedIntroPlain}</p>
+    {#if artistIntegration}<form class="patrol-add" onsubmit={(event) => { event.preventDefault(); act('add-patrol', async () => { const value = externalUrl(patrolUrl); if (!value) throw new Error(a.checkUrl); await artistIntegration!.register(value); patrolUrl = ''; }); }}><input type="url" required disabled={busy !== null} bind:value={patrolUrl} placeholder={a.patrolPlaceholder} aria-label={a.patrolUrlLabel} /><button disabled={busy !== null}>{a.registerPatrol}</button></form>{/if}
     {#each data.unclassified as link (link.id)}
-      <article class="unassigned"><div class="grow"><strong>{link.tagName}</strong><small>{link.platform} · {link.tagCategory || 'カテゴリ未設定'}</small><small>{location(link.url)}</small></div><a class="button" href={'/tags/edit?' + new URLSearchParams({ tagId:String(link.tagId), q:link.tagName, from:'/artists?view=unassigned' })}>作家タグの分類を確認</a></article>
+      <article class="unassigned"><div class="grow"><strong>{link.tagName}</strong><small>{link.platform} · {link.tagCategory || a.noCategory}</small><small>{location(link.url)}</small></div><a class="button" href={'/tags/edit?' + new URLSearchParams({ tagId:String(link.tagId), q:link.tagName, from:'/artists?view=unassigned' })}>{a.reviewArtistTag}</a></article>
     {/each}
     <section class="source-list">
       {#each unassigned as source (source.key)}
         <article class="unassigned">
           {#if source.cover}<img src={mediaUrl(source.cover)} alt="" loading="lazy" />{/if}
           <div class="grow"><strong>{source.name}</strong><small>{location(source.url)}</small><span class="status" class:attention={source.state === 'dead' || unverified(source)}>{label(source)}</span></div>
-          <a class="button" href={'/artists?' + new URLSearchParams({ source: source.url })}>作家に関連付け</a>
-          {#if artistIntegration}<button disabled={busy !== null} onclick={() => act(source.key, () => artistIntegration!.setActive(source, !source.active))}>{source.active ? '停止' : '再開'}</button>{/if}
+          <a class="button" href={'/artists?' + new URLSearchParams({ source: source.url })}>{a.linkToArtist}</a>
+          {#if artistIntegration}<button disabled={busy !== null} onclick={() => act(source.key, () => artistIntegration!.setActive(source, !source.active))}>{source.active ? a.stop : a.resume}</button>{/if}
         </article>
-      {:else}<p class="empty">未整理の巡回はありません。</p>{/each}
+      {:else}<p class="empty">{a.noUnassigned}</p>{/each}
     </section>
   {:else}
-    <section class="artists" aria-label="作家一覧">
+    <section class="artists" aria-label={a.tabArtists}>
       {#each artists as artist (artist.id)}
         {@const links = linksFor(artist.id)}
         {@const feeds = sourcesFor(artist.id)}
         {@const history = historyFor(artist.id)}
         <article class="artist" id={'artist-' + artist.id}>
           <div class="artist-head">
-            <a class="portrait" href={`/?q=${encodeURIComponent(artist.names[0])}`} aria-label={`${artist.names[0]} の画像`}>
+            <a class="portrait" href={`/?q=${encodeURIComponent(artist.names[0])}`} aria-label={a.imagesOf(artist.names[0])}>
               {#if artist.thumbnailUrl}<img src={mediaUrl(artist.thumbnailUrl)} alt="" loading="lazy" />{:else}<span>◇</span>{/if}
             </a>
-            <div class="grow"><h2>{artist.names[0]}</h2>{#if artist.names.length > 1}<p class="aliases">{artist.names.slice(1).join(' · ')}</p>{/if}<small>{artist.usages.toLocaleString()} 件 · {links.length} リンク · {feeds.length} 巡回設定</small></div>
-            <a class="edit" href={artistEditHref(artist)} aria-label={`${artist.names[0]} のタグ・別名を編集`}>編集</a>
+            <div class="grow"><h2>{artist.names[0]}</h2>{#if artist.names.length > 1}<p class="aliases">{artist.names.slice(1).join(' · ')}</p>{/if}<small>{a.counts(artist.usages.toLocaleString(), links.length, feeds.length)}</small></div>
+            <a class="edit" href={artistEditHref(artist)} aria-label={a.editLabel(artist.names[0])}>{a.edit}</a>
           </div>
           <div class="artist-actions">
-            <a href={`/?q=${encodeURIComponent(artist.names[0])}`}>画像</a>
+            <a href={`/?q=${encodeURIComponent(artist.names[0])}`}>{a.images}</a>
             <a href={`/?mode=pools&q=${encodeURIComponent('tag:' + artist.names[0])}`}>Pool</a>
-            {#if data.assignUrl}<button disabled={busy !== null} onclick={() => act('artist:' + artist.id, () => attach(artist, data.assignUrl))}>この作家に関連付ける</button>
-            {:else}<button onclick={() => { editing = editing === artist.id ? null : artist.id; newUrl = ''; platform = ''; }}>{artistIntegration ? '＋ 外部アカウント・巡回' : '＋ 外部アカウント'}</button>{/if}
+            {#if data.assignUrl}<button disabled={busy !== null} onclick={() => act('artist:' + artist.id, () => attach(artist, data.assignUrl))}>{a.linkThisArtist}</button>
+            {:else}<button onclick={() => { editing = editing === artist.id ? null : artist.id; newUrl = ''; platform = ''; }}>{artistIntegration ? a.addExternalWithPatrol : a.addExternal}</button>{/if}
           </div>
           {#if editing === artist.id}
             <form class="add-link" onsubmit={(event) => { event.preventDefault(); act('artist:' + artist.id, () => attach(artist, newUrl, platform)); }}>
-              <input type="url" bind:value={newUrl} disabled={busy !== null} required placeholder="アカウント・検索巡回のURL" aria-label="外部アカウントまたは検索巡回URL" />
-              <input disabled={busy !== null} bind:value={platform} placeholder="サイト（自動判定）" aria-label="サイト名" />
-              <button disabled={busy !== null}>関連付ける</button>
+              <input type="url" bind:value={newUrl} disabled={busy !== null} required placeholder={a.linkUrlPlaceholder} aria-label={a.linkUrlLabel} />
+              <input disabled={busy !== null} bind:value={platform} placeholder={a.sitePlaceholder} aria-label={a.siteLabel} />
+              <button disabled={busy !== null}>{a.link}</button>
             </form>
           {/if}
           <div class="accounts">
@@ -137,39 +140,39 @@
                   {#if link.poolId}<a class="pool-link" href={`/?q=pool:${link.poolId}`}>{link.poolName || 'Pool'}</a>{/if}
                 </div>
                 {#if artistIntegration && data.sources && !feeds.some(s => s.linkIds.includes(link.id)) && !artistIntegration.registered?.(link)}
-                  <button disabled={busy !== null} onclick={() => act('link:' + link.id, () => artistIntegration!.register(link.url))}>巡回を登録</button>
+                  <button disabled={busy !== null} onclick={() => act('link:' + link.id, () => artistIntegration!.register(link.url))}>{a.registerPatrol}</button>
                 {/if}
-                <label class="verified" title="確認済み"><input type="checkbox" checked={link.verified} disabled={busy !== null} aria-label={`${link.platform}の確認済み状態`} onchange={(event) => act('link:' + link.id, () => updateTagLink(link.id, { verified:event.currentTarget.checked }))} />✓</label>
-                <select aria-label={`${link.platform}の修正状態`} value={String(link.uncensored ?? '')} disabled={busy !== null} onchange={(event) => { const value = event.currentTarget.value; act('link:' + link.id, () => updateTagLink(link.id, { uncensored:value === '' ? null : Number(value) as 0 | 1 })); }}><option value="">不明</option><option value="0">修正</option><option value="1">無修正</option></select>
-                <button class="unlink" disabled={busy !== null} aria-label={`${link.platform}との関連を外す`} title="作家との関連を外す（巡回は継続）" onclick={() => act('link:' + link.id, () => deleteTagLink(link.id))}>×</button>
+                <label class="verified" title={a.verified}><input type="checkbox" checked={link.verified} disabled={busy !== null} aria-label={a.verifiedLabel(link.platform)} onchange={(event) => act('link:' + link.id, () => updateTagLink(link.id, { verified:event.currentTarget.checked }))} />✓</label>
+                <select aria-label={a.censorLabel(link.platform)} value={String(link.uncensored ?? '')} disabled={busy !== null} onchange={(event) => { const value = event.currentTarget.value; act('link:' + link.id, () => updateTagLink(link.id, { uncensored:value === '' ? null : Number(value) as 0 | 1 })); }}><option value="">{a.unknown}</option><option value="0">{a.censored}</option><option value="1">{a.uncensored}</option></select>
+                <button class="unlink" disabled={busy !== null} aria-label={a.unlinkLabel(link.platform)} title={a.unlinkTitle} onclick={() => act('link:' + link.id, () => deleteTagLink(link.id))}>×</button>
               </div>
             {/each}
           </div>
           {#each feeds as source (source.key)}
             <div class="feed">
-              <div class="grow"><span class="status" class:attention={source.state === 'dead' || unverified(source)}>{label(source)}</span><span>{kindLabel(source)}</span><small>前回 {time(source.lastAt)}{source.nextAt ? ` · 次回 ${time(source.nextAt)}` : ''}</small>{#if source.error}<small class="error">{source.error}</small>{/if}</div>
-              {#if artistIntegration}<button disabled={busy !== null || (source.kind === 'search' && !source.active)} onclick={() => act(source.key, () => artistIntegration!.check(source))}>今すぐ確認</button><button disabled={busy !== null} onclick={() => act(source.key, () => artistIntegration!.setActive(source, !source.active))}>{source.active ? '停止' : '再開'}</button>{/if}
+              <div class="grow"><span class="status" class:attention={source.state === 'dead' || unverified(source)}>{label(source)}</span><span>{kindLabel(source)}</span><small>{a.schedule(time(source.lastAt), source.nextAt ? time(source.nextAt) : null)}</small>{#if source.error}<small class="error">{source.error}</small>{/if}</div>
+              {#if artistIntegration}<button disabled={busy !== null || (source.kind === 'search' && !source.active)} onclick={() => act(source.key, () => artistIntegration!.check(source))}>{a.checkNow}</button><button disabled={busy !== null} onclick={() => act(source.key, () => artistIntegration!.setActive(source, !source.active))}>{source.active ? a.stop : a.resume}</button>{/if}
             </div>
           {/each}
           {#if history.length}
             <details class="source-history">
-              <summary>取得元の履歴 <span>{history.length}件</span></summary>
+              <summary>{a.history} <span>{a.historyCount(history.length)}</span></summary>
               <ul>{#each history as group (group.url)}
                 <li>
                   {#if externalUrl(group.url)}<a href={externalUrl(group.url)!} target="_blank" rel="noopener noreferrer">{location(group.url)} ↗</a>{/if}
                   {#if group.rows[0].poolId}<a class="history-pool" href={`/?q=pool:${group.rows[0].poolId}`}>Pool</a>{/if}
-                  {#if group.rows.some(s => s.active)}<small class="attention">定期確認が有効なURLがあります</small>{/if}
-                  {#if group.rows.length > 1}<details class="source-aliases"><summary>登録URL {group.rows.length}件</summary><ul>{#each group.rows as row (row.key)}<li>{#if externalUrl(row.url)}<a href={externalUrl(row.url)!} target="_blank" rel="noopener noreferrer">{location(row.url)} ↗</a>{/if}</li>{/each}</ul></details>{/if}
+                  {#if group.rows.some(s => s.active)}<small class="attention">{a.activeInHistory}</small>{/if}
+                  {#if group.rows.length > 1}<details class="source-aliases"><summary>{a.registeredUrls(group.rows.length)}</summary><ul>{#each group.rows as row (row.key)}<li>{#if externalUrl(row.url)}<a href={externalUrl(row.url)!} target="_blank" rel="noopener noreferrer">{location(row.url)} ↗</a>{/if}</li>{/each}</ul></details>{/if}
                 </li>
               {/each}</ul>
             </details>
           {/if}
-          {#if busy === 'artist:' + artist.id || links.some(l => busy === 'link:' + l.id) || feeds.some(s => busy === s.key)}<span class="spinner" role="status" aria-label="更新中"></span>{/if}
-          {#if !links.length && !feeds.length && !history.length}<p class="quiet">外部アカウントを関連付けられます</p>{/if}
+          {#if busy === 'artist:' + artist.id || links.some(l => busy === 'link:' + l.id) || feeds.some(s => busy === s.key)}<span class="spinner" role="status" aria-label={a.updating}></span>{/if}
+          {#if !links.length && !feeds.length && !history.length}<p class="quiet">{a.canLink}</p>{/if}
         </article>
-      {:else}<p class="empty">該当する作家はいません。</p>{/each}
+      {:else}<p class="empty">{a.noArtists}</p>{/each}
     </section>
-    <nav class="pagination" aria-label="ページ">{#if data.current > 1}<a class="button" href={href(data.current - 1)}>前へ</a>{/if}<span>{data.current}</span>{#if data.current * 60 < (data.tags?.total ?? 0)}<a class="button" href={href(data.current + 1)}>次へ</a>{/if}</nav>
+    <nav class="pagination" aria-label={a.pagination}>{#if data.current > 1}<a class="button" href={href(data.current - 1)}>{a.prev}</a>{/if}<span>{data.current}</span>{#if data.current * 60 < (data.tags?.total ?? 0)}<a class="button" href={href(data.current + 1)}>{a.next}</a>{/if}</nav>
   {/if}
 </main>
 </div>

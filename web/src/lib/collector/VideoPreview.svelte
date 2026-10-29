@@ -1,6 +1,8 @@
 <script lang="ts">
   import { onDestroy, tick } from 'svelte';
   import { claimPlayback } from './videoPlayback';
+  import { t } from '#lib/i18n/index.ts';
+  const m = t();
   let { asset, name, source, poster }: { asset: number; name: string; source?: string; poster?: string } = $props();
   const playbackUrl = $derived(source ?? `/m/collector-next/media/${asset}/playback`);
   const posterUrl = $derived(poster ?? `/m/collector-next/media/${asset}/thumbnail`);
@@ -35,14 +37,14 @@
     catch {
       if (attempt !== generation) return;
       stop();
-      error = '再生できませんでした。もう一度お試しください。';
+      error = m.collector.video.playFailed;
     }
   }
   function failed() {
     // Ignore abort/empty-source events caused by explicit resource release.
     if (!active || !video?.getAttribute('src')) return;
     stop();
-    error = '動画を読み込めませんでした。もう一度お試しください。';
+    error = m.collector.video.loadFailed;
   }
   onDestroy(stop);
 </script>
@@ -54,14 +56,14 @@
       poster={posterUrl} aria-label={name}
       onwaiting={() => loading = true} onplaying={() => loading = false}
       oncanplay={() => loading = false} onpause={() => loading = false} onerror={failed}></video>
-    <button class="close" onclick={stop} aria-label={`${name}の再生を閉じる`}>閉じる</button>
+    <button class="close" onclick={stop} aria-label={m.collector.video.closeLabel(name)}>{m.collector.close}</button>
   {:else}
-    <button class="poster" onclick={start} aria-label={`${name}を再生`}>
+    <button class="poster" onclick={start} aria-label={m.collector.video.playLabel(name)}>
       <img loading="lazy" decoding="async" src={posterUrl} alt="" />
-      <span>▶ 再生</span>
+      <span>{m.collector.video.play}</span>
     </button>
   {/if}
-  {#if loading}<span class="loading" role="status">動画を読み込み中…</span>{/if}
+  {#if loading}<span class="loading" role="status">{m.collector.video.loading}</span>{/if}
 </div>
 {#if error}<p role="alert">{error}</p>{/if}
 

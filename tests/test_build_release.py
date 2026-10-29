@@ -214,3 +214,36 @@ def test_appended_row_requires_explicit_supported_category(category):
     entry[1]['category'] = category
     with pytest.raises(br.BuildError, match='category'):
         br.merge(_base_rows(), *_stock_tensors(), [entry])
+
+
+def test_merge_with_no_patches_is_the_base_model():
+    """--base-only: a new install's first release is the base, row for row."""
+    base_rows = _base_rows(5)
+    stock_w, stock_b = _stock_tensors(5, 3)
+    new_w, new_b, merged_rows, allowed, patched, n_stock, n_out = br.merge(base_rows, stock_w, stock_b, [])
+    assert (n_stock, n_out, patched, allowed) == (5, 5, {}, set())
+    assert torch.equal(new_w, stock_w) and torch.equal(new_b, stock_b)
+    assert merged_rows == base_rows
+
+
+def test_a_missing_manifest_points_at_base_only(tmp_path, monkeypatch):
+    monkeypatch.setattr(br, "MANIFEST_PATH", tmp_path / "MANIFEST.json")
+    with pytest.raises(br.BuildError, match="--base-only"):
+        br.build_and_save(tmp_path / "out")
+
+
+def test_an_emptied_manifest_still_refuses_without_base_only(tmp_path, monkeypatch):
+    manifest = tmp_path / "MANIFEST.json"
+    manifest.write_text('{"approved": []}')
+    monkeypatch.setattr(br, "MANIFEST_PATH", manifest)
+    monkeypatch.setattr(br, "_read_manifest", lambda: br.json.loads(manifest.read_text())["approved"])
+    with pytest.raises(br.BuildError, match="no approved entries"):
+        br.build_and_save(tmp_path / "out")
+
+
+def test_base_only_bundles_no_veto_heads():
+    """--base-only promises the unmodified base: a host's veto-heads directory must not ride along.
+    (Building for real downloads the 400 MB base, so this pins the branch in the source.)"""
+    src = Path(br.__file__).read_text()
+    assert "veto_heads = {} if base_only else load_veto_dir(_veto_dir)" in src
+    assert "_retired = {} if base_only else _load_retired_gates()" in src

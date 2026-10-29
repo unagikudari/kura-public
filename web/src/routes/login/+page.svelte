@@ -3,32 +3,34 @@
   import { page } from '$app/state';
   let { form } = $props();
   let submitting = $state(false);
+  import { t } from '#lib/i18n/index.ts';
+  const m = t();
 </script>
 
-<svelte:head><title>サインイン — 蔵</title></svelte:head>
+<svelte:head><title>{m.login.title}</title></svelte:head>
 
 <main class="login-wrap">
   <div class="login-panel">
     <div class="brand"><span class="brand-mark">蔵</span><span>kura</span></div>
-    <h1>おかえりなさい</h1>
-    <p class="lead">サインインして、画像やタグの整理を続けましょう。</p>
+    <h1>{m.login.welcome}</h1>
+    <p class="lead">{m.login.lead}</p>
     <form method="POST" use:enhance={() => {
       submitting = true;
       return async ({ update }) => { try { await update(); } finally { submitting = false; } };
     }} autocomplete="on" aria-busy={submitting}>
       {#if form?.error}<div class="err" role="alert">{form.error}</div>{/if}
-      <label for="email">メールアドレス</label>
-      <input id="email" type="email" name="email" placeholder="メールアドレスを入力"
+      <label for="email">{m.login.email}</label>
+      <input id="email" type="email" name="email" placeholder={m.login.emailPlaceholder}
         autocomplete="username" value={form?.email ?? ''} required />
-      <label for="account-key">アカウントキー</label>
-      <input id="account-key" type="password" name="key" placeholder="アカウントキーを入力"
+      <label for="account-key">{m.login.key}</label>
+      <input id="account-key" type="password" name="key" placeholder={m.login.keyPlaceholder}
         autocomplete="current-password" required aria-describedby="key-help" />
-      <p class="field-hint" id="key-help">蔵のアカウントキーを入力してください。</p>
-      <button type="submit" disabled={submitting}>{submitting ? 'サインイン中…' : 'サインイン'}</button>
+      <p class="field-hint" id="key-help">{m.login.keyHelp}</p>
+      <button type="submit" disabled={submitting}>{submitting ? m.login.signingIn : m.login.signIn}</button>
     </form>
     <div class="recovery">
-      <p>キーの発行・再発行は管理者に依頼してください。</p>
-      {#if page.data.sourceUrl}<p><a href={page.data.sourceUrl} target="_blank" rel="noopener noreferrer">ソースコード (AGPL-3.0) ↗</a></p>{/if}
+      <p>{m.login.askAdmin}</p>
+      {#if page.data.sourceUrl}<p><a href={page.data.sourceUrl} target="_blank" rel="noopener noreferrer">{m.common.sourceCode}</a></p>{/if}
     </div>
   </div>
 </main>

@@ -3,6 +3,7 @@
   import { writable } from 'svelte/store';
   import { IDENTITY_DISPLAY_CONTEXT, readIdentityDisplay } from '#lib/identityDisplay.ts';
   import { TAG_LOCALE_CONTEXT, readTagLocale } from '#lib/tagLocale.ts';
+  import { UI_LOCALE_CONTEXT, messagesFor, readUiLocale } from '#lib/i18n/index.ts';
   import '../app.css'; // app's single global CSS layer (loaded for every route)
   import DropImport from '#lib/components/DropImport.svelte';
   import { reorderActive, currentUser } from '#lib/stores.ts';
@@ -19,6 +20,10 @@
   // svelte-ignore state_referenced_locally
   const locale = writable(readTagLocale(data?.tagLocale));
   setContext(TAG_LOCALE_CONTEXT, locale);
+  // The UI language is fixed for the page's life (changing it reloads): read once.
+  // svelte-ignore state_referenced_locally
+  setContext(UI_LOCALE_CONTEXT, readUiLocale(data?.uiLocale) ?? 'en');
+  const m = messagesFor(readUiLocale(data?.uiLocale) ?? 'en');
   // Per-layout state prevents display preferences leaking across SSR users.
   // svelte-ignore state_referenced_locally
   const identityPreferences = writable(data?.identityDisplay ?? readIdentityDisplay());
@@ -122,7 +127,7 @@
   <div class="drop-overlay">
     <div class="drop-box">
       <div class="drop-icon">＋</div>
-      <div class="drop-label">ドロップして追加</div>
+      <div class="drop-label">{m.common.dropToAdd}</div>
     </div>
   </div>
 {/if}

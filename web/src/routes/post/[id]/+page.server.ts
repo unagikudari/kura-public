@@ -1,11 +1,13 @@
 import * as env from '$app/env/private';
 import { gridScope, gridCookie, readGridSettings, defaultGridSettings } from '#lib/gridSettings.ts';
 import { error } from '@sveltejs/kit';
+import { messagesFor, resolveUiLocale, UI_LOCALE_COOKIE } from '#lib/i18n/index.ts';
 import type { PageServerLoad } from './$types';
 
 const INTERNAL_API = env.INTERNAL_API_URL ?? 'http://kura-api:8000';
 
-export const load: PageServerLoad = async ({ params, url, cookies }) => {
+export const load: PageServerLoad = async ({ params, url, cookies, request }) => {
+  const m = messagesFor(resolveUiLocale(cookies.get(UI_LOCALE_COOKIE), request.headers.get('accept-language')));
   const id = Number(params.id);
   const q = url.searchParams.get('q') ?? '';
   const idxParam = url.searchParams.get('idx');
@@ -53,7 +55,7 @@ export const load: PageServerLoad = async ({ params, url, cookies }) => {
 
   // In safe mode a non-safe post returns 404 (API hides it); show the safe-mode
   // message instead of a bare "not found".
-  if (!postRes.ok) throw error(404, safe ? 'セーフモードでは表示できない投稿です' : 'Post not found');
+  if (!postRes.ok) throw error(404, safe ? m.pages.post.notFoundSafe : m.pages.post.notFound);
 
   const post = await postRes.json();
 

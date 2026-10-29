@@ -12,6 +12,8 @@
   // pointer-events:none なので下のチップの click / 2 段階タップ削除を邪魔しない。
   // マウスのみ反応 (タッチの tap はチップ側の操作)。
   import { tagDescription } from '#lib/tagDescription.ts';
+  import { t } from '#lib/i18n/index.ts';
+  const m = t();
 
   let {
     preferUp = false,
@@ -72,7 +74,7 @@
     {:else if tip.desc}
       <div class="tt-desc">{tip.desc}</div>
     {:else}
-      <div class="tt-desc dim">説明なし</div>
+      <div class="tt-desc dim">{m.tags.common.noDescription}</div>
     {/if}
     {#if hintFor}
       {@const hint = hintFor(tip.name)}

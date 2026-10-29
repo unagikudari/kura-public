@@ -79,10 +79,82 @@ server {
 Open your origin and sign in with your email and the key in `~/kura-admin.key`. Keep that file
 private; delete it once you have stored the key somewhere safe.
 
+## Install with Docker
+
+Instead of the steps above, with Docker and its Compose plugin:
+
+```bash
+git clone https://github.com/unagikudari/kura-public.git ~/kura && cd ~/kura
+python3 ops/install/make_env.py --docker --origin http://localhost:3000
+docker compose up -d --build
+docker compose run --rm tools python scripts/create_admin.py create \
+    --name admin --email you@example.org --output /out/kura-admin.key
+```
+
+Open http://localhost:3000 and sign in with your email and the key in `~/kura/kura-admin.key`.
+The database, the images and the settings stay in Docker volumes and in `api/env`,
+`web/.env.server` and `.env` (all 0600).
+
+The web listens on 127.0.0.1:3000 only. To serve it to other machines, give `make_env.py` the
+address people will open (`--origin https://kura.example.org`) and put an HTTPS reverse proxy
+(the nginx block above works) in front of port 3000; `KURA_BIND` and `KURA_PORT` in `.env`
+change where it listens.
+
+To add the auto-tagger (see "Auto-tagging" below for what it does):
+
+```bash
+docker compose --profile tagger build tagger
+docker compose --profile tagger run --rm tagger python tagger/build_release.py --base-only --output-dir /models/release
+docker compose run --rm tools python tagger/publish_release.py --build-dir /models/release
+docker compose run --rm tools python scripts/tagger_worker_setup.py \
+    --user admin --output /out/tagger/env --url http://api:8001 --host kura-tagger
+docker compose --profile tagger up -d
+```
+
+To upgrade: `docker compose --profile tagger down`, `git pull`, then
+`docker compose --profile tagger up -d --build` (leave out `--profile tagger` if you did not add it).
+The schema upgrade runs before the API starts.
+
+## Language
+
+The interface is in English or Japanese. It follows your browser's language until you pick one
+under Menu → Language. To set the default for everyone who has not picked one, put
+`KURA_UI_LOCALE=en` or `KURA_UI_LOCALE=ja` in `web/.env.server`.
+
 ## Adding images
 
 Drag image or video files, or whole folders, onto the kura page, or paste a copied image
 (Ctrl+V). Each one is in the list as soon as it has been added.
+
+## Auto-tagging (optional)
+
+A worker tags new images with the WD14 tagger (`SmilingWolf/wd-swinv2-tagger-v3`, about 400 MB,
+downloaded once from Hugging Face). It runs on the CPU; a GPU only makes it faster. Run these
+once, from `~/kura`:
+
+```bash
+# 1. The tagger's Python environment. torch and torchvision come from the same index — the CPU
+#    build here; for an NVIDIA GPU use the CUDA index that pytorch.org names instead.
+python3 -m venv ~/.local/share/kura-tagger/venv
+~/.local/share/kura-tagger/venv/bin/pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+~/.local/share/kura-tagger/venv/bin/pip install -r tagger/requirements.txt
+
+# 2. The first tagger release: the base model, published to the database.
+~/.local/share/kura-tagger/venv/bin/python tagger/build_release.py --base-only --output-dir ~/kura-data/tagger-release
+(set -a; . api/env; set +a; ~/.local/share/kura-api/venv/bin/python tagger/publish_release.py --build-dir ~/kura-data/tagger-release)
+
+# 3. The worker's sign-in: a token for your user and this machine on the worker list,
+#    written to tagger/env (0600). Use the name you gave create_admin.py.
+~/.local/share/kura-api/venv/bin/python scripts/tagger_worker_setup.py --user admin --output tagger/env
+
+# 4. Start it
+cp systemd/user/kura-tagger-worker.service ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now kura-tagger-worker
+```
+
+`journalctl --user -u kura-tagger-worker` shows each image it tags. Images added before the
+worker started are tagged too.
 
 ## Upgrading
 

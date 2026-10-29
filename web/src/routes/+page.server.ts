@@ -1,11 +1,12 @@
 import * as env from '$app/env/private';
 import { gridScope, gridCookie, readGridSettings, defaultGridSettings } from '#lib/gridSettings.ts';
 import { apiErrorMessage } from '#lib/apiError.ts';
+import { messagesFor, resolveUiLocale, UI_LOCALE_COOKIE } from '#lib/i18n/index.ts';
 import type { PageServerLoad } from './$types';
 
 const INTERNAL_API = env.INTERNAL_API_URL ?? 'http://kura-api:8000';
 
-export const load: PageServerLoad = async ({ url, cookies }) => {
+export const load: PageServerLoad = async ({ url, cookies, request }) => {
   const q = url.searchParams.get('q') ?? '';
   let mode = url.searchParams.get('mode') ?? '';
   const rawSort = url.searchParams.get('sort') ?? '';
@@ -92,7 +93,7 @@ export const load: PageServerLoad = async ({ url, cookies }) => {
     const fix = body?.detail?.fix;
     const searchError = typeof fix === 'string' && fix.trim()
       ? fix
-      : apiErrorMessage(body, `検索できませんでした（HTTP ${res.status}）。検索条件を確認して再試行してください。`);
+      : apiErrorMessage(body, messagesFor(resolveUiLocale(cookies.get(UI_LOCALE_COOKIE), request.headers.get('accept-language'))).home.grid.searchFailedHttp(res.status));
     return { displaySettings: effectiveDisplay, hasSavedDisplay: !!savedDisplay, displayScope, posts: { results: [], total: 0, offset: 0, limit: 40, query: q }, query: q, mode, scrollTo, initialOffset, bulk, bulkTag, embed, showEmpty, safeMode, lb, lbp, open, sort, dir, searchError };
   }
   const posts = await res.json();
