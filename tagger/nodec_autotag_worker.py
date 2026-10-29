@@ -110,13 +110,19 @@ def _resolve_device() -> None:
 
 
 def auth_header():
+    """The worker's credentials come from its own environment first: the unit loads
+    tagger/env (EnvironmentFile). ~/kura/api/env fills in only what that lacks — on a
+    node whose api/env is its own API's settings (nodeb since 2026-10-25) it holds no
+    KURA_USER, and reading only it crash-looped the worker there for four days."""
     kv = {}
-    for line in open(ENVF):
-        line = line.strip()
-        if "=" in line and not line.startswith("#"):
-            k, v = line.split("=", 1)
-            kv[k] = v
-    return token_headers(kv['KURA_USER'], kv['KURA_TOKEN']), kv
+    if os.path.exists(ENVF):
+        for line in open(ENVF):
+            line = line.strip()
+            if "=" in line and not line.startswith("#"):
+                k, v = line.split("=", 1)
+                kv[k] = v
+    kv.update({k: os.environ[k] for k in ("KURA_USER", "KURA_TOKEN") if os.environ.get(k)})
+    return token_headers(kv.get('KURA_USER', ''), kv.get('KURA_TOKEN', '')), kv
 
 
 class ModelState:

@@ -1,4 +1,4 @@
--- kura fresh-install baseline at revision 0186 (scripts/schema_baseline.py, generator 1).
+-- kura fresh-install baseline at revision 0186 (scripts/schema_baseline.py, generator 2).
 -- Loaded by ops/install/database.py create as a superuser; never edited by hand.
 --
 -- PostgreSQL database dump
@@ -11450,5 +11450,28 @@ kura	tagger-config	2026-07-20 19:55:00.481536+09	migration-0098
 kura	tagging-pipeline	2026-07-20 16:35:15.693268+09	migration-0083
 kura	worker-heartbeat	2026-07-20 16:15:58.262936+09	migration-0080
 \.
+COPY public.tagger_producer_threshold ("producer", "category", "threshold", "evidence") FROM stdin;
+mldanbooru	0	0.7	ML-Danbooru の既定閾値 (infer.py MLDANBOORU_THRESH)
+pixai	0	0.4	PixAI general タグの既定閾値 (infer.py PIXAI_THRESH_GENERAL)
+pixai	4	0.8	PixAI character タグの既定閾値 (infer.py PIXAI_THRESH_CHAR)
+wd14	4	0.85	WD14 character タグの既定閾値 (infer.py WD14_THRESH_CHAR)
+wd14_fixed	0	0.5	wd14-fixed 修復 head の既定閾値 (infer.py WD14_FIXED_THRESH)
+\.
+COPY collector_next.schema_version ("version") FROM stdin;
+5
+\.
+COPY collector_next.label_producer_kind ("id", "name") FROM stdin;
+1	account
+\.
+COPY collector_next.label_policy ("id", "version") FROM stdin;
+1	collector-labels-v1
+\.
+
+-- initial rows (not copied: see INITIAL_ROWS)
+INSERT INTO public.pool_category (id, version, name, color, "default") VALUES (1, 1, 'default', 'default', true);
+SELECT pg_catalog.setval(pg_catalog.pg_get_serial_sequence('public.pool_category', 'id'), 1, true);
+INSERT INTO public.tagger_release_active (id, release_id) VALUES (1, NULL);
+INSERT INTO public.tagger_reconciler_state (id, paused) VALUES (true, false);
+INSERT INTO claim_storage.migration (singleton, phase) VALUES (true, 'active');
 SET session_replication_role = DEFAULT;
 INSERT INTO public.kura_alembic_version (version_num) VALUES ('0186');

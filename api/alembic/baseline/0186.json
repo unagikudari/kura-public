@@ -1,7 +1,7 @@
 {
  "revision": "0186",
- "generator": 1,
- "sha256": "cf4343a0182b1a83733cbc6b490042e5958891b8ef90d8f5f6daade50a38cafc",
+ "generator": 2,
+ "sha256": "4f5c60bac6cac4d32db25f449f1264e4a33d987a36e0c2759155d3a5b4ba5462",
  "extensions": [
   "fuzzystrmatch",
   "pg_trgm",
@@ -18,6 +18,10 @@
   "tagger_stage",
   "tagger_stage_transition",
   "tagger_tag_condition",
-  "tagger_allowed_executor"
+  "tagger_allowed_executor",
+  "tagger_producer_threshold",
+  "collector_next.schema_version",
+  "collector_next.label_producer_kind",
+  "collector_next.label_policy"
  ]
 }

@@ -29,7 +29,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 OUT = REPO / "api/alembic/baseline"
 CORE_OUT = REPO / "release/core_schema"
-GENERATOR = 1
+GENERATOR = 2
 
 #: Roles the product creates (ops/install/database.py create). Grants to them are kept.
 PRODUCT_ROLES = {"kura", "kura_reconciler", "kura_audit"}
@@ -45,7 +45,23 @@ OWNERS = {"kura", "kura_reconciler"}
 #: tags, GT, patches, releases, the owner's hosts (tagger_expected_worker), rules naming the
 #: owner's tags (tagger_tag_rule / tagger_tag_exclusion) — is the owner's data.
 REFERENCE_TABLES = ("tag_category", "tagger_config", "tagger_stage", "tagger_stage_transition",
-                    "tagger_tag_condition", "tagger_allowed_executor")
+                    "tagger_tag_condition", "tagger_allowed_executor", "tagger_producer_threshold",
+                    "collector_next.schema_version", "collector_next.label_producer_kind",
+                    "collector_next.label_policy")
+#: Rows a fresh install starts with that are NOT copied, because the owner's copy is the owner's
+#: state: the default pool category (categories are the owner's to rename and add), and three
+#: singletons whose current values describe the owner's history (the active tagger release, the
+#: paused flag, the claim-storage migration cursor). The schema dumped here is already past the
+#: claim-storage cutover, so a fresh install starts `active`. Generator 1 wrote none of them, and
+#: on the 1.291.34 public release a new install could not create a pool (pool_category FK),
+#: complete an auto-tag (claim_storage.migration) or activate a tagger release (2026-10-29).
+INITIAL_ROWS = """\
+INSERT INTO public.pool_category (id, version, name, color, "default") VALUES (1, 1, 'default', 'default', true);
+SELECT pg_catalog.setval(pg_catalog.pg_get_serial_sequence('public.pool_category', 'id'), 1, true);
+INSERT INTO public.tagger_release_active (id, release_id) VALUES (1, NULL);
+INSERT INTO public.tagger_reconciler_state (id, paused) VALUES (true, false);
+INSERT INTO claim_storage.migration (singleton, phase) VALUES (true, 'active');
+"""
 
 
 class Refused(SystemExit):
@@ -101,22 +117,24 @@ def reference_rows(dsn: str) -> str:
     if {r[0] for r in executors} - {"kura"}:
         raise Refused(f"tagger_allowed_executor names roles other than kura: {executors}")
     parts = ["SET session_replication_role = replica;\n"]   # governed-table triggers: a load, not a write
-    for table in REFERENCE_TABLES:
-        cols = [r[0] for r in psql(dsn, f"SELECT attname FROM pg_attribute WHERE attrelid = 'public.{table}'::regclass "
+    for name in REFERENCE_TABLES:
+        table = name if "." in name else f"public.{name}"
+        cols = [r[0] for r in psql(dsn, f"SELECT attname FROM pg_attribute WHERE attrelid = '{table}'::regclass "
                                         "AND attnum > 0 AND NOT attisdropped ORDER BY attnum")]
-        key = psql(dsn, f"SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conrelid = 'public.{table}'::regclass "
+        key = psql(dsn, f"SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conrelid = '{table}'::regclass "
                         "AND contype = 'p'")
         order = re.match(r"PRIMARY KEY \((.*)\)", key[0][0]).group(1) if key else ", ".join(cols)
         collist = ", ".join(f'"{c}"' for c in cols)
         data = subprocess.run(["psql", dsn, "-Xq", "-v", "ON_ERROR_STOP=1", "-c",
-                               f"COPY (SELECT {collist} FROM public.{table} ORDER BY {order}) TO STDOUT"],
+                               f"COPY (SELECT {collist} FROM {table} ORDER BY {order}) TO STDOUT"],
                               capture_output=True, text=True, check=True).stdout
-        parts.append(f"COPY public.{table} ({collist}) FROM stdin;\n{data}\\.\n")
-        for (seq, col) in psql(dsn, f"SELECT pg_get_serial_sequence('public.{table}', attname), attname "
-                                    f"FROM pg_attribute WHERE attrelid = 'public.{table}'::regclass AND attnum > 0 "
-                                    f"AND pg_get_serial_sequence('public.{table}', attname) IS NOT NULL"):
+        parts.append(f"COPY {table} ({collist}) FROM stdin;\n{data}\\.\n")
+        for (seq, col) in psql(dsn, f"SELECT pg_get_serial_sequence('{table}', attname), attname "
+                                    f"FROM pg_attribute WHERE attrelid = '{table}'::regclass AND attnum > 0 "
+                                    f"AND pg_get_serial_sequence('{table}', attname) IS NOT NULL"):
             parts.append(f"SELECT pg_catalog.setval('{seq}', COALESCE(max(\"{col}\"), 1), max(\"{col}\") IS NOT NULL) "
-                         f"FROM public.{table};\n")
+                         f"FROM {table};\n")
+    parts.append("\n-- initial rows (not copied: see INITIAL_ROWS)\n" + INITIAL_ROWS)
     parts.append("SET session_replication_role = DEFAULT;\n")
     return "".join(parts)
 
