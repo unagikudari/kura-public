@@ -80,7 +80,7 @@ def exercise(context,base,width,mobile,evidence):
     expect(order).to_have_value('id:asc')
     page.reload(wait_until='networkidle');expect(order).to_have_value('id:asc')
     navigate('/post/1000?q=pool:5001')
-    expect(page.get_by_label('現在の表示順',exact=True)).to_contain_text('ページ ↓ 降順')
+    expect(page.get_by_label('現在の表示順',exact=True)).to_contain_text('ページ ↓')
     page.go_back(wait_until='networkidle');expect(order).to_have_value('id:asc')
     assert page.evaluate('document.documentElement.scrollWidth<=innerWidth'),'header overflow'
     box=order.bounding_box();assert box and box['x']>=0 and box['x']+box['width']<=width

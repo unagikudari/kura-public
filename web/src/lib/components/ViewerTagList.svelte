@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Icon from '#lib/components/Icon.svelte';
   import { onMount } from 'svelte';
   import type { Post } from '#lib/types.ts';
   import { groupByFamily } from '#lib/tagFamilies.ts';
@@ -47,7 +48,8 @@
 
 <div class="viewer-tag-list" bind:this={host}>
   <button type="button" class="tag-trigger" bind:this={trigger} aria-expanded={open}
-    aria-haspopup="dialog" onclick={() => { place(); open = !open; }}>{m.tags.viewer.trigger} <span>{post.tags.length}</span></button>
+    aria-haspopup="dialog" aria-label={`${m.tags.viewer.trigger} ${post.tags.length}`} title={m.tags.viewer.trigger}
+    onclick={() => { place(); open = !open; }}><Icon name="tag" /> <span>{post.tags.length}</span></button>
   {#if open}
     <div class="viewer-tag-panel" role="dialog" tabindex="-1" aria-label={m.tags.viewer.dialogLabel} aria-modal="false" style:--panel-top={`${top}px`}>
       <div class="panel-heading"><strong>{m.tags.viewer.heading}</strong><span>#{post.id} · {m.tags.viewer.count(post.tags.length)}</span>

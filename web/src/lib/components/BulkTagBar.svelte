@@ -154,7 +154,7 @@
         {#if onPinFilter && pinFilter}
           <span class="pinseg" role="group" aria-label={m.home.bulk.pinFilter}>
             <button class="ps" class:on={pinFilter === 'all'} onclick={() => onPinFilter?.('all')}
-              title={m.home.bulk.pinAllTitle}>{m.home.bulk.pinAll}</button>
+              title={m.home.bulk.pinAllTitle} aria-label={m.home.bulk.pinAll}>✱</button>
             <button class="ps" class:on={pinFilter === 'locked'} onclick={() => onPinFilter?.('locked')}
               title={m.home.bulk.pinLockedTitle}>🔒</button>
             <button class="ps" class:on={pinFilter === 'unjudged'} onclick={() => onPinFilter?.('unjudged')}
@@ -163,10 +163,10 @@
               title={m.home.bulk.pinRemovedTitle}>🚫</button>
           </span>
         {/if}
-        <button class="sel" onclick={onSelectAll} title={selectAllTitle}>{m.home.bulk.selectAll}</button>
+        <button class="sel" onclick={onSelectAll} title={selectAllTitle} aria-label={m.home.bulk.selectAll}>☑</button>
       {/if}
-      <button class="sel" onclick={onDeselectAll} title={deselectAllTitle}>{m.home.bulk.deselectAll}</button>
-      <button class="sel clear" onclick={onClear} disabled={totalSelected === 0} title={clearTitle}>{m.home.bulk.clearSelection}</button>
+      <button class="sel" onclick={onDeselectAll} title={deselectAllTitle} aria-label={m.home.bulk.deselectAll}>☐</button>
+      <button class="sel clear" onclick={onClear} disabled={totalSelected === 0} title={clearTitle} aria-label={m.home.bulk.clearSelection}>✕</button>
       <span class="count">
         {#if addCount > 0}<span class="count-add">+{addCount}</span>{/if}
         {#if removeCount > 0}<span class="count-remove">−{removeCount}</span>{/if}
@@ -174,31 +174,32 @@
       </span>
       {#if onToggleLockOnApply}
         <label class="lock-opt" title={m.home.bulk.lockOnApplyTitle}>
-          <input type="checkbox" checked={lockOnApply} onchange={onToggleLockOnApply} disabled={applying} />{m.home.bulk.lockOnApply}
+          <input type="checkbox" checked={lockOnApply} onchange={onToggleLockOnApply} disabled={applying} aria-label={m.home.bulk.lockOnApply} />🔒
         </label>
       {/if}
-      <button class="apply" onclick={onApply} disabled={totalSelected === 0 || applying}>
-        {applying ? (progress ? m.home.bulk.applyingProgress(progress.done, progress.total) : m.home.bulk.applying) : m.home.bulk.apply}
+      <button class="apply" onclick={onApply} disabled={totalSelected === 0 || applying} title={m.home.bulk.apply}
+        aria-label={applying ? (progress ? m.home.bulk.applyingProgress(progress.done, progress.total) : m.home.bulk.applying) : m.home.bulk.apply}>
+        {applying ? (progress ? `${progress.done}/${progress.total}` : '…') : '✓'}
       </button>
       {#if onLockSelected}
         <button class="apply lock" onclick={onLockSelected} disabled={applying}
-          title={m.home.bulk.lockBlueTitle}>
-          {m.home.bulk.lockBlue}
+          title={m.home.bulk.lockBlueTitle} aria-label={m.home.bulk.lockBlue}>
+          🔒
         </button>
       {/if}
     {/if}
 
     {#if result}
       <span class="result">
-        {#if result.added > 0}+{result.added} {m.home.bulk.resultAdded}{/if}
-        {#if result.removed > 0}&nbsp;−{result.removed} {m.home.bulk.resultRemoved}{/if}
-        {#if result.locked > 0}&nbsp;🔒{result.locked} {m.home.bulk.resultLocked}{/if}
-        {#if result.locked < 0}&nbsp;🔓{-result.locked} {m.home.bulk.resultUnlocked}{/if}
-        {#if result.fail > 0}<span class="fail"> ✗{result.fail} {m.home.bulk.resultFailed}</span>{/if}
+        {#if result.added > 0}+{result.added}<span class="sr-only"> {m.home.bulk.resultAdded}</span>{/if}
+        {#if result.removed > 0}&nbsp;−{result.removed}<span class="sr-only"> {m.home.bulk.resultRemoved}</span>{/if}
+        {#if result.locked > 0}&nbsp;🔒{result.locked}<span class="sr-only"> {m.home.bulk.resultLocked}</span>{/if}
+        {#if result.locked < 0}&nbsp;🔓{-result.locked}<span class="sr-only"> {m.home.bulk.resultUnlocked}</span>{/if}
+        {#if result.fail > 0}<span class="fail"> ✗{result.fail}<span class="sr-only"> {m.home.bulk.resultFailed}</span></span>{/if}
       </span>
       {#if onUndoLock}
         <button class="sel undo" onclick={onUndoLock} disabled={applying}
-          title={m.home.bulk.undoLockTitle}>{m.home.bulk.undoLock}</button>
+          title={m.home.bulk.undoLockTitle} aria-label={m.home.bulk.undoLock}>↩</button>
       {/if}
       {#if result.lastError}
         <span class="error" title={result.lastError}>{variant === 'grid' ? m.home.bulk.errorSeeConsole : m.home.bulk.error}</span>

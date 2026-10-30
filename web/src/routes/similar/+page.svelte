@@ -74,18 +74,18 @@
             <span class="rs">n{it.annotationCount} {(it.reasons ?? []).join(' ')}</span>
           </figcaption>
           <div class="row">
-            <a class="edit" href={`/post/${it.postId}/censor`}>{sm.edit}</a>
+            <a class="edit" href={`/post/${it.postId}/censor`} aria-label={sm.editTitle(it.postId)} title={sm.editTitle(it.postId)}>✎</a>
             <button class="ex-btn" class:on={it.excluded} disabled={busy[it.postId]}
-              onclick={() => toggle(it)}>{it.excluded ? sm.restore : sm.exclude}</button>
+              onclick={() => toggle(it)} aria-pressed={it.excluded} aria-label={it.excluded ? sm.restore : sm.exclude} title={it.excluded ? sm.restore : sm.exclude}>{it.excluded ? '↩' : '⊘'}</button>
           </div>
         </figure>
       {/each}
     </div>
 
     <nav class="pager">
-      {#if data.offset > 0}<a href={href(data.only, data.offset - data.limit)}>{sm.prev}</a>{:else}<span class="off">{sm.prev}</span>{/if}
+      {#if data.offset > 0}<a href={href(data.only, data.offset - data.limit)} aria-label={sm.prev} title={sm.prev}>‹</a>{:else}<span class="off" aria-hidden="true">‹</span>{/if}
       <span class="pageno">{pageNo} / {pages}</span>
-      {#if data.offset + data.limit < data.total}<a href={href(data.only, data.offset + data.limit)}>{sm.next}</a>{:else}<span class="off">{sm.next}</span>{/if}
+      {#if data.offset + data.limit < data.total}<a href={href(data.only, data.offset + data.limit)} aria-label={sm.next} title={sm.next}>›</a>{:else}<span class="off" aria-hidden="true">›</span>{/if}
     </nav>
   </div>
 </div>

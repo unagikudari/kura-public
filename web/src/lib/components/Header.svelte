@@ -270,7 +270,7 @@
 
 {#snippet viewControls()}
   {#if mangaActive || singleActive || onEnterManga || onEnterSingle}
-    <label class="view-choice">{m.header.view}
+    <label class="view-choice" title={m.header.viewHow}><Icon name="grid" />
       <select aria-label={m.header.viewHow} value={mangaActive ? 'manga' : singleActive ? 'single' : 'grid'}
         onchange={(event) => {
           const value = event.currentTarget.value;
@@ -286,14 +286,14 @@
     </label>
   {/if}
   {#if cols > 0 && !mangaActive && !singleActive}
-    <label class="view-choice">{m.header.columns}
+    <label class="view-choice" title={m.header.columnsLabel}><Icon name="columns" />
       <select aria-label={m.header.columnsLabel} value={cols} onchange={(event) => selectCols(Number(event.currentTarget.value))}>
-        {#each COL_STEPS as c}<option value={c}>{m.header.colsN(c)}</option>{/each}
+        {#each COL_STEPS as c}<option value={c}>{c}</option>{/each}
       </select>
     </label>
   {/if}
   {#if onToggleOpenMode && !poolMode && !reorderMode && !mangaActive && !singleActive}
-    <label class="view-choice">{m.header.click}
+    <label class="view-choice" title={m.header.clickLabel}><Icon name="pointer" />
       <select aria-label={m.header.clickLabel} value={openMode}
         onchange={(event) => { if (event.currentTarget.value !== openMode) onToggleOpenMode?.(); }}>
         <option value="single">{m.header.single}</option>
@@ -307,12 +307,12 @@
   <div class="header-main">
     <a class="logo" href="/" aria-label={m.header.home}><span class="logo-mark"><Icon name="archive" /></span><span class="logo-name">kura</span></a>
     <nav class="primary-nav" aria-label={m.header.mainNav} use:revealCurrent={`${page.url.pathname}|${activeSection}|${poolMode}`}>
-      <a href="/?q=" onclick={(e) => { if (page.url.pathname === '/' && poolMode && onTogglePool && !e.ctrlKey && !e.metaKey && !e.shiftKey && !e.altKey) { e.preventDefault(); onTogglePool(); } }} class:current={page.url.pathname === '/' && !poolMode} aria-current={page.url.pathname === '/' && !poolMode ? 'page' : undefined}>{m.header.navImages}</a>
-      <a href="/?mode=pools" onclick={(e) => { if (page.url.pathname === '/' && !poolMode && onTogglePool && !e.ctrlKey && !e.metaKey && !e.shiftKey && !e.altKey) { e.preventDefault(); onTogglePool(); } }} class:current={page.url.pathname === '/' && poolMode} aria-current={page.url.pathname === '/' && poolMode ? 'page' : undefined}>Pool</a>
-      <a href="/tags" class:current={page.url.pathname === '/tags'} aria-current={page.url.pathname === '/tags' ? 'page' : undefined}>{m.header.navTags}</a>
-      <a href="/tags/manage" data-sveltekit-preload-code="viewport" class:current={page.url.pathname.startsWith('/tags/')} aria-current={page.url.pathname.startsWith('/tags/') ? 'page' : undefined}>{m.header.navTagManage}</a>
-      <a href="/artists" data-sveltekit-preload-code="viewport" class:current={(activeSection === 'artists' || page.url.pathname === '/artists')} aria-current={(activeSection === 'artists' || page.url.pathname === '/artists') ? 'page' : undefined}>{m.header.navArtists}</a>
-      {#each extensionNav as item (item.href)}<a href={item.href} data-sveltekit-preload-code="viewport" class:current={(!activeSection && page.url.pathname.startsWith(item.href))} aria-current={(!activeSection && page.url.pathname.startsWith(item.href)) ? 'page' : undefined}>{item.label}</a>{/each}
+      <a href="/?q=" onclick={(e) => { if (page.url.pathname === '/' && poolMode && onTogglePool && !e.ctrlKey && !e.metaKey && !e.shiftKey && !e.altKey) { e.preventDefault(); onTogglePool(); } }} class:current={page.url.pathname === '/' && !poolMode} aria-current={page.url.pathname === '/' && !poolMode ? 'page' : undefined} aria-label={m.header.navImages} title={m.header.navImages}><Icon name="image" /></a>
+      <a href="/?mode=pools" onclick={(e) => { if (page.url.pathname === '/' && !poolMode && onTogglePool && !e.ctrlKey && !e.metaKey && !e.shiftKey && !e.altKey) { e.preventDefault(); onTogglePool(); } }} class:current={page.url.pathname === '/' && poolMode} aria-current={page.url.pathname === '/' && poolMode ? 'page' : undefined} aria-label="Pool" title="Pool"><Icon name="pool" /></a>
+      <a href="/tags" class:current={page.url.pathname === '/tags'} aria-current={page.url.pathname === '/tags' ? 'page' : undefined} aria-label={m.header.navTags} title={m.header.navTags}><Icon name="tag" /></a>
+      <a href="/tags/manage" data-sveltekit-preload-code="viewport" class:current={page.url.pathname.startsWith('/tags/')} aria-current={page.url.pathname.startsWith('/tags/') ? 'page' : undefined} aria-label={m.header.navTagManage} title={m.header.navTagManage}><Icon name="list" /></a>
+      <a href="/artists" data-sveltekit-preload-code="viewport" class:current={(activeSection === 'artists' || page.url.pathname === '/artists')} aria-current={(activeSection === 'artists' || page.url.pathname === '/artists') ? 'page' : undefined} aria-label={m.header.navArtists} title={m.header.navArtists}><Icon name="character" /></a>
+      {#each extensionNav as item (item.href)}<a href={item.href} data-sveltekit-preload-code="viewport" class:current={(!activeSection && page.url.pathname.startsWith(item.href))} aria-current={(!activeSection && page.url.pathname.startsWith(item.href)) ? 'page' : undefined} aria-label={item.label} title={item.label}>{#if item.icon}<Icon name={item.icon} />{:else}{item.label}{/if}</a>{/each}
     </nav>
   {#if showSearch}<form class="search-form" onsubmit={(e) => { e.preventDefault(); submit(); }}>
     <!-- Enter (highlight 無し) は素通しで native form submit になる (契約 H6) -->
@@ -458,7 +458,7 @@
   {#if hasViewControls}
   <div class="header-right" aria-label={m.header.viewAndFilter}>
     {#if onSort && sortKeys.length}
-      <label class="view-choice sort-control"><span class="sort-label">{m.header.sortOrder}</span>
+      <label class="view-choice sort-control"><span class="sort-label" title={m.header.sortOrder}><Icon name="sort" /></span>
         <span class="sort-picker">
         <span class="sort-summary" aria-hidden="true">{sortKeys.find(option => option.key === sort)?.label} {dir === 'asc' ? '↑' : '↓'}<span class="sort-caret">▾</span></span>
         <select aria-label={m.header.sortOrderLabel} value={`${sort}:${dir}`}
@@ -467,15 +467,15 @@
             onSort?.(key, direction === 'asc' ? 'asc' : 'desc');
           }}>
           {#each sortKeys as option}
-            <option value={`${option.key}:desc`}>{option.label} ↓ {m.header.desc}</option>
-            <option value={`${option.key}:asc`}>{option.label} ↑ {m.header.asc}</option>
+            <option value={`${option.key}:desc`} aria-label={`${option.label} ${m.header.desc}`}>{option.label} ↓</option>
+            <option value={`${option.key}:asc`} aria-label={`${option.label} ${m.header.asc}`}>{option.label} ↑</option>
           {/each}
         </select>
         </span>
       </label>
     {:else if sort && ['id', 'updated', 'page'].includes(sort)}
-      <span class="view-choice sort-control" aria-label={m.header.currentSort}><span class="sort-label">{m.header.sortOrder}</span>
-        <span class="sort-value">{sort === 'page' ? m.header.sortPage : sort === 'updated' ? m.header.sortUpdated : 'ID'} {dir === 'asc' ? '↑' : '↓'}{' '}<span class="sort-direction-text">{dir === 'asc' ? m.header.asc : m.header.desc}</span></span>
+      <span class="view-choice sort-control" aria-label={m.header.currentSort}><span class="sort-label" title={m.header.sortOrder}><Icon name="sort" /></span>
+        <span class="sort-value">{sort === 'page' ? m.header.sortPage : sort === 'updated' ? m.header.sortUpdated : 'ID'} {dir === 'asc' ? '↑' : '↓'}<span class="sr-only"> {dir === 'asc' ? m.header.asc : m.header.desc}</span></span>
       </span>
     {/if}
     <!-- Filter popover: type (radio) + favorite (checkbox) -->
@@ -490,7 +490,7 @@
         aria-expanded={openMenu === 'filter'}
       >
         <Icon name="filter" />
-        {#if filterActive}<span class="dot"></span>{/if}<span class="control-label">{m.header.filter}</span>
+        {#if filterActive}<span class="dot"></span>{/if}
       </button>
       {#if openMenu === 'filter'}
         <div class="menu menu-filter" aria-label={m.header.filter}>
@@ -541,9 +541,9 @@
 
     <!-- Safe mode: shield icon -->
     {#if onToggleSafe}
-      <button class="icon-btn safe-toggle desk-only" class:active={safeMode} disabled={safePending} aria-busy={safePending} onclick={onToggleSafe} title={safeMode ? m.header.safeOnTitle : m.header.safeOffTitle}>
+      <button class="icon-btn safe-toggle desk-only" class:active={safeMode} disabled={safePending} aria-busy={safePending} onclick={onToggleSafe} title={safeMode ? m.header.safeOnTitle : m.header.safeOffTitle} aria-label={safePending ? m.header.switching : m.header.safe}>
         <Icon name="shield" />
-      <span class="control-label">{safePending ? m.header.switching : m.header.safe}</span></button>
+      </button>
     {/if}
 
     <!-- 検証用 pool 非表示: フィルタ(漏斗)アイコン — pool 一覧でのみ表示 -->
@@ -557,23 +557,22 @@
       <button class="icon-btn pool-toggle desk-only" class:active={poolMode} onclick={onTogglePool}
         title={m.header.poolViewTitle} aria-label={m.header.poolViewLabel} aria-pressed={poolMode}>
         <Icon name="pool" />
-        <span class="control-label">{m.header.poolView}</span>
       </button>
     {/if}
     {#if onToggleReorder}
-      <button class="icon-btn reorder-toggle desk-only" class:active={reorderMode} onclick={onToggleReorder} title={m.header.reorder}>
+      <button class="icon-btn reorder-toggle desk-only" class:active={reorderMode} onclick={onToggleReorder} title={m.header.reorder} aria-label={m.header.reorder}>
         <Icon name="sort" />
-      <span class="control-label">{m.header.reorder}</span></button>
+      </button>
     {/if}
     {#if onToggleBulk}
       <button class="icon-btn bulk-toggle desk-only" class:active={bulkMode} onclick={onToggleBulk} title={m.header.bulkEdit} aria-label={m.header.bulkEdit} aria-pressed={bulkMode}>
         <Icon name="select" />
-      <span class="control-label">{m.header.bulkEdit}</span></button>
+      </button>
     {/if}
 
 
     {#if tagPost}<ViewerTagList post={tagPost} bind:open={tagListOpen} />{/if}
-    {#if total != null}<span class="total-count">{total.toLocaleString()} <span>{m.header.itemsUnit(total)}</span></span>{/if}
+    {#if total != null}<span class="total-count" title={`${total.toLocaleString()} ${m.header.itemsUnit(total)}`}><Icon name="images" />{total.toLocaleString()}</span>{/if}
   </div>
   {/if}
 </header>
@@ -602,10 +601,11 @@
   .search-form button:hover { background: var(--accent-soft); }
   .header-right { display: flex; align-items: center; gap: var(--control-gap); min-height: var(--control-height); box-sizing: border-box; padding: 0 16px; border-top: 1px solid #ffffff08; }
   .total-count { margin-left: auto; font-size: var(--control-count-font); color: #c0c6ca; white-space: nowrap; font-variant-numeric: tabular-nums; }
-  .total-count span { color: #9ea7ae; }
+  .total-count { display: inline-flex; align-items: center; gap: 4px; }
+  .total-count :global(svg) { width: 15px; height: 15px; color: #9ea7ae; }
+  .primary-nav a :global(svg), .view-choice :global(svg), .sort-label :global(svg) { width: 18px; height: 18px; vertical-align: middle; }
   .icon-btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-width: var(--control-height); min-height: var(--control-height); padding: 0 var(--control-padding-x); background: transparent; color: #bac2c8; border: 1px solid transparent; border-radius: var(--control-radius); cursor: pointer; flex-shrink: 0; position: relative; text-decoration: none; box-sizing: border-box; font-size: var(--control-font); }
   .icon-btn :global(svg), .search-form button :global(svg) { width: 18px; height: 18px; display: block; flex-shrink: 0; }
-  .control-label { font-size: var(--control-font); white-space: nowrap; }
   .icon-btn:hover { color: #f5f2eb; background: #292f34; }
   .icon-btn.active { background: #343126; color: #e8cc96; border-color: #746446; }
   .safe-toggle.active { color: #91d4ba; background: #22352e; border-color: #42715e; }
@@ -641,14 +641,13 @@
   .mobile-only { display: none; }
   .build-info { padding: 3px 8px; font-size: var(--control-font); color: #bfc7cd; line-height: 1.6; font-family: ui-monospace, monospace; overflow-wrap: anywhere; }
   .build-meta { color: #a9b3bb; }
-  @media (max-width: 1050px) { .header-main { gap: var(--control-gap); } .control-label { display: none; } }
+  @media (max-width: 1050px) { .header-main { gap: var(--control-gap); } }
   @media (max-width: 850px) {
     .desk-only { display: none; }
     .mobile-only { display: block; }
     .header-main { gap: var(--control-gap); min-height: var(--control-height); padding: 0 8px; }
     .primary-nav a { padding: 0 9px; }
     .header-right { padding: 0 12px; min-height: var(--control-height); gap: var(--control-gap); }
-    .control-label { display: inline; }
     .icon-btn, .gear-btn { min-height: var(--control-height); min-width: var(--control-height); }
     .menu-item { min-height: var(--control-height); box-sizing: border-box; padding: 0 var(--control-padding-x); border-radius: var(--control-radius); font-size: var(--control-font); }
   }
@@ -664,14 +663,13 @@
     .search-form { grid-column: 2 / 4; grid-row: 1; width: 100%; max-width: none; gap: 2px; }
     .search-form button { height: var(--control-height); width: var(--control-height); border: 0; min-height: var(--control-height); box-sizing: border-box; padding: 0 var(--control-padding-x); border-radius: var(--control-radius); font-size: var(--control-font); }
     .header-right > .sort-control { grid-column: 3 / 5; grid-row: 2; min-width: 0; justify-self: end; }
-    .sort-label, .sort-direction-text { display: none; }
+    .sort-label { display: none; }
     .sort-summary { display: inline-flex; align-items: center; gap: 3px; min-height: var(--control-height); box-sizing: border-box; padding: 0 6px; border: 1px solid var(--line); border-radius: var(--control-radius); background: var(--background); color: var(--text); }
     .sort-caret { font-size: 10px; color: var(--muted); }
     .sort-picker select { position: absolute; inset: 0; opacity: 0; width: 100%; height: 100%; min-width: 0; cursor: pointer; }
     .sort-picker:focus-within { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: var(--control-radius); }
     .header-right > .menu-host { grid-column: 4; grid-row: 1; }
     .total-count { grid-column: 5; grid-row: 2; align-self: center; font-size: var(--control-count-font); }
-    .filter-btn .control-label { display: none; }
     .menu { max-height: calc(100dvh - 100px - env(safe-area-inset-top)); }
     .menu-filter { left: auto; right: 0; max-width: calc(100vw - 110px - env(safe-area-inset-left) - env(safe-area-inset-right)); }
   }
@@ -680,7 +678,7 @@
   @media (max-width: 360px) { .logo-name { display: none; } .primary-nav a { padding: 0 2px; } }
 
   @media (max-width: 600px), (pointer: coarse) {
-    .primary-nav a, .menu, .menu-item, .control-label { font-size: var(--control-font); }
+    .primary-nav a, .menu, .menu-item { font-size: var(--control-font); }
     .menu-item select { font-size: 16px; min-height: var(--control-height); box-sizing: border-box; padding: 0 var(--control-padding-x); border-radius: var(--control-radius); }
   }
 </style>

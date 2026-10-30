@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Icon from '#lib/components/Icon.svelte';
   import ViewerTagList from './ViewerTagList.svelte';
   import IdentitySummary from './IdentitySummary.svelte';
   import { untrack, onMount } from 'svelte';
@@ -134,6 +135,8 @@
       .catch(() => { if (searchForId === id) searchInfo = null; });
   });
   const SEARCH_LABEL: Record<string, string> = m.home.viewer.searchStatus;
+  // The button shows a mark; its title says the status in words.
+  const SEARCH_MARK: Record<string, string> = { pending: '…', excluded: '⊘', found: '✓', not_found: '✗', review: '?' };
   async function toggleSearchFlag() {
     const p = displayPost;
     if (!p || searchBusy) return;
@@ -650,11 +653,11 @@
   <div class="lb-top" bind:clientHeight={toolbarHeight}>
     <div class="lb-toolbar-scroll">
     {#if displayPost}
-      <button class="lb-detail" onclick={() => showDetails = !showDetails} aria-expanded={showDetails}>{m.home.viewer.details}</button>
-      <button class="lb-detail" disabled={isVideo(displayPost) || isPdf(displayPost) || !(naturalSizes[displayPost.id]?.width || displayPost.canvasWidth)} onclick={() => { zoomed = !zoomed; if (zoomed) showPair = false; }} aria-pressed={zoomed}>{zoomed ? m.home.viewer.fit : m.home.viewer.actualSize}</button>
+      <button class="lb-detail" onclick={() => showDetails = !showDetails} aria-expanded={showDetails} aria-label={m.home.viewer.details} title={m.home.viewer.details}><Icon name="info" /></button>
+      <button class="lb-detail" disabled={isVideo(displayPost) || isPdf(displayPost) || !(naturalSizes[displayPost.id]?.width || displayPost.canvasWidth)} onclick={() => { zoomed = !zoomed; if (zoomed) showPair = false; }} aria-pressed={zoomed} aria-label={zoomed ? m.home.viewer.fit : m.home.viewer.actualSize} title={zoomed ? m.home.viewer.fit : m.home.viewer.actualSize}><Icon name={zoomed ? 'shrink' : 'expand'} /></button>
       {#if topOffset === 0 && displayPost}<ViewerTagList post={displayPost} />{/if}
-      <button class="lb-detail" onclick={() => setSidebar(!sidebarVisible)} aria-pressed={sidebarVisible}>{m.home.viewer.tags}</button>
-      <a class="lb-detail" href={postUrl(displayPost.id, true)}>{m.home.viewer.manga}</a>
+      <button class="lb-detail" onclick={() => setSidebar(!sidebarVisible)} aria-pressed={sidebarVisible} aria-label={m.home.viewer.tags} title={m.home.viewer.tags}><Icon name="tag" /></button>
+      <a class="lb-detail" href={postUrl(displayPost.id, true)} aria-label={m.home.viewer.manga} title={m.home.viewer.manga}><Icon name="manga" /></a>
     {/if}
     {#if displayPost}
       <span class="lb-id">#{displayPost.id}</span>
@@ -699,7 +702,8 @@
           onclick={toggleSearchFlag}
           disabled={searchBusy}
           title={m.home.viewer.pairSearchTitle(SEARCH_LABEL[searchInfo.status] ?? m.home.viewer.searchUnregistered, searchInfo.bestCandidate, String(searchInfo.bestScore?.toFixed?.(2) ?? searchInfo.bestScore))}
-        >🔍{SEARCH_LABEL[searchInfo.status] ?? m.home.viewer.searchUnset}</button>
+          aria-label={m.home.viewer.pairSearchTitle(SEARCH_LABEL[searchInfo.status] ?? m.home.viewer.searchUnregistered, searchInfo.bestCandidate, String(searchInfo.bestScore?.toFixed?.(2) ?? searchInfo.bestScore))}
+        >🔍{SEARCH_MARK[searchInfo.status] ?? '–'}</button>
       {/if}
     {/if}
     </div>
@@ -987,6 +991,7 @@
     display: inline-flex; align-items: center; justify-content: center;
     min-height: var(--control-height); min-width: var(--control-height); box-sizing: border-box;
     flex-shrink: 0; cursor: pointer; padding: 0 var(--control-padding-x); border-radius: var(--control-radius); font-size: var(--control-font); }
+  .lb-detail :global(svg) { width: 18px; height: 18px; vertical-align: middle; }
   .lb-detail {
     color: var(--accent); text-decoration: none; padding: 0 var(--control-padding-x);
     border: 0; border-radius: var(--control-radius); background: none; font-size: var(--control-font); min-height: var(--control-height); box-sizing: border-box; }

@@ -160,7 +160,7 @@ def exercise(context, base, width, phone, evidence):
     assert not page.locator('details.pool-info').evaluate('(e)=>e.open')
     no_overflow(page)
     spa_link(page, '/?mode=pools')
-    expect(page.locator('.total-count')).to_have_text('4 件')
+    expect(page.locator('.total-count')).to_have_text('4')
     expect(page.locator('.total-count')).to_have_count(1)
     expect(page.locator('.pool-header')).to_have_count(0)
     expect(page.locator('.cols-bar,.cols-total')).to_have_count(0)

@@ -84,15 +84,15 @@
   <p>{m.collector.existing.lead}</p>
   <form onsubmit={(e) => { e.preventDefault(); void load(Number(input), 0, null, true); }}>
     <label>{m.collector.existing.number} <input type="number" min="1" step="1" bind:value={input} /></label>
-    <button disabled={busy}>{m.collector.existing.open}</button>
+    <button disabled={busy} aria-label={busy ? m.collector.existing.openingWork : m.collector.existing.open} title={busy ? m.collector.existing.openingWork : m.collector.existing.open}>{busy ? '…' : '▶'}</button>
   </form>
   {#if pool}<h2>{title}</h2><a href={`/?q=pool:${pool}`}>{m.collector.existing.openClassic}</a>{/if}
   {#if error}<p role="alert">{error}</p>{/if}
   <p role="status">{busy ? m.collector.loading : pool && !error ? m.collector.existing.pageStatus(items.length, index + 1) : ''}</p>
   <div class="paging">
-    <button disabled={busy || !pool || index === 0} onclick={() => load(pool, index - 1, history[index - 1])}>{m.collector.existing.prev}</button>
-    <button disabled={busy || !next} onclick={forward}>{m.collector.existing.next}</button>
-    {#if failures.size}<button onclick={() => { failures = new Set(); retries++; }}>{m.collector.existing.retryImages}</button>{/if}
+    <button disabled={busy || !pool || index === 0} onclick={() => load(pool, index - 1, history[index - 1])} aria-label={m.collector.existing.prev} title={m.collector.existing.prev}>‹</button>
+    <button disabled={busy || !next} onclick={forward} aria-label={m.collector.existing.next} title={m.collector.existing.next}>›</button>
+    {#if failures.size}<button onclick={() => { failures = new Set(); retries++; }} aria-label={m.collector.existing.retryImages} title={m.collector.existing.retryImages}>⟳</button>{/if}
   </div>
   <div class="grid" aria-busy={busy}>
     {#each items as item (item.id)}

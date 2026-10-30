@@ -21,6 +21,8 @@
 
   const CENSOR_TYPES = ['mosaic', 'white_bar', 'black_bar', 'slash', 'other'];
   const TOOLS = ['rect', 'polygon', 'pen'] as const;
+  const TOOL_MARK: Record<(typeof TOOLS)[number], string> = { rect: '▭', polygon: '⬠', pen: '✎' };
+  const TOOL_NAME: Record<(typeof TOOLS)[number], string> = { rect: cm.toolRect, polygon: cm.toolPolygon, pen: cm.toolPen };
   const COLORS: Record<string, string> = {
     mosaic: '#e84393', white_bar: '#0984e3', black_bar: '#00b894',
     slash: '#fdcb6e', other: '#b2bec3',
@@ -155,7 +157,7 @@
 
 <div class="wrap">
   <header>
-    <a class="back" href={`/post/${post.id}`}>← post {post.id}</a>
+    <a class="back" href={`/post/${post.id}`} aria-label={cm.back(post.id)} title={cm.back(post.id)}>← #{post.id}</a>
     <span class="rev" class:on={review.state === 'complete'}>{review.state}{review.hasNoCensor ? ' · clean' : ''}</span>
     <span class="status">{status}</span>
   </header>
@@ -163,11 +165,11 @@
   <div class="toolbar">
     <div class="grp">
       {#each TOOLS as t}
-        <button class:active={tool === t} onclick={() => (tool = t)}>{t}</button>
+        <button class:active={tool === t} aria-pressed={tool === t} onclick={() => (tool = t)} aria-label={TOOL_NAME[t]} title={TOOL_NAME[t]}>{TOOL_MARK[t]}</button>
       {/each}
       {#if tool === 'polygon'}
-        <button class="go" disabled={poly.length < 3} onclick={confirmPoly}>✓ {poly.length}</button>
-        <button onclick={() => (poly = [])}>✕</button>
+        <button class="go" disabled={poly.length < 3} onclick={confirmPoly} aria-label={cm.confirmPolygon(poly.length)} title={cm.confirmPolygon(poly.length)}>✓ {poly.length}</button>
+        <button onclick={() => (poly = [])} aria-label={cm.clearPolygon} title={cm.clearPolygon}>✕</button>
       {/if}
       {#if tool === 'pen'}
         {#each PEN_WIDTHS as pw}
@@ -181,13 +183,13 @@
       {/each}
     </div>
     <div class="grp">
-      <button class="erase" class:on={eraseMode} onclick={() => (eraseMode = !eraseMode)}>
-        {cm.eraser}{eraseMode ? ' ON' : ''}
+      <button class="erase" class:on={eraseMode} aria-pressed={eraseMode} onclick={() => (eraseMode = !eraseMode)} aria-label={cm.eraserName} title={cm.eraserName}>
+        🧹
       </button>
     </div>
     <div class="grp">
-      <button onclick={() => setReview('complete', false)}>Mark reviewed</button>
-      <button onclick={() => setReview('complete', true)}>No censor here</button>
+      <button onclick={() => setReview('complete', false)} aria-label={cm.markReviewed} title={cm.markReviewed}>✓</button>
+      <button onclick={() => setReview('complete', true)} aria-label={cm.noCensor} title={cm.noCensor}>⊘</button>
     </div>
   </div>
 
@@ -236,7 +238,7 @@
         onclick={() => (selected = selected === a.id ? null : a.id)}>
         <span class="num" style:background={shapeColor(a)}>{a.negative ? '🧹' : i + 1}</span>
         <span class="meta">{a.negative ? 'erase' : a.censorType} · {a.shapeType}{a.stale ? ' · ⚠ stale' : ''}</span>
-        <button class="del" onclick={(e) => { e.stopPropagation(); remove(a); }}>{cm.delete}</button>
+        <button class="del" onclick={(e) => { e.stopPropagation(); remove(a); }} aria-label={cm.delete} title={cm.delete}>🗑</button>
       </li>
     {:else}
       <li class="empty">no annotations yet — draw on the image</li>

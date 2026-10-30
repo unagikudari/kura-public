@@ -183,7 +183,7 @@
         </div>
       {/if}
       <div class="pool-actions">
-    <a href={`/lab/collector/existing?pool=${poolId}`}>{m.home.poolTitle.openInCollector}</a>
+    <a href={`/lab/collector/existing?pool=${poolId}`} aria-label={m.home.poolTitle.openInCollector} title={m.home.poolTitle.openInCollector}>⧉</a>
     <PoolVerifyBadge variant="chip" status={verifyStatus} onToggle={toggleVerifyStatus} onRelease={releaseVerifyStatus} />
     {#if taggerSource}
       <span class="pool-tagger-source" title={m.home.poolTitle.taggerSource}>{taggerSource}</span>
@@ -193,19 +193,22 @@
     {/if}
     {#if sources.length > 1}
       <button class="pool-sources-toggle" onclick={() => sourcesExpanded = !sourcesExpanded}
-              title={m.home.poolTitle.allSources}>
-        +{sources.length - 1} sources {sourcesExpanded ? '▴' : '▾'}
+              title={m.home.poolTitle.allSources} aria-expanded={sourcesExpanded}
+              aria-label={m.home.poolTitle.moreSources(sources.length - 1)}>
+        +{sources.length - 1} {sourcesExpanded ? '▴' : '▾'}
       </button>
     {/if}
     <button class="pool-pair-scope" class:on={pairScopeEnabled === true}
             disabled={pairScopeBusy} onclick={togglePairScope}
-            title={m.home.poolTitle.pairScopeTitle}>
-      ⿻ {m.home.poolTitle.pairScope}: {pairScopeEnabled === true ? 'ON' : pairScopeEnabled === false ? 'OFF' : m.home.poolTitle.unset}
+            title={m.home.poolTitle.pairScopeTitle} aria-pressed={pairScopeEnabled === true}
+            aria-label={`${m.home.poolTitle.pairScope}: ${pairScopeEnabled === true ? 'ON' : pairScopeEnabled === false ? 'OFF' : m.home.poolTitle.unset}`}>
+      ⿻ {pairScopeEnabled === true ? '●' : pairScopeEnabled === false ? '○' : '–'}
     </button>
     <button class="pool-tagger-exclude" class:on={taggerExcluded === true}
             disabled={taggerExcludeBusy} onclick={toggleTaggerExclude}
-            title={m.home.poolTitle.taggerExcludeTitle}>
-      🚫{m.home.poolTitle.taggerExclude}: {taggerExcluded === true ? 'ON' : m.home.poolTitle.unset}
+            title={m.home.poolTitle.taggerExcludeTitle} aria-pressed={taggerExcluded === true}
+            aria-label={`${m.home.poolTitle.taggerExclude}: ${taggerExcluded === true ? 'ON' : m.home.poolTitle.unset}`}>
+      🚫{taggerExcluded === true ? '●' : '–'}
     </button>
       </div>
   {#if sourcesExpanded && sources.length > 1}
@@ -222,9 +225,9 @@
             <span class="pool-source-note">{poolSourceNote(poolExtensions, s.url)}</span>
           {/if}
           {#if !s.isPrimary && s.isExternal}
-            <button class="pool-source-promote" disabled={promotingUrl === s.url}
+            <button class="pool-source-promote" disabled={promotingUrl === s.url} aria-label={promotingUrl === s.url ? m.home.poolTitle.makingPrimary : m.home.poolTitle.makePrimary} title={promotingUrl === s.url ? m.home.poolTitle.makingPrimary : m.home.poolTitle.makePrimary}
                     onclick={() => handlePromoteSource(s.url)}>
-              {promotingUrl === s.url ? '…' : m.home.poolTitle.makePrimary}
+              {promotingUrl === s.url ? '…' : '★'}
             </button>
           {/if}
         </li>

@@ -951,51 +951,51 @@
   {/if}
 
   <div class="sub-bar">
-    <button class="bb" onclick={goBack}>&#8592;</button>
+    <button class="bb" onclick={goBack} aria-label={pm.back} title={pm.back}>&#8592;</button>
     <span class="bi">#{post.id}</span>
     {#if post.canvasWidth && post.canvasHeight}
       <span class="bd">{post.canvasWidth}&times;{post.canvasHeight}</span>
     {/if}
     <span class="bd">{idx + 1}/{postsTotal}</span>
-    <button class="dir-btn" onclick={toggleDir} title={scrollDir === 'v' ? pm.toHorizontal : pm.toVertical}>
-      {scrollDir === 'v' ? pm.vertical : pm.horizontal}
+    <button class="dir-btn" onclick={toggleDir} title={scrollDir === 'v' ? pm.toHorizontal : pm.toVertical} aria-label={scrollDir === 'v' ? pm.vertical : pm.horizontal}>
+      {scrollDir === 'v' ? '⇕' : '⇔'}
     </button>
     {#if scrollDir === 'h'}
       <button class="dir-btn" onclick={toggleRead}
-        title={readDir === 'rtl' ? pm.rtlTitle : pm.ltrTitle}>
-        {readDir === 'rtl' ? pm.rtl : pm.ltr}
+        title={readDir === 'rtl' ? pm.rtlTitle : pm.ltrTitle} aria-label={readDir === 'rtl' ? pm.rtl : pm.ltr}>
+        {readDir === 'rtl' ? '←' : '→'}
       </button>
     {/if}
     <button class="dir-btn" class:on={dimUnfocused} aria-pressed={dimUnfocused}
       onclick={() => dimUnfocused = !dimUnfocused}
-      title={pm.dimTitle}>{pm.dim}</button>
+      title={pm.dimTitle} aria-label={pm.dim}>◐</button>
     {#if reconCount > 0}
       <button class="dir-btn recon-bar" class:on={showRecon} onclick={() => showRecon = !showRecon}
-        title={pm.reconTitle}>
-        {showRecon ? pm.reconOn : pm.reconOff}{reconCount > 1 ? ` ×${reconCount}` : ''}
+        title={pm.reconTitle} aria-label={showRecon ? pm.reconOn : pm.reconOff}>
+        {showRecon ? '🟢' : '⚪'}{reconCount > 1 ? ` ×${reconCount}` : ''}
       </button>
     {/if}
     {#if variantStatus[post.id] && variantStatus[post.id].reviewState !== 'approved'}
       <button class="dir-btn" disabled={reconBusy} onclick={() => reviewRecon('approved')}
-        title={pm.approveTitle}>{pm.approve}</button>
+        title={pm.approveTitle} aria-label={pm.approve}>✓</button>
     {/if}
     {#if variantStatus[post.id] && variantStatus[post.id].reviewState === 'approved'}
       <button class="dir-btn" disabled={reconBusy} onclick={() => reviewRecon('rejected')}
-        title={pm.rejectTitle}>{pm.reject}</button>
+        title={pm.rejectTitle} aria-label={pm.reject}>✗</button>
     {/if}
     <span class="spacer-bar"></span>
     <button class="dir-btn" class:on={$verifyOverlayOn} onclick={() => verifyOverlayOn.update(v => !v)}
-      title={pm.tagsTitle}>{$verifyOverlayOn ? pm.tagsOn : pm.tagsOff}</button>
+      title={pm.tagsTitle} aria-label={$verifyOverlayOn ? pm.tagsOn : pm.tagsOff} aria-pressed={$verifyOverlayOn}>🏷</button>
     <button class="dir-btn" class:on={$verifyHeaderOn} onclick={toggleVerifyHeader}
-      title={pm.bulkTitle}>{$verifyHeaderOn ? pm.bulkOn : pm.bulkOff}</button>
+      title={pm.bulkTitle} aria-label={$verifyHeaderOn ? pm.bulkOn : pm.bulkOff} aria-pressed={$verifyHeaderOn}>☑</button>
     <button class="dir-btn" class:on={showRegions} onclick={() => showRegions = !showRegions}
-      title={pm.regionsTitle}>{showRegions ? pm.regionsOn : pm.regionsOff}</button>
-    <a class="dir-btn annot-bar" href={`/post/${post.id}/censor`} title={pm.annotateTitle}>&#9998; {pm.annotate}</a>
+      title={pm.regionsTitle} aria-label={showRegions ? pm.regionsOn : pm.regionsOff} aria-pressed={showRegions}>🎯</button>
+    <a class="dir-btn annot-bar" href={`/post/${post.id}/censor`} title={pm.annotateTitle} aria-label={pm.annotate}>&#9998;</a>
     {#if deleteConfirm}
-      <button class="dc" onclick={confirmDelete} disabled={deleting}>{deleting ? '...' : 'DEL'}</button>
-      <button class="dx" onclick={cancelDelete}>&#10005;</button>
+      <button class="dc" onclick={confirmDelete} disabled={deleting} aria-label={deleting ? pm.deleting : pm.deleteConfirm} title={deleting ? pm.deleting : pm.deleteConfirm}>{deleting ? '…' : '🗑✓'}</button>
+      <button class="dx" onclick={cancelDelete} aria-label={pm.deleteCancel} title={pm.deleteCancel}>&#10005;</button>
     {:else}
-      <button class="dd" onclick={confirmDelete}>&#128465;</button>
+      <button class="dd" onclick={confirmDelete} aria-label={pm.delete} title={pm.delete}>&#128465;</button>
     {/if}
   </div>
 

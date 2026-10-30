@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Icon from '#lib/components/Icon.svelte';
   import { onDestroy } from 'svelte';
   import Header from '#lib/components/Header.svelte';
   import SectionTabs from '#lib/components/SectionTabs.svelte';
@@ -201,10 +202,10 @@
       <div class="tag-summary"><span class="category-name">{tag.category}</span><span class="count">{m.tags.manage.usages(tag.usages)}</span></div>
     </div>
     <div class="card-actions">
-      <a href={`/?q=${encodeURIComponent(tag.names[0])}`}>{m.tags.manage.viewImages}</a>
-      <a href={`/?mode=pools&q=${encodeURIComponent('tag:' + tag.names[0])}`} title={m.tags.manage.poolsTitle}>{m.tags.manage.pools}</a>
-      {#if tag.category === 'artist'}<a href={`/artists?id=${tag.id}`}>{m.tags.manage.artistManage}</a>{/if}
-      <a href={editHref(tag)} aria-label={m.tags.manage.editTag(tag.names[0])}>{m.tags.manage.edit}</a>
+      <a href={`/?q=${encodeURIComponent(tag.names[0])}`} aria-label={m.tags.manage.viewImages} title={m.tags.manage.viewImages}><Icon name="images" /></a>
+      <a href={`/?mode=pools&q=${encodeURIComponent('tag:' + tag.names[0])}`} title={m.tags.manage.poolsTitle} aria-label={m.tags.manage.pools}><Icon name="pool" /></a>
+      {#if tag.category === 'artist'}<a href={`/artists?id=${tag.id}`} aria-label={m.tags.manage.artistManage} title={m.tags.manage.artistManage}><Icon name="character" /></a>{/if}
+      <a href={editHref(tag)} aria-label={m.tags.manage.editTag(tag.names[0])} title={m.tags.manage.edit}><Icon name="pencil" /></a>
     </div>
   </article>
 {/snippet}

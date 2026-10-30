@@ -52,12 +52,12 @@
   <strong>{m.collector.tagEditor.selected(targets.length)}</strong>
   <input aria-label={m.collector.tagEditor.inputLabel} placeholder={m.collector.tagEditor.placeholder} bind:value={input} maxlength="2000" disabled={disabled || busy || pending !== null} />
   {#if pending && !busy}
-    <button onclick={() => apply()}>{m.collector.tagEditor.retry}</button>
+    <button onclick={() => apply()} aria-label={m.collector.tagEditor.retry} title={m.collector.tagEditor.retry}>⟳</button>
   {:else}
-    <button disabled={disabled || busy || !targets.length || !parseTagInput(input).length} onclick={() => apply()}>{m.collector.tagEditor.add}</button>
-    <button disabled={disabled || busy || !targets.length || !parseTagInput(input).length} onclick={() => apply(true)}>{m.collector.tagEditor.remove}</button>
+    <button disabled={disabled || busy || !targets.length || !parseTagInput(input).length} onclick={() => apply()} aria-label={m.collector.tagEditor.add} title={m.collector.tagEditor.add}>＋</button>
+    <button disabled={disabled || busy || !targets.length || !parseTagInput(input).length} onclick={() => apply(true)} aria-label={m.collector.tagEditor.remove} title={m.collector.tagEditor.remove}>−</button>
   {/if}
-  <button disabled={disabled || busy || pending !== null || targets.length !== 1} onclick={showHistory}>{m.collector.tagEditor.history}</button>
+  <button disabled={disabled || busy || pending !== null || targets.length !== 1} onclick={showHistory} aria-label={m.collector.tagEditor.history} title={m.collector.tagEditor.history}>🕘</button>
   {#if targets.length === 1 && currentTags.length}
     <div class="current"><span>{m.collector.tagEditor.current}</span>{#each currentTags as tag}
       <button disabled={disabled || busy || pending !== null} onclick={() => { input = tag; }}>{tag}</button>

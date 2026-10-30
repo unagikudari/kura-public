@@ -123,6 +123,7 @@ export const en = {
   },
   existing: {
     enterNumber: 'Enter a work number.',
+    openingWork: 'Opening…',
     changed: 'This work has changed. Open it again.',
     title: 'Browse existing works — kura',
     toNew: 'New library',
@@ -313,6 +314,7 @@ export const ja: Shape<typeof en> = {
   },
   existing: {
     enterNumber: '作品番号を入力してください。',
+    openingWork: '開いています…',
     changed: '作品が更新されました。作品を開き直してください。',
     title: '既存作品の閲覧 — kura',
     toNew: '新ライブラリへ',

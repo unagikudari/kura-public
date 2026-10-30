@@ -225,7 +225,7 @@
 
 <svelte:head><title>{m.collector.page.title}</title></svelte:head>
 <main>
-  <nav><a href="/">{m.collector.page.back}</a></nav>
+  <nav><a href="/" aria-label={m.collector.page.back} title={m.collector.page.back}>←</a></nav>
   <header class="intro">
     <div><span class="preview-label">{m.collector.page.previewLabel}</span><h1>{m.collector.page.heading}</h1><p>{m.collector.page.lead}</p></div>
     <a href="/lab/collector/existing">{m.collector.page.openExisting}</a>
@@ -282,8 +282,8 @@
     <select aria-label={m.collector.page.kindLabel} bind:value={kind} disabled={busy || tagBusy}>
       <option value="">{m.collector.page.kindAll}</option><option value="image">{m.collector.page.kindImage}</option><option value="video">{m.collector.page.kindVideo}</option>
     </select>
-    <button disabled={busy || tagBusy}>{m.collector.page.search}</button>
-    <button type="button" disabled={busy || tagBusy} onclick={() => { kind = ''; void filter([]); }}>{m.collector.page.clearFilter}</button>
+    <button disabled={busy || tagBusy} aria-label={m.collector.page.search} title={m.collector.page.search}>🔍</button>
+    <button type="button" disabled={busy || tagBusy} onclick={() => { kind = ''; void filter([]); }} aria-label={m.collector.page.clearFilter} title={m.collector.page.clearFilter}>✕</button>
   </form>
   <section class="selection" aria-label={m.collector.page.selectionLabel}>
     <button disabled={busy || tagBusy || !items.length} onclick={() => { chosen = new Set([...new Set(items.map(item => item.id))].slice(0, 100)); }}>{m.collector.page.selectShown}</button>

@@ -256,7 +256,7 @@
             {#each [...excluded] as t}
               <button class="chip exc" onclick={() => off(t)}>-{t} ×</button>
             {/each}
-            <button class="clear" onclick={clearAll}>{m.tags.browse.clear}</button>
+            <button class="clear" onclick={clearAll} aria-label={m.tags.browse.clear} title={m.tags.browse.clear}>✕</button>
           </div>
         {/if}
       </div>

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Icon from '#lib/components/Icon.svelte';
   import Header from '#lib/components/Header.svelte';
   import SectionTabs from '#lib/components/SectionTabs.svelte';
   import { invalidateAll } from '$app/navigation';
@@ -68,11 +69,11 @@
 <main>
   <div class="toolbar">
     <div><h1>{a.heading}</h1>{#if data.tags}<span class="muted">{a.artistCount(data.tags.total?.toLocaleString() ?? '')}</span>{/if}</div>
-    {#if data.id}<a class="advanced" href="/artists">{a.backToList}</a>{/if}
+    {#if data.id}<a class="advanced" href="/artists" aria-label={a.backToList} title={a.backToList}>←</a>{/if}
     <form action="/artists" method="GET" class="search">
       <input type="search" name="q" value={data.query} placeholder={a.searchPlaceholder} aria-label={a.searchLabel} />
       {#if data.assignUrl}<input type="hidden" name="source" value={data.assignUrl} />{/if}
-      <button type="submit">{a.search}</button>
+      <button type="submit" aria-label={a.search} title={a.search}><Icon name="search" /></button>
     </form>
     <a class="button" href="/tags/edit?cat=artist&from=%2Fartists">{a.addArtistTag}</a>
     <button disabled={busy !== null} onclick={() => act('refresh', () => Promise.resolve())} aria-label={a.refresh}>↻</button>
@@ -100,7 +101,7 @@
           {#if source.cover}<img src={mediaUrl(source.cover)} alt="" loading="lazy" />{/if}
           <div class="grow"><strong>{source.name}</strong><small>{location(source.url)}</small><span class="status" class:attention={source.state === 'dead' || unverified(source)}>{label(source)}</span></div>
           <a class="button" href={'/artists?' + new URLSearchParams({ source: source.url })}>{a.linkToArtist}</a>
-          {#if artistIntegration}<button disabled={busy !== null} onclick={() => act(source.key, () => artistIntegration!.setActive(source, !source.active))}>{source.active ? a.stop : a.resume}</button>{/if}
+          {#if artistIntegration}<button disabled={busy !== null} onclick={() => act(source.key, () => artistIntegration!.setActive(source, !source.active))} aria-label={source.active ? a.stop : a.resume} title={source.active ? a.stop : a.resume}>{source.active ? '⏸' : '▶'}</button>{/if}
         </article>
       {:else}<p class="empty">{a.noUnassigned}</p>{/each}
     </section>
@@ -116,11 +117,11 @@
               {#if artist.thumbnailUrl}<img src={mediaUrl(artist.thumbnailUrl)} alt="" loading="lazy" />{:else}<span>◇</span>{/if}
             </a>
             <div class="grow"><h2>{artist.names[0]}</h2>{#if artist.names.length > 1}<p class="aliases">{artist.names.slice(1).join(' · ')}</p>{/if}<small>{a.counts(artist.usages.toLocaleString(), links.length, feeds.length)}</small></div>
-            <a class="edit" href={artistEditHref(artist)} aria-label={a.editLabel(artist.names[0])}>{a.edit}</a>
+            <a class="edit" href={artistEditHref(artist)} aria-label={a.editLabel(artist.names[0])} title={a.edit}><Icon name="pencil" /></a>
           </div>
           <div class="artist-actions">
-            <a href={`/?q=${encodeURIComponent(artist.names[0])}`}>{a.images}</a>
-            <a href={`/?mode=pools&q=${encodeURIComponent('tag:' + artist.names[0])}`}>Pool</a>
+            <a href={`/?q=${encodeURIComponent(artist.names[0])}`} aria-label={a.images} title={a.images}><Icon name="images" /></a>
+            <a href={`/?mode=pools&q=${encodeURIComponent('tag:' + artist.names[0])}`} aria-label="Pool" title="Pool"><Icon name="pool" /></a>
             {#if data.assignUrl}<button disabled={busy !== null} onclick={() => act('artist:' + artist.id, () => attach(artist, data.assignUrl))}>{a.linkThisArtist}</button>
             {:else}<button onclick={() => { editing = editing === artist.id ? null : artist.id; newUrl = ''; platform = ''; }}>{artistIntegration ? a.addExternalWithPatrol : a.addExternal}</button>{/if}
           </div>
@@ -151,7 +152,7 @@
           {#each feeds as source (source.key)}
             <div class="feed">
               <div class="grow"><span class="status" class:attention={source.state === 'dead' || unverified(source)}>{label(source)}</span><span>{kindLabel(source)}</span><small>{a.schedule(time(source.lastAt), source.nextAt ? time(source.nextAt) : null)}</small>{#if source.error}<small class="error">{source.error}</small>{/if}</div>
-              {#if artistIntegration}<button disabled={busy !== null || (source.kind === 'search' && !source.active)} onclick={() => act(source.key, () => artistIntegration!.check(source))}>{a.checkNow}</button><button disabled={busy !== null} onclick={() => act(source.key, () => artistIntegration!.setActive(source, !source.active))}>{source.active ? a.stop : a.resume}</button>{/if}
+              {#if artistIntegration}<button disabled={busy !== null || (source.kind === 'search' && !source.active)} onclick={() => act(source.key, () => artistIntegration!.check(source))} aria-label={a.checkNow} title={a.checkNow}>⟳</button><button disabled={busy !== null} onclick={() => act(source.key, () => artistIntegration!.setActive(source, !source.active))} aria-label={source.active ? a.stop : a.resume} title={source.active ? a.stop : a.resume}>{source.active ? '⏸' : '▶'}</button>{/if}
             </div>
           {/each}
           {#if history.length}
@@ -172,7 +173,7 @@
         </article>
       {:else}<p class="empty">{a.noArtists}</p>{/each}
     </section>
-    <nav class="pagination" aria-label={a.pagination}>{#if data.current > 1}<a class="button" href={href(data.current - 1)}>{a.prev}</a>{/if}<span>{data.current}</span>{#if data.current * 60 < (data.tags?.total ?? 0)}<a class="button" href={href(data.current + 1)}>{a.next}</a>{/if}</nav>
+    <nav class="pagination" aria-label={a.pagination}>{#if data.current > 1}<a class="button" href={href(data.current - 1)} aria-label={a.prev} title={a.prev}>‹</a>{/if}<span>{data.current}</span>{#if data.current * 60 < (data.tags?.total ?? 0)}<a class="button" href={href(data.current + 1)} aria-label={a.next} title={a.next}>›</a>{/if}</nav>
   {/if}
 </main>
 </div>

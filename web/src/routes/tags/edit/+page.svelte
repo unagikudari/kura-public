@@ -322,7 +322,7 @@
   <SectionTabs label={m.tags.common.tabsLabel} tabs={[{label: m.tags.common.tabList,href:"/tags/manage",active:false},{label:m.tags.common.tabEdit,href:"/tags/edit",active:true}]} />
   <div class="topbar">
     <span class="title">{m.tags.edit.heading}</span>
-    <a class="links-nav" href={data.returnTo}>{data.returnTo.startsWith('/artists') ? m.tags.edit.backToArtists : m.tags.edit.backToTags}</a>
+    <a class="links-nav" href={data.returnTo} aria-label={(data.returnTo.startsWith('/artists') ? m.tags.edit.backToArtists : m.tags.edit.backToTags)} title={(data.returnTo.startsWith('/artists') ? m.tags.edit.backToArtists : m.tags.edit.backToTags)}>←</a>
     <div class="search-wrap">
       <input
         type="search"
@@ -385,10 +385,10 @@
                 </td>
                 <td class="col-usages">{tag.usages.toLocaleString()}</td>
                 <td class="col-actions">
-                  <button class="act-btn" class:on={isActive && actionMode === 'edit'} onclick={() => openAction(tag, 'edit')}>{m.tags.edit.actEdit}</button>
-                  <button class="act-btn" class:on={isActive && actionMode === 'merge'} onclick={() => openAction(tag, 'merge')}>{m.tags.edit.actMerge}</button>
-                  <button class="act-btn" class:on={isActive && actionMode === 'links'} onclick={() => openAction(tag, 'links')}>{m.tags.edit.actLinks}</button>
-                  <button class="act-btn red" class:on={isActive && actionMode === 'delete'} onclick={() => openAction(tag, 'delete')}>{m.tags.edit.actDelete}</button>
+                  <button class="act-btn" class:on={isActive && actionMode === 'edit'} onclick={() => openAction(tag, 'edit')} aria-label={m.tags.edit.actEdit} title={m.tags.edit.actEdit}>✎</button>
+                  <button class="act-btn" class:on={isActive && actionMode === 'merge'} onclick={() => openAction(tag, 'merge')} aria-label={m.tags.edit.actMerge} title={m.tags.edit.actMerge}>⊕</button>
+                  <button class="act-btn" class:on={isActive && actionMode === 'links'} onclick={() => openAction(tag, 'links')} aria-label={m.tags.edit.actLinks} title={m.tags.edit.actLinks}>🔗</button>
+                  <button class="act-btn red" class:on={isActive && actionMode === 'delete'} onclick={() => openAction(tag, 'delete')} aria-label={m.tags.edit.actDelete} title={m.tags.edit.actDelete}>🗑</button>
                 </td>
               </tr>
 
@@ -404,10 +404,10 @@
                           <div class="name-row">
                             <span class="badge" class:alias={i > 0}>{i === 0 ? m.tags.edit.primaryBadge : m.tags.edit.aliasBadge}</span>
                             <input class="name-input" bind:value={editNames[i]} placeholder={i === 0 ? m.tags.edit.primaryPlaceholder : m.tags.edit.aliasPlaceholder} />
-                            {#if i > 0}<button class="rm-btn" onclick={() => removeAlias(i)}>×</button>{/if}
+                            {#if i > 0}<button class="rm-btn" onclick={() => removeAlias(i)} aria-label={m.tags.edit.removeAlias} title={m.tags.edit.removeAlias}>×</button>{/if}
                           </div>
                         {/each}
-                        <button class="link-btn" onclick={addAlias}>{m.tags.edit.addAlias}</button>
+                        <button class="link-btn" onclick={addAlias} aria-label={m.tags.edit.addAlias} title={m.tags.edit.addAlias}>＋</button>
                       </div>
                       <div class="panel-col">
                         <div class="panel-label">{m.tags.edit.localizedLabel}</div>
@@ -418,7 +418,7 @@
                             <button class="rm-btn" aria-label={m.tags.edit.removeLocalized} onclick={() => editLocalizations = editLocalizations.filter((_, idx) => idx !== i)}>×</button>
                           </div>
                         {/each}
-                        <button class="link-btn" onclick={() => editLocalizations = [...editLocalizations, { locale: '', name: '' }]}>{m.tags.edit.addLocale}</button>
+                        <button class="link-btn" onclick={() => editLocalizations = [...editLocalizations, { locale: '', name: '' }]} aria-label={m.tags.edit.addLocale} title={m.tags.edit.addLocale}>＋🌐</button>
                       </div>
                       <div class="panel-col">
                         <div class="panel-label">{m.tags.edit.category}</div>
@@ -430,8 +430,8 @@
                       </div>
                       <div class="panel-col panel-col--btns">
                         {#if editError}<div class="err">{editError}</div>{/if}
-                        <button class="save-btn" disabled={editSaving} onclick={() => saveEdit(tag)}>{editSaving ? '…' : m.tags.edit.save}</button>
-                        <button class="cancel-btn" onclick={closeAction}>{m.tags.edit.cancel}</button>
+                        <button class="save-btn" disabled={editSaving} onclick={() => saveEdit(tag)} aria-label={editSaving ? m.tags.edit.saving : m.tags.edit.save} title={editSaving ? m.tags.edit.saving : m.tags.edit.save}>{editSaving ? '…' : '✓'}</button>
+                        <button class="cancel-btn" onclick={closeAction} aria-label={m.tags.edit.cancel} title={m.tags.edit.cancel}>✕</button>
                       </div>
                     </div>
                   {/if}
@@ -453,7 +453,7 @@
                       />
                       {#if mergeError}<div class="err">{mergeError}</div>{/if}
                       <button class="save-btn red" disabled={mergeConfirming} onclick={() => doMerge(tag)}>{mergeConfirming ? '…' : m.tags.edit.run}</button>
-                      <button class="cancel-btn" onclick={closeAction}>{m.tags.edit.cancel}</button>
+                      <button class="cancel-btn" onclick={closeAction} aria-label={m.tags.edit.cancel} title={m.tags.edit.cancel}>✕</button>
                     </div>
                   {/if}
 
@@ -469,7 +469,7 @@
                         {#if deleteError}<div class="err">{deleteError}</div>{/if}
                         <button class="save-btn red" disabled={deleteConfirming} onclick={() => doDelete(tag, false)}>{deleteConfirming ? '…' : m.tags.edit.delete}</button>
                       {/if}
-                      <button class="cancel-btn" onclick={closeAction}>{m.tags.edit.cancel}</button>
+                      <button class="cancel-btn" onclick={closeAction} aria-label={m.tags.edit.cancel} title={m.tags.edit.cancel}>✕</button>
                     </div>
                   {/if}
 

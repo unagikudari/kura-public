@@ -1,3 +1,4 @@
+import type { IconName } from '#lib/components/Icon.svelte';
 // Optional UI contributions exist only in a composed extension build.
 import type { PoolSummary } from './types.ts';
 
@@ -13,7 +14,8 @@ export interface PoolDecor {
 }
 
 /** A page an extension adds: the header link, the Ops menu entry, the loading notice. */
-export interface ExtensionNav { href: string; label: string; menuLabel?: string; loadingLabel?: string }
+// icon: shown in the header instead of the label (which stays the link's name and tooltip).
+export interface ExtensionNav { href: string; label: string; icon?: IconName; menuLabel?: string; loadingLabel?: string }
 
 const modules = import.meta.glob('/src/lib/extensions/*.ts', { eager: true }) as
   Record<string, { id?: string; pool?: PoolDecor; nav?: ExtensionNav }>;
