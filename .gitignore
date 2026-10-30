@@ -63,3 +63,7 @@ tagger/heads/*.safetensors
 # Separately versioned extension payloads, materialized by compose_extensions.py.
 .kura-extensions.json
 .kura-extensions.lock
+
+# files the README has you write into the checkout (Docker: /out)
+/kura-admin.key
+/kura-import*.jsonl

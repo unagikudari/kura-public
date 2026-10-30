@@ -126,6 +126,28 @@ under Menu → Language. To set the default for everyone who has not picked one,
 Drag image or video files, or whole folders, onto the kura page, or paste a copied image
 (Ctrl+V). Each one is in the list as soon as it has been added.
 
+For a large folder, or one on the server, there is a command line instead. It needs only
+Python 3 and the sign-in key you got from `create_admin.py`:
+
+```bash
+python3 scripts/kura_import.py --url http://127.0.0.1:8001 \
+    --email you@example.org --key-file ~/kura-admin.key ~/Pictures/scans \
+    --tags "scan 2024" --safety safe --pool-per-folder
+```
+
+Every image and video under the folder is added in natural order (page 2 before page 10);
+other files are passed over. `--pool-per-folder` makes a pool of each folder, `--pool NAME`
+puts everything in one pool, `--tags` and `--source` go on every file. Files kura already
+holds are reported as duplicates. If the run is interrupted, run it again: what was already
+sent is skipped. `--dry-run` lists what would be sent. With Docker, `--url http://api:8001`
+and mount the folder:
+
+```bash
+docker compose run --rm -v ~/Pictures/scans:/import:ro tools \
+    python scripts/kura_import.py --url http://api:8001 --email you@example.org \
+    --key-file /out/kura-admin.key --record /out/kura-import.jsonl /import
+```
+
 ## Auto-tagging (optional)
 
 A worker tags new images with the WD14 tagger (`SmilingWolf/wd-swinv2-tagger-v3`, about 400 MB,
