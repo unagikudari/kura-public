@@ -546,10 +546,11 @@
       </button>
     {/if}
 
-    <!-- 検証用 pool 非表示: フィルタ(漏斗)アイコン — pool 一覧でのみ表示 -->
+    <!-- 検証用 pool の表示/非表示: 目のアイコン (隠しているときは斜線) — pool 一覧でのみ表示。
+         漏斗は絞り込みメニューの印なので、ここでは使わない (2026-10-30 owner: 同じ絵が 2 つ) -->
     {#if onToggleHideVerify}
-      <button class="icon-btn verify-toggle desk-only" class:active={hideVerify} onclick={onToggleHideVerify} title={hideVerify ? m.header.verifyHiddenTitle : m.header.verifyShownTitle}>
-        <Icon name="filter" />
+      <button class="icon-btn verify-toggle desk-only" class:active={hideVerify} onclick={onToggleHideVerify} title={hideVerify ? m.header.verifyHiddenTitle : m.header.verifyShownTitle} aria-label={hideVerify ? m.header.verifyHiddenTitle : m.header.verifyShownTitle} aria-pressed={hideVerify}>
+        <Icon name={hideVerify ? 'eyeOff' : 'eye'} />
       </button>
     {/if}
 
@@ -560,8 +561,8 @@
       </button>
     {/if}
     {#if onToggleReorder}
-      <button class="icon-btn reorder-toggle desk-only" class:active={reorderMode} onclick={onToggleReorder} title={m.header.reorder} aria-label={m.header.reorder}>
-        <Icon name="sort" />
+      <button class="icon-btn reorder-toggle desk-only" class:active={reorderMode} onclick={onToggleReorder} title={m.header.reorder} aria-label={m.header.reorder} aria-pressed={reorderMode}>
+        <Icon name="move" />  <!-- the sort menu owns the two-arrow glyph; reordering is moving -->
       </button>
     {/if}
     {#if onToggleBulk}

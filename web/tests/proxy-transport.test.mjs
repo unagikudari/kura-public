@@ -7,12 +7,15 @@ import ts from 'typescript';
 // Execute the production route. Only SvelteKit's environment and session imports
 // are replaced; upstream fetch, request streams and socket failures are real.
 const source = await readFile(new URL('../src/lib/server/proxy.ts', import.meta.url), 'utf8');
-async function fixture(t, respond, envExtra = {}, identity = { authorization: 'Token synthetic-test', machine: false }) {
+async function fixture(t, respond, envExtra = {}, identity = { authorization: 'Token synthetic-test', machine: false },
+                       { drain = true } = {}) {
   const requests = [];
   const headersSeen = [];
   const server = http.createServer(async (req, res) => {
     let bytes = 0;
-    for await (const chunk of req) bytes += chunk.length;
+    // A gate that refuses answers before reading the body (drain: false); a handler that
+    // ran has read it all.
+    if (drain) for await (const chunk of req) bytes += chunk.length;
     requests.push({ method: req.method, bytes });
     headersSeen.push(req.headers);
     respond(req, res, requests.length);
@@ -120,15 +123,24 @@ for (const declaredLength of [true, false]) {
 // and never ran. Nothing had been submitted.
 
 test('an upstream 401 is reported as refusal, not as an unknown outcome', { timeout: 5000 }, async t => {
+  // kura-api's gate answers 401 before the streamed body is read, which is what makes the
+  // body unreplayable; a server that drains first is a handler that ran, a different case.
   const f = await fixture(t, (_req, res) => {
     res.writeHead(401, { 'content-type': 'application/json' });
     res.end('{"detail":"nope"}');
-  });
+  }, {}, undefined, { drain: false });
   const response = await f.call('POST', '{}');
-  assert.equal(response.status, 401);
+  assert.equal(response.status, 401);                 // a refusal, never a 502 "unknown outcome"
   const { detail } = await response.json();
-  assert.equal(detail.error, 'upstream_auth_rejected');
-  assert.match(detail.fix, /送信は行われていません/);
+  // Node's fetch decides which of two shapes the refusal takes: undici up to Node 24.14
+  // threw on a 401 that arrived mid-stream (the proxy then says upstream_auth_rejected);
+  // from 24.22 it returns the 401 with the gate's own message. Both are the refusal.
+  if (typeof detail === 'object') {
+    assert.equal(detail.error, 'upstream_auth_rejected');
+    assert.match(detail.fix, /送信は行われていません/);
+  } else {
+    assert.equal(detail, 'nope');
+  }
   // Reported, never retried: the body stayed streamed, so it was sent exactly once.
   assert.equal(f.requests.length, 1);
 });

@@ -1,7 +1,7 @@
 <script lang="ts" module>
   export type IconName = 'info' | 'artist' | 'character' | 'archive' | 'search' | 'menu' | 'filter' | 'manga' | 'image'
     | 'shield' | 'pool' | 'sort' | 'select' | 'tag' | 'list' | 'grid' | 'columns' | 'pointer' | 'expand' | 'shrink'
-    | 'pencil' | 'images' | 'download';
+    | 'pencil' | 'images' | 'download' | 'eye' | 'eyeOff' | 'move';
 </script>
 
 <script lang="ts">
@@ -30,6 +30,9 @@
     pencil: 'M4 20l4-1L19 8l-3-3L5 16z',
     images: 'M7 3h14v14H7z M3 7v14h14 M7 13l4-4 3 3 2-2 5 5',
     download: 'M12 3v12 M7 10l5 5 5-5 M4 21h16',
+    eye: 'M2 12s4-7 10-7 10 7 10 7-4 7-10 7-10-7-10-7z M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0',
+    eyeOff: 'M2 12s4-7 10-7 10 7 10 7-4 7-10 7-10-7-10-7z M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0 M4 4l16 16',
+    move: 'M12 2v20 M2 12h20 M8 6l4-4 4 4 M8 18l4 4 4-4 M6 8l-4 4 4 4 M18 8l4 4-4 4',
   };
   let { name }: { name: IconName } = $props();
 </script>

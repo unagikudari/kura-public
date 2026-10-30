@@ -2861,11 +2861,33 @@ async def create_pool(
         db.add(PoolName(pool_id=pool.pool_id, name=name, order=i))
 
     post_ids = body.get("posts", [])
-    await db.flush()
+    await _flush_or_name_conflict(db, names)
     await _bulk_insert_pool_posts(db, pool.pool_id, post_ids)
 
     await db.commit()
     return _serialize_pool(await _load_pool(str(pool.pool_id), db))
+
+
+POOL_NAME_UNIQUE = "pool_name_name_key"
+
+
+async def _flush_or_name_conflict(db: AsyncSession, names: list[str]) -> None:
+    """Flush the new pool's names, and answer a taken name with a 409 that says which pool
+    has it. Without this the unique constraint speaks as a 500 — found by the szurubooru
+    migration tool, which creates pools by name and re-runs. Only that constraint is
+    folded, for the reason _commit_or_url_conflict gives."""
+    try:
+        await db.flush()
+    except IntegrityError as e:
+        if POOL_NAME_UNIQUE not in str(getattr(e, "orig", e)):
+            raise
+        await db.rollback()
+        owner = (await db.execute(
+            select(PoolName.name, PoolName.pool_id).where(PoolName.name.in_(names)).limit(1)
+        )).first()
+        taken, pool_id = (owner.name, owner.pool_id) if owner else (names[0], "another pool")
+        raise HTTPException(status_code=409,
+                            detail=f"pool name {taken!r} is already used by pool {pool_id}") from e
 
 
 # ── PUT (update) ─────────────────────────────────────────────────────

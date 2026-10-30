@@ -148,6 +148,22 @@ docker compose run --rm -v ~/Pictures/scans:/import:ro tools \
     --key-file /out/kura-admin.key --record /out/kura-import.jsonl /import
 ```
 
+## Moving in from szurubooru
+
+If your collection lives in a szurubooru, one command brings it over through the two APIs:
+every post with its tags, safety and source, the tag categories kura also has, and the
+pools in their order. It needs a szurubooru login token (Account → Login tokens) in a file:
+
+```bash
+python3 scripts/szurubooru_migrate.py \
+    --from https://booru.example.org --from-user you --from-token-file ~/booru.token \
+    --url http://127.0.0.1:8001 --email you@example.org --key-file ~/kura-admin.key
+```
+
+`--dry-run` first shows what would move. A run that is interrupted continues where it stopped
+when you run it again. Tags of the szurubooru category `artist` become artist tags in kura
+(`--artist-category` if yours is named differently).
+
 ## Auto-tagging (optional)
 
 A worker tags new images with the WD14 tagger (`SmilingWolf/wd-swinv2-tagger-v3`, about 400 MB,
