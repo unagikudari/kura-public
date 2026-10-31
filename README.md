@@ -1,7 +1,26 @@
 # kura
 
-A self-hosted image archive with an auto-tagger: posts, pools, tags and search over your own
-library. The API is FastAPI on PostgreSQL; the web front end is SvelteKit.
+A self-hosted archive for your image and video collection, built for libraries of hundreds of
+thousands of files. Tag it, search it, keep series in order as pools, read them page by page,
+and let the optional auto-tagger do the first pass.
+
+![Tags by category beside the grid of a library of woodblock prints](docs/screenshots/grid.jpg)
+
+- **Search by tags**: tags in categories (artist, character, copyright and more), aliases,
+  several tags at once and exclusions.
+- **Pools**: series and books kept in order, with a page-by-page reader.
+- **Bring what you have**: drag files or folders onto the page, import a folder from the
+  command line (or have `--watch` pick up new files as they arrive), take the tags that sit next to your files
+  (booru JSON, XMP keywords, text files), or bring the images and videos of a szurubooru or
+  Hydrus library over with their tags.
+- **Auto-tagging** (optional): a WD14 tagger tags new images; it runs on a CPU, a GPU only
+  makes it faster.
+- English and Japanese interface. Runs on one Linux machine, natively or with Docker Compose.
+
+![A post with its tags](docs/screenshots/post.jpg)
+
+The API is FastAPI on PostgreSQL; the web front end is SvelteKit. The screenshots show prints
+by Hokusai and Hiroshige from the Art Institute of Chicago's public-domain collection (CC0).
 
 ## Requirements
 

@@ -46,7 +46,7 @@ class _Szuru(http.server.BaseHTTPRequestHandler):
          "mimeType": "image/jpeg", "tags": [{"names": ["studio_orbit"], "category": "artist", "usages": 2},
                                             {"names": ["night", "apps"], "category": "default", "usages": 2}]},
         {"id": 2, "contentUrl": "data/posts/2_b.png", "safety": "sketchy", "source": "",
-         "mimeType": "image/png", "tags": [{"names": ["unit_07"], "category": "character", "usages": 1},
+         "mimeType": "image/png", "tags": [{"names": ["Unit_07"], "category": "character", "usages": 1},
                                            {"names": ["night", "apps"], "category": "default", "usages": 2}]},
         {"id": 3, "contentUrl": "data/posts/3_c.png", "safety": "unsafe", "source": None,
          "mimeType": "image/png", "tags": [{"names": ["studio_orbit"], "category": "artist", "usages": 2},
@@ -173,7 +173,7 @@ class _Kura(http.server.BaseHTTPRequestHandler):
             row = {k: v.get_payload(decode=True).decode() for k, v in fields.items() if k != "file"}
             row.update(name=fields["file"].get_filename(), md5=md5)
             for t in row.get("tags", "").split():
-                self.tags.setdefault(t, "default")
+                self.tags.setdefault(t.lower(), "default")      # kura stores names lowercased
             earlier = next((u["id"] for u in self.uploads if u["md5"] == md5), None)
             row["id"] = earlier or 500 + len({u["id"] for u in self.uploads}) + 1
             self.uploads.append(row)

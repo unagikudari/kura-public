@@ -46,7 +46,7 @@ def folder(tmp_path):
         "tag_string_character": "unit_07", "tag_string_copyright": "orbital_notes",
         "rating": "g", "source": "https://example.org/p/1"}))
     (root / "b.png").write_bytes(PNG + b"b")
-    (root / "b.png.txt").write_text("creator:john smith\nnight sky\nrating:explicit\ncharacter:unit 07\n")
+    (root / "b.png.txt").write_text("creator:John Smith\nNight sky\nrating:Explicit\ncharacter:Unit 07\n")
     (root / "c.png").write_bytes(PNG + b"c")
     (root / "c.txt").write_text("1girl, smile, blue eyes\n")            # a caption beside c.png
     (root / "d.jpg").write_bytes(JPEG + b"d")
@@ -206,3 +206,21 @@ def test_a_sidecar_is_read_once_and_held_to_the_limit(tmp_path):
     fifo = tmp_path / "pipe.txt"
     os.mkfifo(fifo)                                                 # nothing will ever write to it
     assert kura_import._read_small(fifo) is None                    # refused at once, not waited on
+
+
+def test_a_record_from_1_301_0_with_mixed_case_categories_settles(kura, folder, tmp_path):
+    """1.301.0 kept a sidecar tag's case in the record's categories while kura and the
+    "categorized" rows use the lowercase name; reading such a record must not keep that work
+    pending for ever."""
+    assert _import(folder, kura, tmp_path, "--sidecars").returncode == 0
+    rec = tmp_path / "rec.jsonl"
+    rows = [json.loads(l) for l in rec.read_text().splitlines()]
+    for r in rows:
+        if r.get("categories"):
+            r["categories"] = {n.title(): c for n, c in r["categories"].items()}   # as 1.301.0 could write
+    rec.write_text("".join(json.dumps(r) + "\n" for r in rows))
+    sys.path.insert(0, str(REPO / "scripts"))
+    import kura_import
+    pending: dict = {}
+    kura_import.open_record(rec, rows[0]["import"], categories=pending)
+    assert pending == {}                                            # every one was settled by run 1

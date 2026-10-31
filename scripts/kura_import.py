@@ -140,6 +140,12 @@ XMP_LI = "{http://www.w3.org/1999/02/22-rdf-syntax-ns#}li"
 XMP_SUBJECT = "{http://purl.org/dc/elements/1.1/}subject"
 
 
+def kura_name(tag: str) -> str:
+    """A tag name the way kura stores it (upload lowercases, spaces become underscores); kura
+    looks names up exactly, so every name compared or looked up goes through this."""
+    return "_".join(str(tag).split()).lower()
+
+
 class Sidecar:
     def __init__(self):
         self.tags: dict[str, str | None] = {}       # kura tag name → category (None: default)
@@ -160,7 +166,7 @@ class Sidecar:
                     return
             if key in NAMESPACES and rest.strip():
                 raw, category = rest, NAMESPACES[key]
-        name = "_".join(raw.split())
+        name = kura_name(raw)                       # as kura stores it: a later lookup by name must find it
         if name and (category or name not in self.tags):
             self.tags[name] = category or self.tags.get(name)
 
@@ -316,7 +322,8 @@ def copy_tag_categories(api: Api, posts: list[dict], counts: dict) -> set[str]:
     for p in posts:
         for t in p.get("tags", []):
             if t.get("names") and t.get("category"):
-                tag_category[t["names"][0]] = t["category"]
+                # kura stores names the way upload normalizes them, and looks them up exactly
+                tag_category[kura_name(t["names"][0])] = t["category"]
     settled: set[str] = set()
     status, cats = api.call("GET", "/api/tag-categories")
     kura_cats = cats.get("detail") if status == 200 else None
@@ -606,13 +613,14 @@ def open_record(record: Path, identity: dict, create: bool = True, refused: dict
         if "categorized" in row:
             if categories is not None:
                 for name in row["categorized"]:
-                    categories.pop(name, None)
+                    categories.pop(kura_name(name), None)
             continue
         path = row.get("path")
         if row.get("id") is not None:
             done[path] = (row.get("size"), row.get("mtime_ns"), row.get("sidecars"))
             if categories is not None and isinstance(row.get("categories"), dict):
-                categories.update(row["categories"])
+                # names as kura holds them: a row written by 1.301.0 kept the sidecar's case
+                categories.update({kura_name(n): c for n, c in row["categories"].items()})
             if refused is not None:
                 refused.pop(path, None)
             if retrying is not None:
