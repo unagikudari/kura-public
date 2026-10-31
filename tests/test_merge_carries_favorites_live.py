@@ -83,7 +83,17 @@ def db(cluster, monkeypatch):
         md.drop_all(conn)
         md.create_all(conn)
         conn.execute(sa.text("CREATE TABLE post_tag_pin (post_id int, tag_id int, state text, pinned_by text, audit_id bigint)"))
-        conn.execute(sa.text("CREATE TABLE tagger_gt_label (post_id int, tag_id int)"))
+        conn.execute(sa.text("DROP FUNCTION IF EXISTS tagger_governed_retract_pin_gt(text, integer)"))
+        # with its real foreign key to post: the race of #158 goes through the FK's row lock
+        conn.execute(sa.text("CREATE TABLE tagger_gt_label (tag text, tag_id int, post_id int REFERENCES post(id), "
+                             "verdict text, source_pool_id int, derived_from text, verified_at timestamptz)"))
+        # the production body (0122), less its executor check: the test session is the owner
+        conn.execute(sa.text("""
+            CREATE FUNCTION tagger_governed_retract_pin_gt(p_tag text, p_post_id integer) RETURNS integer
+            LANGUAGE plpgsql AS $$ DECLARE v_count integer; BEGIN
+                DELETE FROM tagger_gt_label WHERE tag = p_tag AND post_id = p_post_id
+                   AND source_pool_id IS NULL AND derived_from = 'human_correction';
+                GET DIAGNOSTICS v_count = ROW_COUNT; RETURN v_count; END $$"""))
         conn.execute(sa.text("CREATE TABLE post_tag_audit (id bigserial PRIMARY KEY, post_id int, actor_type text, "
                              "actor_id text, source text, added_tags text[], removed_tags text[], "
                              "created_at timestamptz, host text)"))
@@ -229,3 +239,79 @@ def test_a_chain_that_loops_or_runs_on_is_refused_and_nothing_is_written(db):
     with pytest.raises(P.KuraError):
         _toggle(db, 1)                                          # the end is past the limit
     assert favs(db) == []
+
+
+
+def gt(dsn):
+    return sorted(q(dsn, "SELECT post_id, tag, verdict, derived_from FROM tagger_gt_label"))
+
+
+def test_the_duplicate_s_pin_label_is_retracted_so_the_image_counts_once(db):
+    """#158: the duplicate's absent pin and the negative it gave go; the representative gets
+    the pin (and from it, on the next gt_sync, the one negative)."""
+    q(db, "INSERT INTO tag_name (tag_name_id, tag_id, name, ord) VALUES (7, 7, 'phimosis', 0)")
+    q(db, "INSERT INTO post_tag_pin VALUES (1, 7, 'absent', 'owner', NULL)")
+    q(db, "INSERT INTO tagger_gt_label VALUES ('phimosis', 7, 1, 'negative', NULL, 'human_correction', now())")
+    rec = merge(db, carry_pins=True)
+    assert gt(db) == []
+    # the pin is carried; the duplicate keeps its own as history (the merge's rule)
+    assert q(db, "SELECT post_id, tag_id, state FROM post_tag_pin ORDER BY post_id") == [(1, 7, "absent"), (2, 7, "absent")]
+    assert rec["gt_retracted"] == [{"tag": "phimosis", "verdict": "negative"}]
+
+
+def test_a_label_both_posts_hold_is_counted_once_after_the_merge(db):
+    q(db, "INSERT INTO tag_name (tag_name_id, tag_id, name, ord) VALUES (7, 7, 'phimosis', 0)")
+    for pid in (1, 2):
+        q(db, "INSERT INTO post_tag_pin VALUES (%s, 7, 'absent', 'owner', NULL)", (pid,))
+        q(db, "INSERT INTO tagger_gt_label VALUES ('phimosis', 7, %s, 'negative', NULL, 'human_correction', now())", (pid,))
+    merge(db)
+    assert gt(db) == [(2, "phimosis", "negative", "human_correction")]
+
+
+def test_a_label_without_a_governed_per_post_retraction_refuses_the_pair(db):
+    q(db, "INSERT INTO tagger_gt_label VALUES ('night', 9, 1, 'positive', 44, 'pool_seed', now())")
+    q(db, "INSERT INTO tagger_gt_label VALUES ('night', 9, 2, 'positive', 44, 'pool_seed', now())")
+    q(db, "INSERT INTO post_favorite VALUES (1, 1, %s)", (T_DUP,))
+    before = (gt(db), favs(db))
+    with pytest.raises(M.Refused, match="count twice"):
+        merge(db)
+    assert (gt(db), favs(db)) == before
+    assert q(db, "SELECT status FROM post WHERE id = 1") == [("ok",)]
+
+
+
+def test_a_gt_sync_running_during_a_merge_does_not_land_a_label_on_the_hidden_post(db, monkeypatch):
+    """The reviewer's race (#158): a sync reads the duplicate as ok, waits on the merge's row
+    lock through the label's foreign key, and inserts after the merge hid the post. Both take
+    the GT write lock first, so the sync runs after the merge and labels the representative."""
+    from api.tagger_core import gt_lock
+    q(db, "INSERT INTO tag_name (tag_name_id, tag_id, name, ord) VALUES (7, 7, 'phimosis', 0)")
+    q(db, "INSERT INTO post_tag_pin VALUES (1, 7, 'absent', 'owner', NULL)")   # no label yet
+    paused, go_on = threading.Event(), threading.Event()
+    real = M.original_bytes
+
+    def slow(pid, mime, checksum):                 # called inside the merge's transaction
+        paused.set()
+        go_on.wait(10)
+        return real(pid, mime, checksum)
+    monkeypatch.setattr(M, "original_bytes", slow)
+    merged = threading.Thread(target=lambda: merge(db, carry_pins=True))
+    merged.start()
+    assert paused.wait(10)
+
+    def sync():                                    # the shape of tagger_governed_sync_neg_gt_from_pins
+        with contextlib.closing(psycopg2.connect(db)) as c, c.cursor() as cur:
+            cur.execute(gt_lock.SQL)
+            cur.execute("""INSERT INTO tagger_gt_label (tag, tag_id, post_id, verdict, source_pool_id, derived_from)
+                           SELECT 'phimosis', p.tag_id, p.post_id, 'negative', NULL, 'human_correction'
+                             FROM post_tag_pin p JOIN post ON post.id = p.post_id
+                            WHERE p.state = 'absent' AND post.status = 'ok'""")
+            c.commit()
+    writer = threading.Thread(target=sync)
+    writer.start()
+    time.sleep(1.0)
+    go_on.set()
+    merged.join(20)
+    writer.join(20)
+    assert not merged.is_alive() and not writer.is_alive()
+    assert [(p, t) for p, t, *_ in gt(db)] == [(2, "phimosis")]     # one label, on the representative

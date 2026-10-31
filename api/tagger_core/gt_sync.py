@@ -39,6 +39,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from sqlalchemy import text
 
 from api.db.session import async_session
+from api.tagger_core import gt_lock
 from api.tagger_core.config import is_non_trainable, load_config
 
 SCOPE = "gt-sync"
@@ -268,6 +269,7 @@ async def run_sync() -> dict:
         # run. min_gt_labels is reused as the corpus-deletion threshold (a tag
         # not correctable to that floor can't be dispatched anyway).
         try:
+            await gt_lock.hold(db)          # a duplicate merge and this pass never interleave (#158)
             cfg = await load_config(db)
             neg_synced = await _sync_global_negatives(db)
             pos_synced = await _sync_global_positives(db)
@@ -288,6 +290,7 @@ async def run_sync() -> dict:
             tag, pool_id = t["tag"], t["source_pool_id"]
             key = f"{tag}:pool{pool_id}"
             try:
+                await gt_lock.hold(db)
                 hp, hn = await _sync_human_corrections(db, tag, pool_id)
                 ip, iin = await _sync_implicit_review(db, tag, pool_id)
                 await db.commit()

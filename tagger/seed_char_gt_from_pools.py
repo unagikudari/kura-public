@@ -44,6 +44,9 @@ PSQL = ["psql", "-h", "127.0.0.1", "-U", "kura", "-d", "kura", "-Atc"]
 ENV = {**os.environ, "PGPASSWORD": "kura"}
 
 
+GT_LOCK_SQL = "SELECT pg_advisory_xact_lock(%d)" % 0x6B7572615F677477   # api.tagger_core.gt_lock.SQL
+
+
 def q(sql: str) -> list[str]:
     r = subprocess.run(PSQL + [sql], env=ENV, capture_output=True, text=True)
     if r.returncode != 0:
@@ -162,7 +165,9 @@ def main() -> int:
         t_sql = tag.replace("'", "''")
         n = 0
         for pid in pids:
+            # one psql -c is one transaction: the GT write lock first (#158, api/tagger_core/gt_lock.py)
             rows = q(
+                f"{GT_LOCK_SQL}; "
                 "SELECT count(tagger_governed_upsert_gt_label("
                 f"'{t_sql}', pp.post_id, 'positive', {pid}, 'pool_seed')) "
                 f"FROM pool_post pp WHERE pp.pool_id = {pid}")

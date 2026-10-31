@@ -21,6 +21,9 @@ both posts must be ok. A duplicate whose checksum's file is gone merges only whe
   tagger's are, actor merge_duplicate_posts:dup=N); one it has pinned absent stays absent.
 - post_favorite: each person's favorite goes to the representative (one per person; one the
   representative already has keeps its own time), and the duplicate's rows go (#157).
+- tagger_gt_label: the duplicate keeps none, so one image counts once in the training set
+  (#158). Labels derived from its pins are retracted through tagger_governed_retract_pin_gt;
+  a duplicate holding any other label (a pool seed, an implicit review) is refused.
 - Human pins and GT labels are governed: a pair whose duplicate carries ones the
   representative lacks is refused and reported, not merged — unless --carry-pins (an owner-approved
   run): then each pin goes to the representative with its pinned_by and an audit row saying it was
@@ -51,6 +54,7 @@ from psycopg2.extras import RealDictCursor  # noqa: E402
 
 from api.config import DATABASE_URL_SYNC  # noqa: E402
 from api.services import files  # noqa: E402
+from api.tagger_core import gt_lock  # noqa: E402
 from scripts.repair_posts import Journal, Refused, Stop, _sync_dir, contents, current_rendition, original_bytes  # noqa: E402
 
 LOG = Path(os.environ.get("KURA_MERGE_LOG", Path.home() / ".local/state/kura-merge-posts"))
@@ -113,6 +117,10 @@ def _merge(pg, dup: int, rep: int, apply: bool, journal, planned: list, lost_ok:
         raise Refused("a post cannot be merged into itself")
     with pg:
         with pg.cursor(cursor_factory=RealDictCursor) as db:
+            if apply:
+                # Before the row locks: a GT writer that read the duplicate as ok must not land a
+                # label on it after this demotes it, and one that waited sees it demoted (#158).
+                db.execute(gt_lock.SQL)
             db.execute(LOCK if apply else LOCK.replace("FOR UPDATE", ""), ([dup, rep],))
             rows = {r["id"]: r for r in db.fetchall()}
             if set(rows) != {dup, rep}:
@@ -179,10 +187,25 @@ def _merge(pg, dup: int, rep: int, apply: bool, journal, planned: list, lost_ok:
             if (pins and not carry_pins) or unexplained:
                 raise Refused(f"needs human pins {[p[:2] for p in pins]} / GT labels {unexplained or gt} moved: "
                               "the governed path, not this tool")
+            # One image counts once in the training set (#158): the duplicate, hidden after this,
+            # keeps no GT label. Labels derived from its pins (human_correction, no source pool)
+            # are retracted through the governed per-post function; the representative's pins
+            # (its own, or the ones carried) give it its labels on the next gt_sync. Any other
+            # label on the duplicate (a pool seed, an implicit review) has no per-post governed
+            # path, so the pair is refused rather than left counting twice.
+            db.execute("""SELECT tag, verdict, derived_from, source_pool_id FROM tagger_gt_label
+                          WHERE post_id = %s ORDER BY tag""", (dup,))
+            dup_gt = [dict(g) for g in db.fetchall()]
+            unretractable = [g for g in dup_gt if not (g["derived_from"] == "human_correction"
+                                                       and g["source_pool_id"] is None)]
+            if unretractable:
+                raise Refused(f"the duplicate holds GT labels no governed per-post path can retract "
+                              f"{[(g['tag'], g['derived_from']) for g in unretractable]}; it would count twice")
             record = {"dup": dup, "rep": rep, "requested_rep": requested, "dup_original_lost": lost,
                       "pins": [{"tag": p[0], "state": p[1], "pinned_by": p[2]} for p in pins],
                       "pools": [{"pool": p, "ord": o, "rep_already_member": p in rep_pools} for p, o in dup_pools],
                       "covers": covers,
+                      "gt_retracted": [{"tag": g["tag"], "verdict": g["verdict"]} for g in dup_gt],
                       "favorites": [{"user": u, "time": t.isoformat() if hasattr(t, "isoformat") else str(t),
                                      "rep_already": u in rep_favs} for u, t in dup_favs],
                       "old": {"dup": {"status": d["status"], "version": d["version"],
@@ -246,6 +269,11 @@ def _merge(pg, dup: int, rep: int, apply: bool, journal, planned: list, lost_ok:
                               VALUES (%s, %s, %s, %s, %s)""", (rep, tag_id, state, pinned_by, audit_id))
                 carried.append({"tag": tag_id, "state": state, "pinned_by": pinned_by, "audit_id": audit_id,
                                 "rep_tag_removed": bool(removed)})
+            for tag in sorted({g["tag"] for g in dup_gt}):
+                db.execute("SELECT public.tagger_governed_retract_pin_gt(%s, %s) AS n", (tag, dup))
+            db.execute("SELECT count(*) AS n FROM tagger_gt_label WHERE post_id = %s", (dup,))
+            if db.fetchone()["n"]:
+                raise Refused("the duplicate still holds GT labels after the retraction")
             db.execute("UPDATE post SET status = 'exact_dup', duplicate_of = %s, version = version + 1 WHERE id = %s",
                        (rep, dup))
             db.execute("UPDATE post SET version = version + 1 WHERE id = %s", (rep,))

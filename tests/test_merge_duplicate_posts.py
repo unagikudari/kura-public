@@ -18,11 +18,15 @@ class _Cur:
     def fetchone(self):
         if "duplicate_of FROM post WHERE id" in self.last: return None   # ok_root: not merged away
         if "RETURNING id" in self.last: return {"id": 99}                # the audit row
+        if "count(*) AS n FROM tagger_gt_label" in self.last: return {"n": 0}   # retracted
         return {"n": 1}                                       # the cover ended on the representative
     def fetchall(self):
         s = self.last
         if "RETURNING tag_id" in s: return [{"tag_id": 7}]
         if "post_tag_pin" in s: return list(self.pg.pins)
+        if "derived_from" in s and "tagger_gt_label" in s:             # the duplicate's labels (#158)
+            return [{"tag": f"t{t}", "verdict": "negative", "derived_from": "human_correction",
+                     "source_pool_id": None} for t in self.pg.gt]
         if "tagger_gt_label" in s: return [{"tag_id": t} for t in self.pg.gt]
         if "FROM post" in s and "ORDER BY id" in s: return list(self.pg.posts.values())
         if "SELECT pool_id, ord FROM pool_post" in s: return [{"pool_id": 913, "ord": 0}, {"pool_id": 7756, "ord": 25}]
