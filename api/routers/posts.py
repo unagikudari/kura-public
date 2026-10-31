@@ -15,7 +15,7 @@ from fastapi.responses import RedirectResponse
 from api.errors import KuraError
 from PIL import Image
 from pydantic import BaseModel
-from sqlalchemy import column, false, func, literal_column, or_, select, table, text
+from sqlalchemy import column, false, func, literal_column, or_, select, table, text, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload, raiseload
 
@@ -531,6 +531,55 @@ async def list_posts(
 ) -> PagedResult[PostResponse]:
     limit = min(limit, 1000)
 
+    base_stmt, pool_id_filter = await _listing_set(db, query, safe)
+
+    # 単一タグ検索は post_count から正確な件数を O(1) で導く (上の docstring)。
+    # totalBytes は post_count からは出せないので 0 を返す —
+    # GridControls.svelte は sizeBytes=0 のとき容量表示を隠す作りなので、
+    # UI 改修なしで「件数は正確・容量は非表示」に落ちる。小さい集合 (< 5 万) は
+    # この経路を使わないので、そちらでは容量表示が残る。
+    _fast = await _fast_total_single_tag(db, query, safe) if query else None
+    if not query.strip():
+        from api.read_models.post_listing import totals
+        total, total_bytes = await totals(db,safe)
+    elif _fast is not None:
+        total, total_bytes = _fast, 0
+    else:
+        _sq = base_stmt.subquery()
+        _agg = (await db.execute(
+            select(func.count(), func.coalesce(func.sum(_sq.c.file_size), 0)).select_from(_sq)
+        )).first()
+        total = _agg[0] or 0
+        total_bytes = int(_agg[1] or 0)
+
+    base_stmt, keys, ascending = _listing_order(base_stmt, pool_id_filter, sort, dir)
+    order_by = tuple(k.asc() if ascending else k.desc() for k in keys)
+
+    stmt = (
+        base_stmt
+        .options(*post_list_options(localize))
+        .order_by(*order_by)
+        .offset(offset)
+        .limit(limit)
+    )
+
+    result = await db.execute(stmt)
+    posts = result.scalars().unique().all()
+    pool_counts = await _pool_post_counts(db, posts)
+
+    return PagedResult(
+        query=query,
+        offset=offset,
+        limit=limit,
+        total=total,
+        totalBytes=total_bytes,
+        results=[_serialize_post(p, auth_user, pool_counts, localize=localize) for p in posts],
+    )
+
+
+async def _listing_set(db: AsyncSession, query: str, safe: bool):
+    """The posts a listing shows, before any ordering: list_posts and get_post_index both
+    take their set from here, so the index counts exactly what the grid shows (#148)."""
     where_clauses, pool_id_filter = (await _build_where_clauses(db, query)) if query else ([], None)
     if safe:
         # AND safety=='safe' onto whatever the query asked for. It can only
@@ -556,30 +605,18 @@ async def list_posts(
             .where(PostTag.post_id == Post.post_id, TagName.name == "advertisement")
         )
         base_stmt = base_stmt.where(~_ad_exists.exists())
+    return base_stmt, pool_id_filter
 
-    # 単一タグ検索は post_count から正確な件数を O(1) で導く (上の docstring)。
-    # totalBytes は post_count からは出せないので 0 を返す —
-    # GridControls.svelte は sizeBytes=0 のとき容量表示を隠す作りなので、
-    # UI 改修なしで「件数は正確・容量は非表示」に落ちる。小さい集合 (< 5 万) は
-    # この経路を使わないので、そちらでは容量表示が残る。
-    _fast = await _fast_total_single_tag(db, query, safe) if query else None
-    if not query.strip():
-        from api.read_models.post_listing import totals
-        total, total_bytes = await totals(db,safe)
-    elif _fast is not None:
-        total, total_bytes = _fast, 0
-    else:
-        _sq = base_stmt.subquery()
-        _agg = (await db.execute(
-            select(func.count(), func.coalesce(func.sum(_sq.c.file_size), 0)).select_from(_sq)
-        )).first()
-        total = _agg[0] or 0
-        total_bytes = int(_agg[1] or 0)
 
-    # Explicit sort override (shared grid toolbar) wins; otherwise pool:N uses
-    # PoolPost.order (page/reading order) and a plain list uses post_id desc.
-    def _d(col):
-        return col.asc() if dir == "asc" else col.desc()
+def _listing_order(base_stmt, pool_id_filter, sort: str, dir: str):
+    """A listing's total order: (statement with any join it needs, sort keys, ascending).
+    Every order ends in post_id and runs all its keys the same way, so a position is the
+    count of rows whose key tuple comes before the post's — get_post_index uses exactly
+    this order, ties included (#148).
+
+    Explicit sort override (shared grid toolbar) wins; otherwise pool:N uses
+    PoolPost.order (page/reading order) and a plain list uses post_id desc."""
+    ascending = dir == "asc"
 
     # Join the unique (pool_id, post_id) membership only for page ordering.
     # This lets the existing pool/ord index stop at LIMIT instead of evaluating
@@ -591,10 +628,10 @@ async def list_posts(
     # matters: a bare non-unique sort key makes LIMIT/OFFSET pagination
     # order-unstable for ties across separate query executions).
     if sort == "id":
-        order_by = (_d(Post.post_id),)
-    elif sort == "updated":
-        order_by = (_d(func.coalesce(Post.last_edit_time, Post.creation_time)), _d(Post.post_id))
-    elif sort == "page" and pool_id_filter is not None:
+        return base_stmt, (Post.post_id,), ascending
+    if sort == "updated":
+        return base_stmt, (func.coalesce(Post.last_edit_time, Post.creation_time), Post.post_id), ascending
+    if sort == "page" and pool_id_filter is not None:
         # Explicit page sort — same column as the pool default below, but dir
         # is honoured (the grid's ページ↑↓ toggle used to be a silent no-op:
         # the client omitted sort=page and the default branch ignores dir).
@@ -610,33 +647,11 @@ async def list_posts(
         # deterministically without changing any row's *visible* order
         # relative to distinctly-ordered rows.
         base_stmt = base_stmt.join(PoolPost, (PoolPost.post_id == Post.post_id) & (PoolPost.pool_id == pool_id_filter))
-        order_by = (_d(PoolPost.order), _d(Post.post_id))
-    elif pool_id_filter is not None:
+        return base_stmt, (PoolPost.order, Post.post_id), ascending
+    if pool_id_filter is not None:
         base_stmt = base_stmt.join(PoolPost, (PoolPost.post_id == Post.post_id) & (PoolPost.pool_id == pool_id_filter))
-        order_by = (PoolPost.order.asc(), Post.post_id.asc())
-    else:
-        order_by = (Post.post_id.desc(),)
-
-    stmt = (
-        base_stmt
-        .options(*post_list_options(localize))
-        .order_by(*order_by)
-        .offset(offset)
-        .limit(limit)
-    )
-
-    result = await db.execute(stmt)
-    posts = result.scalars().unique().all()
-    pool_counts = await _pool_post_counts(db, posts)
-
-    return PagedResult(
-        query=query,
-        offset=offset,
-        limit=limit,
-        total=total,
-        totalBytes=total_bytes,
-        results=[_serialize_post(p, auth_user, pool_counts, localize=localize) for p in posts],
-    )
+        return base_stmt, (PoolPost.order, Post.post_id), True
+    return base_stmt, (Post.post_id,), False
 
 
 @router.get("/post/{post_id}/index")
@@ -656,60 +671,19 @@ async def get_post_index(
     Safe mode must filter the SAME way list_posts does, or the index points into a
     different set than the grid and the viewer opens on the wrong neighbours.
     """
-    where_clauses, pool_id_filter = (await _build_where_clauses(db, query)) if query else ([], None)
-    if safe:
-        where_clauses.append(Post.safety == "safe")
-
-    asc = (dir == "asc")
-
-    if sort in ("id", "updated"):
-        # Same displayable-set filter as list_posts (status=='ok').
-        stmt = select(func.count()).select_from(Post).where(Post.status == "ok")
-        if sort == "id":
-            col = Post.post_id
-            target = post_id
-            stmt = stmt.where(col < target if asc else col > target)
-        else:
-            col = func.coalesce(Post.last_edit_time, Post.creation_time)
-            target_sq = (
-                select(func.coalesce(Post.last_edit_time, Post.creation_time))
-                .where(Post.post_id == post_id)
-                .scalar_subquery()
-            )
-            stmt = stmt.where(col < target_sq if asc else col > target_sq)
-        for clause in where_clauses:
-            stmt = stmt.where(clause)
-    elif pool_id_filter is not None:
-        target_order_sq = (
-            select(PoolPost.order)
-            .where(PoolPost.pool_id == pool_id_filter, PoolPost.post_id == post_id)
-            .scalar_subquery()
-        )
-        # Count only DISPLAYABLE members ahead of the target — list_posts shows the
-        # status=='ok' curated set (near_dup/corrupt/lost have no data), so the index
-        # must exclude them too or the viewer opens N positions off.
-        ok_sq = select(Post.post_id).where(Post.status == "ok")
-        if safe:
-            ok_sq = ok_sq.where(Post.safety == "safe")
-        # Default pool order is asc; sort=page honours dir (desc reverses).
-        page_desc = (sort == "page" and not asc)
-        stmt = (
-            select(func.count())
-            .select_from(PoolPost)
-            .where(PoolPost.pool_id == pool_id_filter)
-            .where(PoolPost.order > target_order_sq if page_desc
-                   else PoolPost.order < target_order_sq)
-            .where(PoolPost.post_id.in_(ok_sq))
-        )
-    else:
-        # Same displayable-set filter as list_posts (status=='ok'); without it the
-        # count includes hidden non-ok rows and the post viewer snaps to a neighbour.
-        stmt = (select(func.count()).select_from(Post)
-                .where(Post.status == "ok").where(Post.post_id > post_id))
-        for clause in where_clauses:
-            stmt = stmt.where(clause)
-    count = (await db.execute(stmt)).scalar() or 0
-    return {"idx": count}
+    base_stmt, pool_id_filter = await _listing_set(db, query, safe)
+    stmt, keys, ascending = _listing_order(base_stmt, pool_id_filter, sort, dir)
+    target = (await db.execute(
+        stmt.with_only_columns(*keys).where(Post.post_id == post_id).limit(1))).first()
+    if target is None:
+        # Not in this listing (hidden, filtered out, another pool): there is no position
+        # to give. idx 0 keeps old clients working; `member` says it is not one.
+        return {"idx": 0, "member": False}
+    before = tuple_(*keys) < tuple_(*target) if ascending else tuple_(*keys) > tuple_(*target)
+    count = (await db.execute(
+        select(func.count()).select_from(stmt.with_only_columns(Post.post_id).where(before).subquery())
+    )).scalar() or 0
+    return {"idx": count, "member": True}
 
 
 @router.get("/post/{post_id}/media")

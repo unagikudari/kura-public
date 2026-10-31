@@ -192,6 +192,8 @@ def test_advertisement_predicate_mirrors_the_endpoint():
     assert '"advertisement" not in query.lower()' in src, (
         "endpoint と同じ部分文字列判定になっていない — 完全一致に戻すと"
         "advertisement を含む別タグで件数が過小になる")
-    endpoint_src = inspect.getsource(m.list_posts)
+    # the endpoint takes its set from _listing_set (shared with get_post_index, #148)
+    assert "_listing_set(" in inspect.getsource(m.list_posts)
+    endpoint_src = inspect.getsource(m._listing_set)
     assert '"advertisement" not in query.lower()' in endpoint_src, (
         "endpoint 側の式が変わった — fast path 側も追随させること")
