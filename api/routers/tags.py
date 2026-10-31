@@ -382,6 +382,46 @@ async def _delete_tag_row(db: AsyncSession, tag: Tag, force: bool) -> None:
     await db.commit()
 
 
+# A merge must not leave a post whose merged tag is on it while a person's absent pin says it is
+# not, nor pick one of two opposite human decisions silently (#147). Both tag rows are locked
+# FOR UPDATE by then, so a new pin or membership row on either tag (each has a foreign key to
+# tag) waits for this transaction; the existing pins are locked here, so a pin's state cannot
+# flip between this check and the commit.
+_MERGE_CONFLICTS = text("""
+    WITH pin AS (
+        SELECT post_id, max(state) FILTER (WHERE tag_id = :sid) AS s_pin,
+                        max(state) FILTER (WHERE tag_id = :tid) AS t_pin
+          FROM post_tag_pin WHERE tag_id IN (:sid, :tid) GROUP BY post_id),
+    mem AS (
+        SELECT post_id, bool_or(tag_id = :sid) AS s_mem, bool_or(tag_id = :tid) AS t_mem
+          FROM post_tag WHERE tag_id IN (:sid, :tid) GROUP BY post_id)
+    SELECT post_id, s_pin, t_pin, COALESCE(s_mem, false) AS s_mem, COALESCE(t_mem, false) AS t_mem
+      FROM pin FULL JOIN mem USING (post_id)
+     WHERE (s_pin IS NOT NULL AND t_pin IS NOT NULL AND s_pin <> t_pin)
+        OR (COALESCE(t_pin, s_pin) = 'absent' AND (COALESCE(s_mem, false) OR COALESCE(t_mem, false)))
+     ORDER BY post_id
+""")
+
+
+async def _refuse_contradicting_merge(db: AsyncSession, sid: int, tid: int) -> None:
+    """409 when merging source into target would contradict a person's pin: the two tags carry
+    opposite pins on one post, or the merged tag would be on a post whose surviving pin (the
+    target's, else the source's) says absent. Nothing is chosen for the person; the posts are
+    named so the pins can be settled and the merge tried again."""
+    ids = {"sid": sid, "tid": tid}
+    await db.execute(text("SELECT 1 FROM post_tag_pin WHERE tag_id IN (:sid, :tid) FOR UPDATE"), ids)
+    rows = (await db.execute(_MERGE_CONFLICTS, ids)).mappings().all()
+    if rows:
+        shown = [{"post": r["post_id"], "source_pin": r["s_pin"], "target_pin": r["t_pin"],
+                  "source_on_post": r["s_mem"], "target_on_post": r["t_mem"]} for r in rows[:50]]
+        raise HTTPException(status_code=409, detail={
+            "error": "tag_merge_conflict",
+            "fix": (f"{len(rows)} post(s) would end with the merged tag contradicting a person's pin "
+                    f"(e.g. post {rows[0]['post_id']}); settle those pins (lock or remove the tag on "
+                    f"each) and merge again."),
+            "posts": shown, "count": len(rows)})
+
+
 # ── POST /api/tag/{source}/merge-into/{target} ────────────────────────────────
 
 @router.post("/tag/{source_name}/merge-into/{target_name}")
@@ -419,6 +459,7 @@ async def merge_tags(
                               .order_by(Tag.tag_id).with_for_update())).scalars().all()
     if len(locked) != 2:
         raise HTTPException(status_code=409, detail={"code": "tag_changed", "fix": "タグが削除または統合されました。タグ一覧を再読み込みしてください。"})
+    await _refuse_contradicting_merge(db, source.tag_id, target.tag_id)
     await db.refresh(source, ["localizations", "names", "category"])
     await db.refresh(target, ["localizations", "names", "category", "version"])
     await transfer_localizations(db, source, target)
@@ -506,6 +547,18 @@ async def merge_tags(
     # だと cascade が「source の names」— 今は target の別名 — を消しに行く)。
     db.expunge(source)
     await db.execute(text("DELETE FROM tag WHERE id = :sid"), ids)
+    # The state the merge leaves, read once more before it commits: the merged tag on a post
+    # its own absent pin says it is not on is never committed (#147).
+    left = (await db.execute(text("""
+        SELECT p.post_id FROM post_tag_pin p JOIN post_tag t ON t.post_id = p.post_id AND t.tag_id = p.tag_id
+         WHERE p.tag_id = :tid AND p.state = 'absent' ORDER BY p.post_id LIMIT 50"""), ids)).scalars().all()
+    if left:
+        await db.rollback()
+        raise HTTPException(status_code=409, detail={
+            "error": "tag_merge_conflict",
+            "fix": f"the merge would leave the tag on post(s) {left[:10]} whose pin says absent; "
+                   f"settle those pins and merge again.",
+            "posts": [{"post": p} for p in left], "count": len(left)})
     await db.commit()
     await db.refresh(target, ["names", "category"])
     return _serialize_tag(target, localize)
