@@ -390,3 +390,39 @@ def test_the_archive_url_must_be_a_numeric_address(archive):
     for bad in ("http://primary:8470", "http://primary.example.ts.net:8470", "ftp://10.0.0.1/"):
         with pytest.raises(ValueError):
             config._numeric_host_url(bad)
+
+
+@pytest.mark.parametrize("where,err", [("fsync", 28), ("replace", 5), ("fsync", 5)])   # ENOSPC, EIO
+def test_a_failing_local_cache_is_unavailable_not_a_failure_and_recovers(archive, tmp_path, monkeypatch, where, err):
+    """The cache disk failing is the original being unavailable for now (#156): 503
+    original_unavailable on the route, the tagger holds the post instead of spending an attempt.
+    No spool is left, the admission slot comes back, and once the disk is well the same fetch
+    works."""
+    cas, legacy, local, other = _links(tmp_path)
+    free = originals._admitted._value
+    real = {"fsync": os.fsync, "replace": os.replace}[where]
+
+    def broken(*a, **kw):
+        raise OSError(err, os.strerror(err))
+    monkeypatch.setattr(originals.os, where, broken)
+    with pytest.raises(originals.OriginalUnavailable, match="local original cache failed"):
+        originals.original_bytes(originals.classify(cas), originals.Identity(SHA, None, len(BODY)))
+    assert originals._admitted._value == free
+    assert not list((tmp_path / "cache").glob("*/.*part"))
+    row = {"sha256": bytes.fromhex(SHA), "checksum_md5": None, "checksum": None,
+           "file_size": len(BODY), "mime": "image/webp"}
+    r = _client(monkeypatch, tmp_path, row).get(f"/data/posts/{cas.name}")
+    assert r.status_code == 503 and r.json()["detail"]["error"] == "original_unavailable"
+    monkeypatch.setattr(originals.os, where, real)                  # the disk is well again
+    assert originals.original_bytes(originals.classify(cas), originals.Identity(SHA, None, len(BODY))) == BODY
+
+
+def test_eviction_failing_does_not_fail_a_fetch_that_is_done(archive, tmp_path, monkeypatch):
+    cas, *_ = _links(tmp_path)
+
+    def broken(limit):
+        raise OSError(5, "Input/output error")
+    monkeypatch.setattr(originals, "_evict", broken)
+    free = originals._admitted._value
+    assert originals.original_bytes(originals.classify(cas), originals.Identity(SHA, None, len(BODY))) == BODY
+    assert originals._admitted._value == free

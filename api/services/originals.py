@@ -22,6 +22,7 @@ from __future__ import annotations
 import contextlib
 import fcntl
 import hashlib
+import logging
 import os
 import re
 import socket
@@ -40,6 +41,9 @@ FETCH_SLOTS = 4
 FETCH_QUEUE = 8
 FETCH_DEADLINE = 20.0
 MAX_SPOOL = 1024 ** 3
+
+
+log = logging.getLogger(__name__)
 
 
 class OriginalUnavailable(Exception):
@@ -271,9 +275,13 @@ def _fetch(loc: Location, ident: Identity, deadline: float) -> Lease:
         lease = _lease(target, ident)
         if lease is not None:
             return lease
-        target.parent.mkdir(parents=True, exist_ok=True)
         tmp = target.with_name(f".{target.name}.{os.getpid()}.{threading.get_ident()}.part")
         try:
+            # The local cache failing (ENOSPC or EIO on write, flush, fsync, rename, the read
+            # that verifies) says nothing about the original: it is unavailable now, the same as
+            # an archive that does not answer, and a tagger holds the post instead of spending
+            # its attempts on it (#156). Program errors are not OSError and still raise.
+            target.parent.mkdir(parents=True, exist_ok=True)
             with tmp.open("xb") as out:
                 _download(loc, ident, deadline, out)
                 out.flush()
@@ -281,13 +289,18 @@ def _fetch(loc: Location, ident: Identity, deadline: float) -> Lease:
             if not verify(tmp, ident):
                 raise OriginalUnavailable("fetched bytes do not match the post's identity")
             os.replace(tmp, target)
+            lease = _lease(target, ident)       # leased before anything may evict it
+        except OSError as e:
+            raise OriginalUnavailable(f"the local original cache failed: {e.strerror or e}") from e
         finally:
-            with contextlib.suppress(FileNotFoundError):
+            with contextlib.suppress(OSError):
                 tmp.unlink()
-        lease = _lease(target, ident)           # leased before anything may evict it
         if lease is None:
             raise OriginalUnavailable("cache entry vanished after publishing")
-        _evict(config.ORIGINAL_CACHE_BYTES)
+        try:
+            _evict(config.ORIGINAL_CACHE_BYTES)
+        except OSError as e:                    # the fetch is done and leased; a full sweep can wait
+            log.warning("original cache eviction failed: %s", e)
         return lease
     finally:
         _admitted.release()
