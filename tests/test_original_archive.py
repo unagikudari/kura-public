@@ -388,3 +388,65 @@ def test_a_file_replaced_between_reads_cannot_file_one_answer_under_another_key(
     monkeypatch.setattr(A.Image, "open", swap_then_open)
     key, same = A.motion_entry(str(f), view)
     assert key[0] == hashlib.sha256(a.getvalue()).hexdigest() and same    # A's key, A's answer
+
+
+@pytest.mark.parametrize('cut', ['after_primary', 'before_ledger', 'changed_local'])
+def test_a_restore_cut_off_partway_is_finished_by_running_it_again(fixture, monkeypatch, database_url, cut):
+    """#151: a restore cut off after the primary name, or after every name but before its
+    ledger row, is finished by the next restore; a local file whose bytes are not the original
+    (same size) is refused and left as it is."""
+    import psycopg2
+    from psycopg2.extensions import make_dsn
+    from uuid import uuid4
+    f = fixture; schema = 'archive_' + uuid4().hex
+    base = database_url.replace('+asyncpg', '')
+    admin = psycopg2.connect(base); admin.autocommit = True
+    with admin.cursor() as q: q.execute('CREATE SCHEMA ' + schema)
+    dsn = make_dsn(base, options='-csearch_path=' + schema)
+    b = io.BytesIO(); Image.new('RGB', (8, 8), 'blue').save(b, format='WEBP'); webp = b.getvalue()
+    try:
+        with psycopg2.connect(dsn) as pg:
+            with pg.cursor() as q:
+                q.execute('''CREATE TABLE post(id int primary key,sha256 bytea,checksum_md5 text,checksum text,
+                  "mime-type" text,file_size bigint,data bytea,thumbnail bytea,status text,type text,media_location text)''')
+                q.execute('CREATE TABLE post_rendition(post_id int,kind text,sha256 bytea)')
+                q.execute('CREATE TABLE rendition_object(sha256 bytea,mime text,byte_size bigint,width int,height int)')
+                q.execute("INSERT INTO post VALUES(1,%s,%s,%s,'image/png',%s,%s,%s,'ok','image','pg')",
+                          (bytes.fromhex(f.row['sha']), f.row['md5'], f.row['md5'], len(f.data), webp, webp))
+        monkeypatch.setattr(A, 'DATABASE_URL_SYNC', dsn); monkeypatch.setattr(A, 'ORIGINAL_ARCHIVE_ROOT', f.guard.root)
+        monkeypatch.setattr(F, 'names', lambda *args: [f.one, f.two])
+        f.guard.header = lambda: dict(root=str(f.guard.root), source=str(f.guard.source), mount=str(f.guard.root))
+        plan = f.guard.root / 'plans' / 'test.sqlite'
+        A.inventory(plan, f.guard)
+        monkeypatch.setattr(A, 'MountGuard', lambda *args: f.guard)
+        monkeypatch.setattr(A, 'runtime_attestation', lambda: lambda: None)
+        assert A.run_plan(plan, limit=1, seconds=20)['done']['files'] == 1
+        assert f.one.is_symlink() and f.two.is_symlink()
+        if cut == 'changed_local':
+            f.one.unlink(); f.one.write_bytes(bytes(len(f.data)))           # same size, other bytes
+            with pytest.raises(RuntimeError, match='Active original names changed'):
+                A.restore(plan, 1)
+            assert f.one.read_bytes() == bytes(len(f.data)) and f.two.is_symlink()
+            return
+        if cut == 'after_primary':
+            real = F.link_secondary
+            def cut_here(*a, **k): raise OSError('cut after the primary name')
+            monkeypatch.setattr(F, 'link_secondary', cut_here)
+        else:
+            real = A.fsync_dir
+            def cut_here(*a, **k): raise OSError('cut before the ledger row')
+            monkeypatch.setattr(A, 'fsync_dir', cut_here)
+        with pytest.raises(OSError):
+            A.restore(plan, 1)
+        links = sorted(p.is_symlink() for p in (f.one, f.two))
+        # cut after the primary: one name restored, one still the archive; cut before the
+        # ledger: both restored (the plan's alias order decides which name is the primary)
+        assert links == ([False, True] if cut == 'after_primary' else [False, False])
+        assert all(p.read_bytes() == f.data for p in (f.one, f.two))
+        monkeypatch.setattr(F if cut == 'after_primary' else A, 'link_secondary' if cut == 'after_primary' else 'fsync_dir', real)
+        restored = A.restore(plan, 1)
+        assert restored['restored']['files'] == 1
+        assert not f.one.is_symlink() and os.path.samefile(f.one, f.two) and f.one.read_bytes() == f.data
+    finally:
+        with admin.cursor() as q: q.execute('DROP SCHEMA ' + schema + ' CASCADE')
+        admin.close()

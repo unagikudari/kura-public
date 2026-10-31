@@ -545,6 +545,23 @@ def _run_rows(plan,pg,guard,rows,futures,deadline,check_runtime):
             with plan:plan.execute("UPDATE objects SET status=?,reason=? WHERE dev=? AND ino=?",('verified' if row['archive_sha'] else 'refused',str(exc)[:180],row['dev'],row['ino']))
 
 
+def _restore_state(p,target,root,sha,size):
+    """'archived' (a link to the expected archive object), 'restored' (a regular local file
+    holding exactly the archived original), or None (anything else: changed, unknown)."""
+    if p.is_symlink():
+        return 'archived' if p.resolve()==target.resolve() else None
+    try:
+        st=p.stat()
+    except FileNotFoundError:
+        return None
+    if not p.is_file() or st.st_size!=size or Path(os.path.realpath(p)).is_relative_to(Path(root).resolve()):
+        return None
+    h=hashlib.sha256()
+    with open(p,'rb') as f:
+        for chunk in iter(lambda:f.read(1<<20),b''):h.update(chunk)
+    return 'restored' if h.hexdigest()==sha else None
+
+
 def restore(path,post_id):
     path=any_plan(path)
     plan=connect_plan(path);header=json.loads(plan.execute('SELECT header FROM meta').fetchone()[0])
@@ -570,9 +587,14 @@ def restore(path,post_id):
             # Restore the exact original aliases recorded by the plan, not the
             # extension of the display WebP stored in post.mime-type.
             names=[guard.source/n for n in aliases]
-            if any(not p.is_symlink() or p.resolve()!=target.resolve() for p in names):raise RuntimeError('Active original names changed')
+            # Each name is still the archived object, or already this original restored (a
+            # restore cut off after some names, or before its ledger row): anything else is
+            # refused untouched. A restored name is proven by its bytes, not by existing (#151).
+            states=[_restore_state(p,target,guard.root,sha,row['size']) for p in names]
+            if None in states:raise RuntimeError('Active original names changed')
             verify_object(target,sha,row['size'],row['sha'],row['md5']);guard.check()
-            files.write_all_names(names,target.read_bytes())
+            if 'archived' in states:
+                files.write_all_names(names,target.read_bytes())
             if any(p.is_symlink() or p.stat().st_size!=row['size'] for p in names):raise RuntimeError('Local restore incomplete')
             fsync_dir(names[0].parent)
     with plan:plan.execute("UPDATE objects SET status='restored' WHERE dev=? AND ino=?",(row['dev'],row['ino']))
