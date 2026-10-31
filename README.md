@@ -148,6 +148,17 @@ docker compose run --rm -v ~/Pictures/scans:/import:ro tools \
     --key-file /out/kura-admin.key --record /out/kura-import.jsonl /import
 ```
 
+If other tools left tags next to the images, `--sidecars` takes them too. For `photo.jpg` it
+reads `photo.jpg.json` or `photo.json` (a booru post's JSON: its tags, the artist, character
+and copyright groups, rating and source), `photo.jpg.xmp` or `photo.xmp`
+(XMP keywords, as digiKam, darktable or Lightroom write them) and `photo.jpg.txt` or
+`photo.txt` (a tag per line as Hydrus writes them, or comma-separated). `creator:`,
+`artist:`, `character:` and `series:`/`copyright:` tags get kura's category, and a rating
+(`rating:explicit`, or the booru letters g/s/q/e) sets the safety unless you gave `--safety`.
+Spaces in a tag become underscores. A sidecar added or edited later sends its image again
+on the next run, and kura adds the new tags to the post it already has (tags taken out of a
+sidecar stay on the post).
+
 To keep a folder in kura, add `--watch 60`: the command stays running, looks at the folder
 every 60 seconds and sends what was added or changed, once a file has not changed for
 `--settle` seconds (10 by default, so a file still being copied waits). A file kura refused

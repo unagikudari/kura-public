@@ -256,3 +256,21 @@ def test_a_file_that_recovers_behind_failing_ones_is_tried_again(kura, tmp_path)
         assert _until(lambda: [u["name"] for u in _WatchKura.uploads] == ["f11.png"])
     finally:
         _stop(proc)
+
+
+def test_with_sidecars_an_image_waits_for_its_sidecar_to_settle(kura, tmp_path):
+    root = tmp_path / "dl"
+    root.mkdir()
+    (root / "p.png").write_bytes(PNG + b"p")
+    _old(root / "p.png")
+    (root / "p.png.json").write_text('{"tag_string": "half"}')        # still being written
+    proc = _start(tmp_path, root, kura, "--settle", "60", "--sidecars")
+    try:
+        time.sleep(3)
+        assert not _WatchKura.uploads
+        (root / "p.png.json").write_text('{"tag_string": "night sky_view"}')
+        _old(root / "p.png.json")
+        assert _until(lambda: len(_WatchKura.uploads) == 1)
+        assert _WatchKura.uploads[0]["tags"] == "night sky_view"
+    finally:
+        _stop(proc)

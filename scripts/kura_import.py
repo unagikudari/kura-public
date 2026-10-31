@@ -40,6 +40,7 @@ import sys
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
 from pathlib import Path
@@ -117,6 +118,263 @@ def plan(folder: Path, sent=None, settle: float = 0.0) -> tuple[list[Path], int,
             files.append(p)
     walk(folder)
     return files, skipped, unsettled
+
+
+# ---- sidecar files --------------------------------------------------------------------------
+#
+# Tags that already sit next to the images, in the forms other tools write them:
+#   photo.jpg.json / photo.json   a booru post's JSON (keys: tags, tag_string,
+#                                 tag_string_artist/_character/_copyright, rating, source)
+#   photo.jpg.xmp  / photo.xmp    XMP keywords (dc:subject), as digiKam, darktable or Lightroom write them
+#   photo.jpg.txt  / photo.txt    one tag per line (Hydrus sidecars) or comma-separated (training captions)
+# Every one present is read and their tags merged.
+
+SIDECAR_SUFFIXES = (".json", ".xmp", ".txt")
+NAMESPACES = {"artist": "artist", "creator": "artist", "character": "character",
+              "series": "copyright", "copyright": "copyright"}
+# Booru ratings, letters and words. Danbooru: g general, s sensitive, q questionable, e explicit.
+RATINGS = {"g": "safe", "general": "safe", "safe": "safe",
+           "s": "sketchy", "sensitive": "sketchy", "sketchy": "sketchy",
+           "q": "unsafe", "questionable": "unsafe", "e": "unsafe", "explicit": "unsafe", "unsafe": "unsafe"}
+XMP_LI = "{http://www.w3.org/1999/02/22-rdf-syntax-ns#}li"
+XMP_SUBJECT = "{http://purl.org/dc/elements/1.1/}subject"
+
+
+class Sidecar:
+    def __init__(self):
+        self.tags: dict[str, str | None] = {}       # kura tag name → category (None: default)
+        self.safety: str | None = None
+        self.source: str | None = None
+        self.files: list[str] = []
+
+    def tag(self, raw: str, category: str | None = None) -> None:
+        raw = raw.strip()
+        if not raw:
+            return
+        ns, sep, rest = raw.partition(":")
+        if sep and category is None:
+            key = ns.strip().lower()
+            if key == "rating":
+                self.safety = self.safety or RATINGS.get(rest.strip().lower())
+                if rest.strip().lower() in RATINGS:
+                    return
+            if key in NAMESPACES and rest.strip():
+                raw, category = rest, NAMESPACES[key]
+        name = "_".join(raw.split())
+        if name and (category or name not in self.tags):
+            self.tags[name] = category or self.tags.get(name)
+
+    def as_fields(self) -> tuple[str, str]:
+        """(tags, artist_tags) as /api/upload takes them."""
+        return (" ".join(self.tags), " ".join(n for n, c in self.tags.items() if c == "artist"))
+
+
+def _words(value) -> list[str]:
+    if isinstance(value, str):
+        return value.split()
+    if isinstance(value, list):
+        return [v for v in value if isinstance(v, str)]
+    return []
+
+
+def _read_json(sc: Sidecar, data) -> None:
+    if not isinstance(data, dict):
+        return
+    for key, cat in (("tag_string_artist", "artist"), ("tags_artist", "artist"), ("artist", "artist"),
+                     ("tag_string_character", "character"), ("tags_character", "character"),
+                     ("tag_string_copyright", "copyright"), ("tags_copyright", "copyright")):
+        for t in _words(data.get(key)):
+            sc.tag(t, cat)
+    for key in ("tag_string", "tag_string_general", "tags_general", "tags"):
+        value = data.get(key)
+        if isinstance(value, dict):             # some extractors group tags by category
+            for cat, names in value.items():
+                for t in _words(names):
+                    sc.tag(t, NAMESPACES.get(str(cat).lower()))
+        else:
+            for t in _words(value):
+                sc.tag(t)
+    rating = data.get("rating")
+    if isinstance(rating, str):
+        sc.safety = sc.safety or RATINGS.get(rating.strip().lower())
+    source = data.get("source")
+    if isinstance(source, str) and source.startswith(("http://", "https://")):
+        sc.source = sc.source or source
+
+
+def _read_xmp(sc: Sidecar, raw: bytes) -> None:
+    import xml.etree.ElementTree as ET
+    try:
+        root = ET.fromstring(raw)
+    except ET.ParseError:
+        return
+    for subject in root.iter(XMP_SUBJECT):
+        for li in subject.iter(XMP_LI):
+            if li.text:
+                sc.tag(li.text)
+
+
+def _read_txt(sc: Sidecar, text: str) -> None:
+    for line in text.splitlines():
+        for part in line.split(","):
+            sc.tag(part)
+
+
+SIDECAR_LIMIT = 1 << 20                     # a sidecar is a few lines; anything bigger is not one
+
+
+def _read_small(path: Path) -> bytes | None:
+    """The bytes of a regular file of at most SIDECAR_LIMIT, read from one descriptor (a file
+    that grows or is swapped after a look is still held to the limit); None otherwise."""
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)     # a FIFO put there must not hang us
+    except OSError:
+        return None
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            return None
+        with os.fdopen(fd, "rb", closefd=False) as f:
+            raw = f.read(SIDECAR_LIMIT + 1)
+        return raw if len(raw) <= SIDECAR_LIMIT else None
+    except OSError:
+        return None
+    finally:
+        os.close(fd)
+
+
+def sidecar_signature(path: Path) -> list:
+    """[name, size, mtime_ns] of each sidecar file beside `path`: a record row keeps it, so a
+    sidecar added or edited after the image went in sends the image again (kura adds the new
+    tags to the post it already has)."""
+    out = []
+    for q in sidecar_paths(path):
+        try:
+            st = q.stat()
+        except OSError:
+            continue
+        out.append([q.name, st.st_size, st.st_mtime_ns])
+    return out
+
+
+def sidecar(path: Path) -> Sidecar | None:
+    """The tags, safety and source in the sidecar files next to `path`, or None if it has none."""
+    sc = Sidecar()
+    for suffix in SIDECAR_SUFFIXES:
+        for candidate in (path.with_name(path.name + suffix), path.with_suffix(suffix)):
+            raw = _read_small(candidate)
+            if raw is None:
+                continue
+            if suffix == ".json":
+                try:
+                    _read_json(sc, json.loads(raw))
+                except ValueError:
+                    continue
+            elif suffix == ".xmp":
+                _read_xmp(sc, raw)
+            else:
+                _read_txt(sc, raw.decode("utf-8", errors="replace"))
+            sc.files.append(candidate.name)
+            break                               # photo.jpg.json wins over photo.json
+    return sc if sc.files else None
+
+
+def sidecar_paths(path: Path) -> list[Path]:
+    """The sidecar files that exist next to `path` (for the settle check)."""
+    out = []
+    for suffix in SIDECAR_SUFFIXES:
+        for candidate in (path.with_name(path.name + suffix), path.with_suffix(suffix)):
+            if candidate.is_file():
+                out.append(candidate)
+    return out
+
+
+def fields_for(args, folder: Path, path: Path, categories: dict | None = None) -> dict[str, str]:
+    """What /api/upload gets for `path`: the command line's tags, safety and source, and with
+    --sidecars what its sidecar files add (their rating and source only where the command line
+    gave none). The sidecars' tag categories are collected into `categories`."""
+    tags, artists, safety, source = args.tags, "", args.safety or "unsafe", args.source
+    sc = sidecar(path) if args.sidecars else None
+    if sc is not None:
+        more, artists = sc.as_fields()
+        tags = " ".join(t for t in (tags, more) if t)
+        if args.safety is None and sc.safety:
+            safety = sc.safety
+        source = source or sc.source or ""
+        if categories is not None:
+            # artist too: artist_tags names the category only for a tag kura creates now
+            categories.update({n: c for n, c in sc.tags.items() if c})
+    return {"tags": tags, "safety": safety, "source": source, "pool": pool_name(args, folder, path),
+            "artist_tags": artists}
+
+
+def copy_tag_categories(api: Api, posts: list[dict], counts: dict) -> set[str]:
+    """Give tags the kura category the source said they have. `posts` are szurubooru-shaped
+    (tags as {"names": [...], "category": ...}); every tag seen on any of them is looked at, so
+    an interrupted earlier run leaves nothing behind. Only a tag still in kura's default
+    category is changed: a category someone set in kura stays."""
+    tag_category: dict[str, str] = {}
+    for p in posts:
+        for t in p.get("tags", []):
+            if t.get("names") and t.get("category"):
+                tag_category[t["names"][0]] = t["category"]
+    settled: set[str] = set()
+    status, cats = api.call("GET", "/api/tag-categories")
+    kura_cats = cats.get("detail") if status == 200 else None
+    if not isinstance(kura_cats, list):
+        say(f"tag categories not copied: kura answered {status}")
+        return settled
+    known = {c["name"] for c in kura_cats}
+    default = next((c["name"] for c in kura_cats if c.get("default")), "default")
+    for name, cat in sorted(tag_category.items()):
+        if cat not in known or cat in (default, "default"):
+            settled.add(name)                   # nothing kura can do with it
+            continue
+        quoted = urllib.parse.quote(name, safe="")
+        try:
+            status, tag = api.call("GET", f"/api/tag/{quoted}")
+            if status == 404:
+                settled.add(name)               # no such tag in kura: nothing to give a category
+                continue
+            if status != 200:
+                say(f"  tag {name}: category not set (could not read it: {status} {detail(tag)[:100]})")
+                continue
+            if tag.get("category", default) != default:
+                settled.add(name)               # someone gave it one already: that stays
+                continue
+            # kura's tag update is optimistically locked: send the version just read
+            status, reply = api.call("PATCH", f"/api/tag/{quoted}",
+                                     json.dumps({"version": tag.get("version", 1), "category": cat}).encode(),
+                                     {"content-type": "application/json"})
+        except (urllib.error.URLError, OSError) as e:
+            say(f"  tag {name}: category not set (no connection: {getattr(e, 'reason', e)})")
+            continue
+        if status == 200:
+            counts["tags_recategorized"] += 1
+            settled.add(name)
+        else:
+            say(f"  tag {name}: category not set ({status} {detail(reply)[:120]})")
+    # szurubooru's own default category ("default") is kura's default, whatever kura calls it
+    missing = sorted({c for c in tag_category.values() if c not in known and c != "default"})
+    if missing:
+        say(f"tag categories kura does not have, left at its default: {', '.join(missing)}")
+    return settled
+
+
+def set_categories(api: Api, record: Path, identity: dict, counts: dict) -> None:
+    """Give the sidecars' artist, character and copyright tags their kura category (only tags
+    still in kura's default category, as the migrations do). The work comes from the record —
+    each sent file's row keeps its categories until a "categorized" row says they are done —
+    so a run that was cut off, or a category kura would not set, is taken up next time."""
+    pending: dict = {}
+    open_record(record, identity, categories=pending)
+    if not pending:
+        return
+    counts.setdefault("tags_recategorized", 0)
+    settled = copy_tag_categories(
+        api, [{"tags": [{"names": [n], "category": c} for n, c in pending.items()]}], counts)
+    if settled:
+        with open(record, "a") as out:
+            out.write(json.dumps({"categorized": sorted(settled)}, ensure_ascii=False) + "\n")
 
 
 # ---- credentials ----------------------------------------------------------------------------
@@ -283,8 +541,15 @@ def detail(body: dict) -> str:
 def import_identity(args, folder: Path) -> dict:
     """What a record belongs to: one folder, one kura, one set of options. A different kura
     or different options is a different import and must not skip what this one sent."""
-    return {"folder": str(folder), "url": args.url.rstrip("/"), "tags": args.tags, "safety": args.safety,
-            "source": args.source, "pool": args.pool, "pool_per_folder": args.pool_per_folder}
+    identity = {"folder": str(folder), "url": args.url.rstrip("/"), "tags": args.tags,
+                "safety": args.safety or "unsafe", "source": args.source, "pool": args.pool,
+                "pool_per_folder": args.pool_per_folder}
+    if args.sidecars:                   # only then: a record made before --sidecars existed stays this import's
+        identity["sidecars"] = True
+        # With sidecars, an omitted --safety (each sidecar's rating) and --safety unsafe (all
+        # unsafe) send different ratings: they are different imports.
+        identity["safety"] = args.safety
+    return identity
 
 
 def default_record(identity: dict) -> Path:
@@ -296,13 +561,22 @@ def default_record(identity: dict) -> Path:
 # Refusals that say something about the file itself; anything else (no connection, 5xx, an
 # expired sign-in, rate limiting) is tried again.
 REFUSED_FOR_GOOD = frozenset(range(400, 500)) - {401, 403, 408, 409, 425, 429}
+CATEGORY_RETRY = 600.0          # seconds between --watch passes that only retry tag categories
+
+
+def file_state(args, path: Path, st: os.stat_result) -> tuple:
+    """What a record row is compared with: the file's size and mtime, and with --sidecars the
+    state of its sidecar files."""
+    return (st.st_size, st.st_mtime_ns, sidecar_signature(path) if args.sidecars else None)
 
 
 def open_record(record: Path, identity: dict, create: bool = True, refused: dict | None = None,
-                retrying: dict | None = None) -> dict[str, tuple[int, int]]:
+                retrying: dict | None = None, categories: dict | None = None) -> dict[str, tuple]:
     """Make sure `record` is this import's, writing its header if it is new (unless `create`
     is off: a dry run only reads); returns relative path → (size, mtime_ns) of every file a
-    previous run got an id for. `refused`, if given, is filled the same way with the files
+    previous run got an id for (with its sidecar state, see file_state). `categories`, if given,
+    gets the tag categories sent files' sidecars named that no "categorized" row settled yet.
+    `refused`, if given, is filled the same way with the files
     kura last turned down for good (REFUSED_FOR_GOOD), and `retrying` with the paths whose
     last send failed otherwise, each with the line of that attempt (the watch tries them
     after the files not tried yet, the one tried longest ago first)."""
@@ -329,15 +603,22 @@ def open_record(record: Path, identity: dict, create: bool = True, refused: dict
             row = json.loads(line)
         except ValueError:
             continue
+        if "categorized" in row:
+            if categories is not None:
+                for name in row["categorized"]:
+                    categories.pop(name, None)
+            continue
         path = row.get("path")
         if row.get("id") is not None:
-            done[path] = (row.get("size"), row.get("mtime_ns"))
+            done[path] = (row.get("size"), row.get("mtime_ns"), row.get("sidecars"))
+            if categories is not None and isinstance(row.get("categories"), dict):
+                categories.update(row["categories"])
             if refused is not None:
                 refused.pop(path, None)
             if retrying is not None:
                 retrying.pop(path, None)
         elif refused is not None and row.get("status") in REFUSED_FOR_GOOD and "size" in row:
-            refused[path] = (row.get("size"), row.get("mtime_ns"))
+            refused[path] = (row.get("size"), row.get("mtime_ns"), row.get("sidecars"))
             if retrying is not None:
                 retrying.pop(path, None)
         elif retrying is not None and path is not None:
@@ -359,11 +640,16 @@ def arguments(argv=None):
     who.add_argument("--token-file", type=Path, help="a 0600 file with KURA_USER and KURA_TOKEN")
     what = p.add_argument_group("what each file gets")
     what.add_argument("--tags", default="", help="space-separated tags for every file")
-    what.add_argument("--safety", choices=SAFETY, default="unsafe")
+    what.add_argument("--safety", choices=SAFETY, default=None,
+                      help="for every file (default unsafe; with --sidecars, a sidecar's rating where it has one)")
     what.add_argument("--source", default="", help="a source URL recorded on every file")
     what.add_argument("--pool", default="", help="put every file in this pool, in order")
     what.add_argument("--pool-per-folder", action="store_true",
                       help="each folder that holds files becomes a pool named after it")
+    what.add_argument("--sidecars", action="store_true",
+                      help="also take tags, rating and source from files next to each image: "
+                           "photo.jpg.json (a booru post's JSON), photo.jpg.xmp (XMP keywords), photo.jpg.txt "
+                           "(a tag per line or comma-separated); photo.json etc. work too")
     p.add_argument("--record", type=Path, help="where sent files are noted (default under ~/.local/state)")
     p.add_argument("--ca-file", help="the CA certificate to trust for an https --url")
     p.add_argument("--dry-run", action="store_true", help="only count and list; send nothing")
@@ -436,22 +722,26 @@ def send(api: Api, args, folder: Path, record: Path, todo: list[Path], counts: d
             rel = str(p.relative_to(folder))
             if settle:
                 try:
-                    changing = time.time() - p.stat().st_mtime < settle
+                    looked = [p] + (sidecar_paths(p) if args.sidecars else [])
+                    changing = any(time.time() - q.stat().st_mtime < settle for q in looked)
                 except OSError:             # gone since the pass looked
                     continue
                 if changing:
                     counts["waiting"] = counts.get("waiting", 0) + 1
                     continue
             row: dict = {"path": rel}
+            cats: dict = {}
+            if args.sidecars:                   # taken before they are read: an edit after this is seen next time
+                row["sidecars"] = sidecar_signature(p)
             try:
-                status, body, st = api.upload(p, {"tags": args.tags, "safety": args.safety,
-                                                  "source": args.source,
-                                                  "pool": pool_name(args, folder, p)})
+                status, body, st = api.upload(p, fields_for(args, folder, p, cats))
                 row.update(size=st.st_size, mtime_ns=st.st_mtime_ns)
             except (urllib.error.URLError, OSError) as e:
                 status, body = 0, {"detail": str(getattr(e, "reason", e))[:200]}
             if status in (200, 202) and "id" in body:
                 row.update(id=body["id"], duplicate=bool(body.get("duplicate")))
+                if cats:
+                    row["categories"] = cats
                 counts["duplicates" if row["duplicate"] else "added"] += 1
                 failures_in_a_row = 0
             else:
@@ -479,14 +769,14 @@ def main(argv=None) -> int:
         return watch(args, folder, identity, record)
     done = open_record(record, identity, create=not args.dry_run)
     files, not_media, _ = plan(folder)
-    todo = [p for p in files
-            if done.get(str(p.relative_to(folder))) != (p.stat().st_size, p.stat().st_mtime_ns)]
+    todo = [p for p in files if done.get(str(p.relative_to(folder))) != file_state(args, p, p.stat())]
     say(f"{folder}: {len(files)} media files, {not_media} other files passed over, "
         f"{len(files) - len(todo)} already sent (record: {record})")
     if args.dry_run:
         for p in todo:
-            pool = pool_name(args, folder, p)
-            print(f"{p.relative_to(folder)}" + (f"  → pool {pool}" if pool else ""))
+            f = fields_for(args, folder, p)
+            print(f"{p.relative_to(folder)}" + (f"  → pool {f['pool']}" if f["pool"] else "")
+                  + (f"  [{f['safety']}] {f['tags']}" if args.sidecars else ""))
         return 0
 
     api = Api(args.url, args.ca_file)
@@ -496,6 +786,8 @@ def main(argv=None) -> int:
     started = time.monotonic()
     try:                                        # from here on, sign-out happens whatever else does
         send(api, args, folder, record, todo, counts, Stop())
+        if args.sidecars:
+            set_categories(api, record, identity, counts)
     finally:
         api.sign_out()
     counts["seconds"] = round(time.monotonic() - started, 1)
@@ -515,6 +807,7 @@ def watch(args, folder: Path, identity: dict, record: Path) -> int:
     api = Api(args.url, args.ca_file)
     totals = {"added": 0, "duplicates": 0, "failed": 0}
     unrevoked: list[str] = []                   # session tokens whose sign-out did not get through
+    last_category_try = float("-inf")
 
     def revoke_pending() -> None:
         unrevoked[:] = [a for a in unrevoked if not api.revoke(a)]
@@ -533,10 +826,11 @@ def watch(args, folder: Path, identity: dict, record: Path) -> int:
             revoke_pending()
         refused: dict = {}
         retrying: dict = {}
-        done = open_record(record, identity, refused=refused, retrying=retrying)
+        leftover: dict = {}
+        done = open_record(record, identity, refused=refused, retrying=retrying, categories=leftover)
 
         def unchanged(rel, st, table):
-            return table.get(rel) == (st.st_size, st.st_mtime_ns)
+            return rel in table and table[rel] == file_state(args, folder / rel, st)
         files, _, waiting = plan(folder, sent=lambda rel, st: unchanged(rel, st, done) or unchanged(rel, st, refused),
                                  settle=args.settle)
         todo = []
@@ -555,12 +849,20 @@ def watch(args, folder: Path, identity: dict, record: Path) -> int:
         again = sorted((p for p in todo if str(p.relative_to(folder)) in retrying),
                        key=lambda p: retrying[str(p.relative_to(folder))])
         todo = fresh + again
-        if todo:
-            say(f"{len(todo)} new or changed" + (f", {waiting} still changing" if waiting else ""))
+        # Category work an earlier pass could not finish is taken up on its own as well, but
+        # not on every pass: a category kura keeps refusing must not mean a sign-in a minute.
+        categories_due = bool(leftover) and time.monotonic() - last_category_try >= CATEGORY_RETRY
+        if todo or categories_due:
+            if todo:
+                say(f"{len(todo)} new or changed" + (f", {waiting} still changing" if waiting else ""))
+            last_category_try = time.monotonic()
             counts = {"added": 0, "duplicates": 0, "failed": 0}
             try:
                 sign_in(api, args)
-                send(api, args, folder, record, todo, counts, stop, settle=args.settle)
+                if todo:
+                    send(api, args, folder, record, todo, counts, stop, settle=args.settle)
+                if args.sidecars:
+                    set_categories(api, record, identity, counts)
             except (urllib.error.URLError, OSError) as e:   # kura is away: try again next pass
                 say(f"  could not reach kura ({getattr(e, 'reason', e)}); trying again in {args.watch:g} s")
             except SignInRefused as e:

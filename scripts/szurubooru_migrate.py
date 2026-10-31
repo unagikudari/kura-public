@@ -41,7 +41,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from kura_http_key import install_api_key_opener  # noqa: E402  (kura-bound requests carry this node's machine key)
-from kura_import import Api, FileChanged, env_lines, media_type, private_file, say, token_header  # noqa: E402
+from kura_import import Api, FileChanged, copy_tag_categories, env_lines, media_type, private_file, say, token_header  # noqa: E402,F401  (copy_tag_categories: hydrus_migrate takes it from here)
 install_api_key_opener()
 
 PAGE = 100
@@ -243,40 +243,6 @@ def move_posts(src: Szurubooru, api: Api, record: Record, todo: list[dict], tmp:
             say(f"stopping: {GIVE_UP_AFTER} posts in a row failed")
             return False
     return True
-
-
-def copy_tag_categories(api: Api, posts: list[dict], counts: dict) -> None:
-    """Every tag seen on any source post, so an interrupted earlier run leaves nothing behind."""
-    tag_category: dict[str, str] = {}
-    for p in posts:
-        for t in p.get("tags", []):
-            if t.get("names") and t.get("category"):
-                tag_category[t["names"][0]] = t["category"]
-    status, cats = api.call("GET", "/api/tag-categories")
-    kura_cats = cats.get("detail") if status == 200 else None
-    if not isinstance(kura_cats, list):
-        say(f"tag categories not copied: kura answered {status}")
-        return
-    known = {c["name"] for c in kura_cats}
-    default = next((c["name"] for c in kura_cats if c.get("default")), "default")
-    for name, cat in sorted(tag_category.items()):
-        if cat not in known or cat in (default, "default"):
-            continue
-        quoted = urllib.parse.quote(name, safe="")
-        status, tag = api.call("GET", f"/api/tag/{quoted}")
-        if status == 200 and tag.get("category", default) == default:
-            # kura's tag update is optimistically locked: send the version just read
-            status, reply = api.call("PATCH", f"/api/tag/{quoted}",
-                                     json.dumps({"version": tag.get("version", 1), "category": cat}).encode(),
-                                     {"content-type": "application/json"})
-            if status == 200:
-                counts["tags_recategorized"] += 1
-            else:
-                say(f"  tag {name}: category not set ({status} {_detail(reply)[:120]})")
-    # szurubooru's own default category ("default") is kura's default, whatever kura calls it
-    missing = sorted({c for c in tag_category.values() if c not in known and c != "default"})
-    if missing:
-        say(f"tag categories kura does not have, left at its default: {', '.join(missing)}")
 
 
 def move_pools(api: Api, record: Record, pools: list[dict], counts: dict) -> None:
