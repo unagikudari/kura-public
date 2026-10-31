@@ -81,7 +81,13 @@ def include_optional_routers(app, *, dependencies=None) -> list[str]:
             register(key_redaction)
         router = getattr(mod, "router", None)
         if router is not None:
-            gated = getattr(mod, "MACHINE_GATED", True)
+            # Only the boolean False opts out (#43). Anything else — no declaration, True,
+            # 0, None, a string — stays under the gate; a non-boolean is logged, never
+            # read for its truthiness.
+            declared = getattr(mod, "MACHINE_GATED", True)
+            if not isinstance(declared, bool):
+                _log.warning("%s: MACHINE_GATED=%r は真偽値でない — machine gate の下に置く", name, declared)
+            gated = declared is not False
             if dependencies and gated:
                 app.include_router(router, dependencies=dependencies)
             else:

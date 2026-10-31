@@ -438,6 +438,27 @@ def test_the_human_marker_is_set_in_the_same_transaction():
     assert checked, "no entry declared a human marker — the pin would be vacuous"
 
 
+def test_every_declared_site_still_holds_its_statement():
+    """A declared (path, line) is evidence only while that line is the statement. Edits
+    above it move it, and the marker check above then reads the wrong span (1.304.5: a
+    merge guard added to tags.py moved two writes by 41 lines and the check reported a
+    commit that is not between the marker and the write). Say which site drifted, and where
+    its fragment is now."""
+    checked = 0
+    for e in json.loads(MAP.read_text())["paths"]:
+        frag = e.get("fragment")
+        for site in e.get("sites", []):
+            path, line = site.get("path"), site.get("line")
+            if not frag or not path or path.startswith("(") or line is None:
+                continue
+            lines = (REPO / path).read_text().splitlines()
+            window = "\n".join(lines[line - 1:line + 2])
+            now = [i + 1 for i, x in enumerate(lines) if frag in x]
+            assert frag in window, f"{path}:{line} no longer holds {frag!r} (now at {now})"
+            checked += 1
+    assert checked, "no site was checked"
+
+
 def test_a_finished_record_does_not_absorb_the_next_line(tmp_path):
     """trainer-codex's BLOCK, reproduced.
 
