@@ -135,7 +135,12 @@ class Record:
             if "post" in row:
                 self.posts[row["post"]] = row["id"]
             elif "pool" in row:
-                self.pools[row["pool"]] = {"id": row["id"], "missing": row.get("missing", 0)}
+                # A pool row written before 1.299.1 has no "included". The record is appended in
+                # order and posts are moved before pools, so the members that row put in the pool
+                # are exactly the posts recorded above it: completing such a pool later appends
+                # only the posts that came in after it, never one the owner has since taken out.
+                included = set(row["included"]) if "included" in row else set(self.posts)
+                self.pools[row["pool"]] = {"id": row["id"], "missing": row.get("missing", 0), "included": included}
 
     def _append(self, row: dict) -> None:
         with open(self.path, "a") as f:
@@ -149,7 +154,8 @@ class Record:
     def pool(self, szuru_id: int, **row) -> None:
         self._append({"pool": szuru_id, **row})
         if row.get("id") is not None:
-            self.pools[szuru_id] = {"id": row["id"], "missing": row.get("missing", 0)}
+            self.pools[szuru_id] = {"id": row["id"], "missing": row.get("missing", 0),
+                                    "included": set(row.get("included", []))}
 
 
 def default_record(identity: dict) -> Path:
@@ -275,16 +281,31 @@ def copy_tag_categories(api: Api, posts: list[dict], counts: dict) -> None:
 
 def move_pools(api: Api, record: Record, pools: list[dict], counts: dict) -> None:
     for pool in pools:
-        ids = [record.posts[mp["id"]] for mp in pool.get("posts", []) if mp.get("id") in record.posts]
+        members = [mp["id"] for mp in pool.get("posts", []) if mp.get("id") in record.posts]   # szurubooru ids
+        ids = [record.posts[m] for m in members]
         missing = len(pool.get("posts", [])) - len(ids)
         name = (pool.get("names") or [f"pool-{pool['id']}"])[0]
         done = record.pools.get(pool["id"])
         if done is not None:
             if done["missing"] and missing < done["missing"]:    # posts that failed before are in now
-                status, reply = api.call("PUT", f"/api/pools/{done['id']}", json.dumps({"posts": ids}).encode(),
+                # Completing means adding what was missing — never replacing the list. The owner
+                # may have reordered the pool, added to it or taken a post out since the last run;
+                # kura's current list is read first and only the posts moved since the last write
+                # are appended, in szurubooru order, under kura's version lock (kura#159).
+                status, current = api.call("GET", f"/api/pools/{done['id']}")
+                if status != 200 or not isinstance(current.get("posts"), list):
+                    counts["pools_failed"] += 1
+                    say(f"  pool {pool['id']} ({name}): not completed (could not read it: {status} {_detail(current)[:100]})")
+                    continue
+                have = [p if isinstance(p, int) else p.get("id") for p in current["posts"]]
+                new = [record.posts[m] for m in members if m not in done["included"]]
+                body = {"posts": have + [i for i in new if i not in have]}
+                if "version" in current:
+                    body["version"] = current["version"]
+                status, reply = api.call("PUT", f"/api/pools/{done['id']}", json.dumps(body).encode(),
                                          {"content-type": "application/json"})
                 if status == 200:
-                    record.pool(pool["id"], id=done["id"], posts=len(ids), missing=missing)
+                    record.pool(pool["id"], id=done["id"], posts=len(ids), missing=missing, included=members)
                     counts["pools_completed"] += 1
                 else:                       # nothing recorded: the next run tries again; the run fails
                     counts["pools_failed"] += 1
@@ -304,7 +325,7 @@ def move_pools(api: Api, record: Record, pools: list[dict], counts: dict) -> Non
             continue
         status, reply = api.call("POST", "/api/pools", json.dumps(body).encode(), {"content-type": "application/json"})
         if status == 200 and "id" in reply:
-            record.pool(pool["id"], id=reply["id"], posts=len(ids), missing=missing)
+            record.pool(pool["id"], id=reply["id"], posts=len(ids), missing=missing, included=members)
             counts["pools_created"] += 1
             if missing:
                 say(f"  pool {pool['id']} ({name}): created without {missing} posts that are not in kura yet")
@@ -320,7 +341,9 @@ def main(argv=None) -> int:
     src = Szurubooru(args.src, args.from_user,
                      private_file(args.from_token_file).strip() if args.from_token_file else None,
                      private_file(args.from_password_file).strip() if args.from_password_file else None)
-    identity = {"from": src.url, "url": args.url.rstrip("/")}
+    # The record belongs to one import: the same szurubooru, kura and artist category.
+    identity = {"source": "szurubooru", "from": src.url, "url": args.url.rstrip("/"),
+                "artist_category": args.artist_category}
     record_path = args.record or default_record(identity)
     record = Record(record_path, identity, create=not args.dry_run)
 

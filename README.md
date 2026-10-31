@@ -164,6 +164,23 @@ python3 scripts/szurubooru_migrate.py \
 when you run it again. Tags of the szurubooru category `artist` become artist tags in kura
 (`--artist-category` if yours is named differently).
 
+## Moving in from Hydrus
+
+A Hydrus Network library moves over through its Client API (services → manage services →
+client api: a key with "search for files", saved to a file):
+
+```bash
+python3 scripts/hydrus_migrate.py \
+    --from http://127.0.0.1:45869 --from-key-file ~/hydrus-api.key \
+    --url http://127.0.0.1:8001 --email you@example.org --key-file ~/kura-admin.key
+```
+
+Every current file comes over with its tags: `creator:` tags become artist tags,
+`series:` copyright, `character:` character (`--namespace` changes the mapping; other
+namespaces keep their text), and the file's first known URL becomes its source. Hydrus has
+no safety rating, so `--safety` (default `unsafe`) applies to all of them. `--dry-run` and
+resuming work as for szurubooru.
+
 ## Auto-tagging (optional)
 
 A worker tags new images with the WD14 tagger (`SmilingWolf/wd-swinv2-tagger-v3`, about 400 MB,

@@ -111,9 +111,9 @@ class _Kura(http.server.BaseHTTPRequestHandler):
         if self.path == "/api/tag-categories":
             return _reply(self, 200, self.categories)
         if self.path.startswith("/api/pools/"):
-            name = urllib.parse.unquote(self.path[len("/api/pools/"):])
-            found = next((p for p in self.pools if name in p["names"]), None)
-            return _reply(self, 200, found) if found else _reply(self, 404, {"detail": "Pool not found"})
+            key = urllib.parse.unquote(self.path[len("/api/pools/"):])
+            found = next((p for p in self.pools if key in p["names"] or (key.isdigit() and p["id"] == int(key))), None)
+            return _reply(self, 200, {**found, "version": 3}) if found else _reply(self, 404, {"detail": "Pool not found"})
         if self.path.startswith("/api/tag/"):
             name = urllib.parse.unquote(self.path[len("/api/tag/"):])
             if name not in self.tags:
@@ -138,6 +138,8 @@ class _Kura(http.server.BaseHTTPRequestHandler):
         if _Kura.put_fail_once:
             _Kura.put_fail_once = False
             return _reply(self, 503, {"detail": "storage unavailable"})
+        if body.get("version") not in (None, 3):            # kura's optimistic lock on pools
+            return _reply(self, 409, {"detail": "version mismatch"})
         pid = int(self.path.rsplit("/", 1)[1])
         pool = next(p for p in self.pools if p["id"] == pid)
         pool["posts"] = body["posts"]
@@ -252,7 +254,7 @@ def test_posts_tags_categories_and_pools_move_over(szuru, kura, creds, tmp_path)
     # kura's own session: one sign-in, one sign-out
     assert [c for c in _Kura.calls if c[1].startswith("/api/auth")] == [("POST", "/api/auth/login"), ("POST", "/api/auth/logout")]
     rows = [json.loads(l) for l in (tmp_path / "rec.jsonl").read_text().splitlines()]
-    assert rows[0]["migrate"] == {"from": szuru, "url": kura}
+    assert rows[0]["migrate"] == {"source": "szurubooru", "from": szuru, "url": kura, "artist_category": "artist"}
     assert [r.get("post") for r in rows[1:6]] == [1, 2, 3, 4, 5] and rows[6]["pool"] == 10 and rows[6]["missing"] == 1
 
 
@@ -300,15 +302,40 @@ def test_a_failed_post_is_retried_and_its_pool_completed_next_run(szuru, kura, c
     assert "created without 3 posts that are not in kura yet" in r.stderr
     assert _Kura.pools[0]["posts"] == [501] and "unit_07" not in _Kura.tags
     _Szuru.truncate = set()
+    # Between the runs the owner worked on that pool in kura: added a post of their own (9001),
+    # put it first, and took the original first post (501) out. Completing must keep all that.
+    _Kura.pools[0]["posts"] = [9001, 502]
     r = _migrate(szuru, kura, creds, tmp_path)
     assert r.returncode == 0, r.stderr
     c = json.loads(r.stdout)
     # post 3 is new; post 2 now duplicates post 5's bytes (kura 502); post 4 is passed over again
     assert c["added"] == 1 and c["duplicates"] == 1 and c["skipped"] == 2 and c["unsupported"] == 1
     assert c["pools_completed"] == 1 and c["pools_created"] == 0
-    assert _Kura.pools[0]["posts"] == [502, 501, 503]        # szurubooru order 2, 1, 3 mapped to kura ids
+    assert _Kura.pools[0]["posts"] == [9001, 502, 503]        # the owner's list, plus only the post that was missing (kura#159)
     assert _Kura.tags["unit_07"] == "character" and c["tags_recategorized"] == 1
     assert "pool 10 (night_series): 1 of its posts are not in kura yet" in r.stderr   # post 4, unsupported
+
+
+def test_a_record_from_before_1_299_1_does_not_put_back_what_the_owner_took_out(szuru, kura, creds, tmp_path):
+    """Pool rows written before 1.299.1 carry no "included" list. The record is in order and
+    posts come before pools, so the members such a row put in are the posts recorded above
+    it: completing appends only what came in later, never a post the owner has since removed."""
+    _Szuru.fail_once = {"data/posts/3_c.png"}
+    _Szuru.truncate = {"data/posts/2_b.png"}
+    assert _migrate(szuru, kura, creds, tmp_path).returncode == 1
+    assert _Kura.pools[0]["posts"] == [501]                     # post 1 only; 2 and 3 are missing
+    _Szuru.truncate = set()
+    rec = tmp_path / "rec.jsonl"
+    rows = [json.loads(l) for l in rec.read_text().splitlines()]
+    assert "included" in rows[-1] and "pool" in rows[-1]
+    del rows[-1]["included"]                                     # as 1.298.0–1.299.0 wrote it
+    rec.write_text("".join(json.dumps(x) + "\n" for x in rows))
+    _Kura.pools[0]["posts"] = [9001]                             # the owner took post 1 (501) out and added their own
+    r = _migrate(szuru, kura, creds, tmp_path)
+    assert r.returncode == 0, r.stderr
+    assert json.loads(r.stdout)["pools_completed"] == 1
+    assert _Kura.pools[0]["posts"] == [9001, 502, 503]           # 501 stays out; only the posts moved after that row join
+    assert [json.loads(l) for l in rec.read_text().splitlines()][-1]["included"] == [2, 1, 3]
 
 
 def test_a_refused_pool_completion_fails_the_run_and_is_retried(szuru, kura, creds, tmp_path):
