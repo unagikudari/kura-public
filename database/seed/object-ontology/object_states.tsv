@@ -1,0 +1,9 @@
+state_slug	description
+worn	Object is worn/present normally
+removed	Object removed -> no coverage
+partially_removed	Object partially removed
+open	Object open/unfastened (e.g. open shirt/jacket)
+displaced	Object displaced from normal position (e.g. panty peek)
+lifted	Object lifted, exposing covered region
+torn	Object torn
+transparent	Object present but see-through (region covered yet visible)

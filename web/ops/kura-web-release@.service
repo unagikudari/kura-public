@@ -1,0 +1,21 @@
+[Unit]
+Description=Kura immutable web release %i
+After=kura-api.service
+Wants=kura-api.service
+
+[Service]
+Type=simple
+Restart=on-failure
+RestartSec=3
+MemoryHigh=512M
+MemoryMax=1G
+WorkingDirectory=%h/.local/share/kura-web/releases/%i
+EnvironmentFile=-%h/kura/web/.env.server
+EnvironmentFile=%h/.config/kura-web-releases/%i.env
+ExecStart=/bin/sh -c 'exec "$NODE_BINARY" build/index.js'
+TimeoutStopSec=120
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,85 @@
+# kura in containers — README "Docker". Settings come from ops/install/make_env.py --docker:
+# api/env and web/.env.server for the services, .env for the values compose itself reads.
+name: kura
+
+services:
+  db:
+    image: pgvector/pgvector:pg18
+    restart: unless-stopped
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?run ops/install/make_env.py --docker first}
+      KURA_DB_PASSWORD: ${KURA_DB_PASSWORD:?run ops/install/make_env.py --docker first}
+    volumes:
+      - pgdata:/var/lib/postgresql
+      - ./ops/docker/initdb.sh:/docker-entrypoint-initdb.d/10-kura.sh:ro
+      - ./api/alembic/baseline:/kura-baseline:ro
+    healthcheck:
+      # Over TCP: during initdb.sh the image runs a temporary server on the socket only, so a
+      # socket probe could pass before the schema is loaded.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U postgres -d kura"]
+      interval: 5s
+      retries: 30
+
+  # Schema upgrades run here as the superuser, becoming kura at once (api/alembic/env.py), the
+  # way ops/install/database.py upgrade does on a host; the API's own role never owns DDL.
+  migrate:
+    build: {context: ., dockerfile: api/Dockerfile}
+    image: kura-api
+    environment:
+      DATABASE_URL: postgresql+asyncpg://postgres:${POSTGRES_PASSWORD}@db:5432/kura
+      KURA_MIGRATE_SESSION_AUTHORIZATION: kura
+    command: ["alembic", "upgrade", "head"]
+    depends_on:
+      db: {condition: service_healthy}
+
+  api:
+    image: kura-api
+    restart: unless-stopped
+    env_file: api/env
+    volumes:
+      - kura-data:/data
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+
+  web:
+    build:
+      context: web
+      args:
+        ORIGIN: ${ORIGIN:?run ops/install/make_env.py --docker first}
+    restart: unless-stopped
+    env_file: web/.env.server
+    ports:
+      - "${KURA_BIND:-127.0.0.1}:${KURA_PORT:-3000}:3000"
+    depends_on: [api]
+
+  # Optional (README "Docker" → auto-tagging): docker compose --profile tagger up -d
+  tagger:
+    profiles: [tagger]
+    build: {context: ., dockerfile: tagger/Dockerfile}
+    image: kura-tagger
+    restart: unless-stopped
+    hostname: kura-tagger          # the host scripts/tagger_worker_setup.py --host adds
+    env_file:
+      - {path: tagger/env, required: false}   # written by tagger_worker_setup.py
+    volumes:
+      - tagger-models:/models
+    depends_on: [api]
+
+  # One-shot commands that write files for you (the sign-in key, tagger/env): run as your user,
+  # with api/env and the checkout mounted. `docker compose run --rm tools python …`
+  tools:
+    profiles: [tools]
+    image: kura-api
+    user: "${KURA_UID:-1000}:${KURA_GID:-1000}"
+    env_file: api/env
+    volumes:
+      - ./api/env:/app/api/env:ro
+      - .:/out
+      - tagger-models:/models
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+
+volumes:
+  pgdata:
+  kura-data:
+  tagger-models:

@@ -1,0 +1,25 @@
+[Unit]
+Description=kura tagger worker, profile=%i (plan:kura-tagger-lifecycle-redesign Step 12)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+Restart=always
+RestartSec=30
+WorkingDirectory=__KURA_REPO__
+EnvironmentFile=__KURA_REPO__/tagger/env
+Environment=PYTHONUNBUFFERED=1
+Environment=KURA_MODELS_DIR=__MODELS_DIR__
+Environment=TAGGER_PROFILE=%i
+ExecStart=__VENV__/bin/python -m tagger.worker
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=kura-tagger-%i
+Nice=15
+CPUQuota=200%
+MemoryMax=6G
+IOSchedulingClass=idle
+
+[Install]
+WantedBy=default.target

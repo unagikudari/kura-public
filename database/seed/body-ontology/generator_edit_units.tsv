@@ -1,0 +1,5 @@
+unit_slug	description	volume8_target
+prompt_fragment	Region contributes semantic prompt terms	positive/negative terms
+regional_mask	Region defines a spatial conditioning mask	regional conditions
+inpaint_region	Region is an inpaint/edit target	regional conditions
+pose_keypoint	Region drives a ControlNet keypoint	spatial conditioning

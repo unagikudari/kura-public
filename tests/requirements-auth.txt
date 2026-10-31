@@ -1,0 +1,8 @@
+-r ../api/requirements.txt
+pytest
+psycopg[binary]>=3.1,<4
+psycopg2-binary>=2.9,<3
+httpx
+numpy
+pyyaml
+requests

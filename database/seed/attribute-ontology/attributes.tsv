@@ -1,0 +1,16 @@
+slug	display_name	category	value_type	applies_kind	applies_key	range_min	range_max	unit
+skin_tone	skin tone	appearance	categorical	class	surface_skin			
+hair_color	hair color	appearance	categorical	class	hair			
+hair_length	hair length	appearance	categorical	class	hair			
+hair_style	hair style	appearance	categorical	class	hair			
+eye_color	eye color	appearance	categorical	class	eye			
+eye_state	eye state	state	categorical	class	eye			
+gaze_direction	gaze direction	state	categorical	class	eye			
+mouth_state	mouth state	state	categorical	region	mouth			
+wetness	wetness	measure	continuous	class	surface_mucosa	0	1	ratio
+flush_intensity	flush intensity	measure	continuous	class	surface_skin	0	1	ratio
+joint_flexion	joint flexion	measure	continuous	class	joint	0	180	degree
+breast_size	breast size	appearance	categorical	region	breast			
+penis_size	penis size	appearance	categorical	region	penis			
+erection_state	erection state	state	categorical	region	penis			
+facial_expression	facial expression	state	categorical	region	face			

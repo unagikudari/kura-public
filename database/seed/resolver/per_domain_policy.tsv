@@ -1,0 +1,10 @@
+domain	policy	note
+body_region	latest_nonretracted_presence	removal(present=false) wins by precedence/recency
+attribute_categorical	precedence_then_recency	conflicting same-tier -> contested
+attribute_continuous	human_override_else_median_interval	human point wins; else median of model estimates + [min,max]
+attribute_boolean	precedence_then_recency	-
+pose	set_union_same_scope_latest	union per entity; same-scope conflict -> latest
+relation	set_nonretracted	participants resolved as evidence allows
+scene_descriptor	latest_per_facet	one primary per facet; scene-scoped
+identity	precedence_then_recency	one species/character per entity
+entity_count	exact_over_lowerbound_then_recency	exact counts override multiple_*

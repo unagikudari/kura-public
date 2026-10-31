@@ -1,0 +1,24 @@
+fastapi>=0.115,<1
+uvicorn[standard]>=0.30,<1
+sqlalchemy[asyncio]>=2.0,<3
+asyncpg>=0.30,<1
+pydantic>=2.0,<3
+python-multipart>=0.0.9
+pillow>=13.0,<14
+aiofiles>=23.0
+alembic>=1.13,<2
+# Upper bound is load-bearing: api/routers/mcp_server.py imports
+# `mcp.server.fastmcp`, which 2.0.0 removed. This was the only unbounded entry in
+# this file, so when mcp 2.0.0 landed on PyPI (2026-07-28, between the 12:48 green
+# run and the 19:21 red one) every fresh install started resolving to it and the
+# refguard snapshot-drift job — which pip installs this file and imports
+# api.main:app — failed on all 38 commits after it, regardless of their content.
+# primary's venv was unaffected only because it already had 1.28.1 pinned by accident.
+# Raise this bound together with migrating the FastMCP import, never alone.
+mcp>=1.30.0,<2
+# Runtime adapters and operator workflows; do not rely on test requirements to
+# supply production dependencies.
+httpx>=0.28,<1
+requests>=2.34.2,<3
+python-dotenv>=1.2.4,<2
+psycopg2-binary>=2.9.13,<3

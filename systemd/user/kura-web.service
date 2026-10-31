@@ -1,0 +1,37 @@
+[Unit]
+Description=kura web (SvelteKit)
+After=kura-api.service
+Wants=kura-api.service
+
+[Service]
+Type=simple
+Restart=always
+RestartSec=10
+# SvelteKit SSR node process — baseline RSS ~20M; cap well above it.
+MemoryHigh=512M
+MemoryMax=1G
+WorkingDirectory=%h/kura/web
+Environment=PORT=3000
+Environment=HOST=127.0.0.1
+Environment=NODE_ENV=production
+# ORIGIN and KURA_SESSION_SECRET come from web/.env.server (ops/install/make_env.py).
+Environment=INTERNAL_API_URL=http://127.0.0.1:8001
+# Allow large uploads (video) through the /m proxy. adapter-node defaults to
+# 512K, which made every video drag-drop fail (the proxy threw reading the
+# over-limit body → 500). The proxy streams the body, so this size never sits
+# in this 1G-capped process; kura-api spools the multipart to disk.
+Environment=BODY_SIZE_LIMIT=2149580800
+# Server-side kura API credentials for the /m/* SSR auth proxy (KURA_USER +
+# KURA_TOKEN). Held in a gitignored, nodeb-local file so the token reaches the
+# SSR process via $env/dynamic/private but never the browser. Optional (-) so
+# the service still starts if it's not provisioned.
+EnvironmentFile=-%h/kura/web/.env.server
+# Node.js from its snap first (README); PATH otherwise.
+Environment=PATH=/snap/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/usr/bin/env node build/index.js
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=kura-web
+
+[Install]
+WantedBy=default.target

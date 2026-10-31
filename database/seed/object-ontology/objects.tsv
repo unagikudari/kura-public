@@ -1,0 +1,39 @@
+slug	display_name	category	slot	participation
+hat	hat	clothing	headwear	wearing
+top_hat	top hat	clothing	headwear	wearing
+glasses	glasses	accessory	eyewear	wearing
+domino_mask	domino mask	accessory	eyewear	wearing
+necklace	necklace	accessory	neckwear	wearing
+scarf	scarf	clothing	neckwear	wearing
+ribbon	ribbon	accessory	neckwear	wearing
+bowtie	bowtie	accessory	neckwear	wearing
+collar	collar	accessory	neckwear	wearing
+shirt	shirt	clothing	topwear	wearing
+collared_shirt	collared shirt	clothing	topwear	wearing
+jacket	jacket	clothing	topwear	wearing
+hoodie	hoodie	clothing	topwear	wearing
+dress	dress	clothing	full_body	wearing
+skirt	skirt	clothing	bottomwear	wearing
+miniskirt	miniskirt	clothing	bottomwear	wearing
+pants	pants	clothing	bottomwear	wearing
+thighhighs	thighhighs	clothing	legwear	wearing
+pantyhose	pantyhose	clothing	legwear	wearing
+socks	socks	clothing	legwear	wearing
+shoes	shoes	clothing	footwear	wearing
+boots	boots	clothing	footwear	wearing
+gloves	gloves	clothing	handwear	wearing
+elbow_gloves	elbow gloves	clothing	handwear	wearing
+wristband	wristband	accessory	handwear	wearing
+panties	panties	clothing	underwear	wearing
+bra	bra	clothing	underwear	wearing
+bikini	bikini	clothing	underwear	wearing
+swimsuit	swimsuit	clothing	full_body	wearing
+bodystocking	bodystocking	clothing	full_body	wearing
+pajamas	pajamas	clothing	full_body	wearing
+cape	cape	clothing	outerwear	wearing
+coat	coat	clothing	outerwear	wearing
+hair_ornament	hair ornament	accessory	headwear	wearing
+detached_sleeves	detached sleeves	accessory	handwear	wearing
+popsicle	popsicle	prop		holding
+electric_fan	electric fan	prop		present_in_scene
+stone_wall	stone wall	environment		present_in_scene

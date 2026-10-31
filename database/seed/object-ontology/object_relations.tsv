@@ -1,0 +1,5 @@
+relation_slug	subject_kind	object_kind	note
+wearing	person	clothing	directed; also accessory objects
+holding	person	prop	reuses relation-ontology holding/grasping (region hand)
+using	person	prop	directed
+present_in_scene	scene	object	directed; furniture/environment/props

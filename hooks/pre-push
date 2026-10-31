@@ -1,0 +1,29 @@
+#!/bin/sh
+# kura tracked hook entrypoint — pre-push.
+#
+# core.hooksPath=hooks の下では git は `hooks/pre-push` **だけ** を見る。このファイルが
+# 無い間、scripts/hooks/pre-push (torch ゲート) は tracked なのに一度も呼ばれなかった:
+# 正しいスクリプトがあっても、git が実行しなければゲートは存在しない (kura#120)。
+#
+# push される ref は stdin で渡り、remote 名と URL は引数で渡る。exec はそのどちらも
+# そのまま実装へ引き継ぐ。
+#
+# bypass: git push --no-verify (明示的な意思表示のみ)
+set -u
+
+root=$(git rev-parse --show-toplevel 2>/dev/null) || root=""
+if [ -z "$root" ]; then
+    echo "[hooks] BLOCK: worktree の root を解決できません (git rev-parse --show-toplevel)。" >&2
+    echo "  ゲートを走らせられないので push を止めます。" >&2
+    exit 1
+fi
+
+impl="$root/scripts/hooks/pre-push"
+if [ ! -x "$impl" ]; then
+    echo "[hooks] BLOCK: 実装が実行可能な形で見つかりません: $impl" >&2
+    echo "  この branch に scripts/hooks/pre-push があるか、実行ビットが立っているか確認してください" >&2
+    echo "  (chmod +x scripts/hooks/pre-push)。検査不能を「合格」にはしません。" >&2
+    exit 1
+fi
+
+exec "$impl" "$@"

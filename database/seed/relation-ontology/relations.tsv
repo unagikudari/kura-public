@@ -1,0 +1,16 @@
+slug	display_name	category	arity	directionality
+adjacent_to	adjacent to	spatial	binary	symmetric
+overlaps	overlaps	spatial	binary	symmetric
+inside	inside	spatial	binary	directed
+above	above	spatial	binary	directed
+below	below	spatial	binary	directed
+touching	touching	contact	binary	symmetric
+supporting	supporting	contact	binary	directed
+resting_on	resting on	contact	binary	directed
+pressing_against	pressing against	contact	binary	directed
+grasping	grasping	interaction	binary	directed
+holding	holding	interaction	binary	directed
+covering	covering	interaction	binary	directed
+occluding	occluding	interaction	binary	directed
+contacting_genital	genital contact	contact	binary	symmetric
+inserting_into	inserting into	interaction	binary	directed

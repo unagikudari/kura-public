@@ -1,0 +1,33 @@
+{
+	"name": "web",
+	"private": true,
+	"version": "0.0.1",
+	"type": "module",
+	"engines": {
+		"node": "^22.23.4 || ^24.22.1 || >=26.12.1"
+	},
+	"imports": {
+		"#lib/*": "./src/lib/*"
+	},
+	"scripts": {
+		"test:proxy": "node --test tests/proxy-transport.test.mjs",
+		"dev": "node scripts/gen-build-info.cjs && vite dev",
+		"prebuild": "node scripts/gen-build-info.cjs",
+		"build": "vite build",
+		"preview": "vite preview",
+		"prepare": "svelte-kit sync || echo ''",
+		"precheck": "node scripts/gen-build-info.cjs",
+		"check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
+		"check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch"
+	},
+	"devDependencies": {
+		"@sveltejs/adapter-node": "^6.0.0",
+		"@sveltejs/kit": "^3.1.0",
+		"@sveltejs/vite-plugin-svelte": "^7.3.1",
+		"@types/node": "^24.13.3",
+		"svelte": "^5.57.2",
+		"svelte-check": "~4.7.6",
+		"typescript": "~6.0.3",
+		"vite": "^8.3.4"
+	}
+}

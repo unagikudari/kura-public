@@ -1,0 +1,5 @@
+outcome	description
+resolved	A single value chosen by the policy
+retracted	Assertion removed by a retraction/explicit_remove
+contested	Genuine tie/contradiction -> left contested, not guessed
+unresolved	Person-scoped but entity ambiguous -> not attached
