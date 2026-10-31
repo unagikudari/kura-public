@@ -4,6 +4,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 import shutil
 import shlex
@@ -60,6 +61,18 @@ def apply_security(root,query,call,security):
     return len(security['owners'])
 
 
+def content_address(item):
+    """The SHA256 a backed-up file must hold when its name is its content address: the
+    manifest's address_sha256, else the rendition (rendition/xx/<sha>.<ext>) or collector blob
+    (collector/originals/xx/<sha>) name, so backups made before #154 are checked too."""
+    if item.get('address_sha256'):return item['address_sha256']
+    parts=Path(item['path']).parts
+    stem=parts[-1].split('.',1)[0] if parts else ''
+    if len(parts)>=3 and parts[0]=='rendition' and re.fullmatch('[0-9a-f]{64}',stem):return stem
+    if len(parts)>=4 and parts[:2]==('collector','originals') and re.fullmatch('[0-9a-f]{64}',parts[-1]):return parts[-1]
+    return None
+
+
 def verify(root,scratch):
     root=root.resolve();manifest=json.loads((root/'manifest.json').read_text())
     security_bytes=(root/'permissions.manifest.json').read_bytes()
@@ -98,6 +111,8 @@ def verify(root,scratch):
             if not p.resolve().is_relative_to((root/'media').resolve()):raise ValueError('Media path escapes backup')
             with p.open('rb') as f:digest=hashlib.file_digest(f,'sha256').hexdigest()
             if digest!=item['sha256'] or p.stat().st_size!=item['bytes']:raise ValueError('Media readback differs')
+            # and a content-addressed file holds the bytes its address (the restored DB's key) names (#154)
+            if content_address(item) not in (None,digest):raise ValueError(f"Media {item['path']} does not hold its content address")
             if i%5000==0:emit('media readback',files=i,total=len(manifest['media']))
         locale=manifest['database_locale']
         if locale['provider']!='c':raise ValueError('Unsupported database locale provider')

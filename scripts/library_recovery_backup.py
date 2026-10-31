@@ -91,6 +91,19 @@ def filesystem_rows(cursor):
     return cursor.fetchall()
 
 
+def media_entry(relative,size,got,address):
+    """The manifest entry for one backed-up file. A content-addressed file (a rendition, a
+    collector blob, an archived original's CAS object) must hold the bytes its address names:
+    one damaged before the backup would otherwise be backed up and verified as sound (#154), so
+    the backup stops and says which."""
+    if address is not None and got!=address:
+        raise ValueError(f'Content-addressed media {relative.as_posix()} does not hold its address '
+                         f'{address} (read {got}): repair it before backing up')
+    entry={'path':relative.as_posix(),'bytes':size,'sha256':got}
+    if address is not None:entry['address_sha256']=address
+    return entry
+
+
 def backup(host,destination,*,scratch=None):
     from api.config import DATABASE_URL_SYNC,DATA_DIR
     from api.services import files
@@ -135,25 +148,25 @@ def backup(host,destination,*,scratch=None):
                     if originals.remote() and loc is not None and loc.kind!='local':
                         manifest['archived_originals_not_copied']+=1
                         archived_refs.write(f"{pid}\t{loc.kind}\t{loc.sha or loc.legacy_name}\t{path.name}\n".encode())
-                    else:pending.append((path,'legacy',pid,True))
+                    else:pending.append((path,'legacy',pid,True,loc.sha if loc is not None and loc.kind=='cas' else None))
                 if not thumb:
                     p=files.thumbnail_path(pid)
-                    if p.is_file():pending.append((p,'legacy',pid,False))
+                    if p.is_file():pending.append((p,'legacy',pid,False,None))
                     else:manifest['missing_regenerable_thumbnails']+=1
             custom=files.storage_directory('custom-thumbnail')
-            if custom.is_dir():pending.extend((p,'legacy',None,False) for p in custom.rglob('*') if p.is_file())
+            if custom.is_dir():pending.extend((p,'legacy',None,False,None) for p in custom.rglob('*') if p.is_file())
             q.execute("SELECT to_regclass('collector_next.blob') IS NOT NULL")
             if q.fetchone()[0]:
                 root=Path(os.environ.get('KURA_COLLECTOR_NEXT_ROOT',str(Path.home()/'.local/share/kura-collector-next')))
                 q.execute("SELECT encode(sha256,'hex') FROM collector_next.blob")
-                pending.extend((content_path(root,bytes.fromhex(r[0])),'collector',None,True) for r in q)
+                pending.extend((content_path(root,bytes.fromhex(r[0])),'collector',None,True,r[0]) for r in q)
             else:root=None
             from api.services import renditions
             q.execute("SELECT to_regclass('public.rendition_object') IS NOT NULL")
             if q.fetchone()[0]:
                 q.execute("SELECT sha256,mime FROM rendition_object")
-                pending.extend((renditions.path_for(bytes(r[0]),r[1]),'rendition',None,True) for r in q)
-            required_bytes=sum(p.stat().st_size for p,kind,pid,required in pending if required)
+                pending.extend((renditions.path_for(bytes(r[0]),r[1]),'rendition',None,True,bytes(r[0]).hex()) for r in q)
+            required_bytes=sum(p.stat().st_size for p,kind,pid,required,address in pending if required)
             setup="""import sys,os,shutil,json
 from pathlib import Path
 p=Path(sys.argv[1]);mount=Path('/data')
@@ -170,7 +183,7 @@ print('independent backup directory ready')
             receiver=subprocess.Popen(['ssh','-o','BatchMode=yes',host,tar_command],stdin=subprocess.PIPE,stdout=subprocess.DEVNULL,stderr=subprocess.PIPE)
             try:
                 with tarfile.open(fileobj=receiver.stdin,mode='w|',bufsize=1024**2) as archive:
-                    for i,(p,kind,pid,required) in enumerate(pending):
+                    for i,(p,kind,pid,required,address) in enumerate(pending):
                         relative=Path(kind)/(p.relative_to(DATA_DIR) if kind=='legacy' else p.relative_to(renditions.ROOT) if kind=='rendition' else p.relative_to(root))
                         lock=files.content_lock(pid) if pid is not None else nullcontext()
                         with lock,p.open('rb') as inp:
@@ -178,7 +191,7 @@ print('independent backup directory ready')
                             info=tarfile.TarInfo(relative.as_posix());info.size=before.st_size;info.mode=0o600
                             archive.addfile(info,reader);after=os.fstat(inp.fileno())
                             if (before.st_ino,before.st_size,before.st_mtime_ns)!=(after.st_ino,after.st_size,after.st_mtime_ns):raise ValueError('Source media changed while backing up')
-                            manifest['media'].append({'path':relative.as_posix(),'bytes':before.st_size,'sha256':reader.digest.hexdigest()})
+                            manifest['media'].append(media_entry(relative,before.st_size,reader.digest.hexdigest(),address))
                         if i%1000==0:emit('filesystem media transfer',files=i,total=len(pending))
                 receiver.stdin.close()
                 if receiver.wait()!=0:raise ValueError('Independent media receiver failed')

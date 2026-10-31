@@ -123,3 +123,57 @@ def test_backup_sources_use_the_checkout_compose_recorded(tmp_path):
     (repo / '.kura-extensions.json').write_text(json.dumps({'schema': 1, 'extensions': [
         {'id': 'notes', 'commit': 'c1', 'source': str(elsewhere)}]}))
     assert source_list(repo)[1:] == [('notes', elsewhere, 'c1')]
+
+
+def _backup_dir(tmp_path, media):
+    root = tmp_path / 'backup'; root.mkdir(); (root / 'media').mkdir()
+    entries = []
+    for rel, data, extra in media:
+        p = root / 'media' / rel; p.parent.mkdir(parents=True, exist_ok=True); p.write_bytes(data)
+        entries.append({'path': rel, 'bytes': len(data), 'sha256': hashlib.sha256(data).hexdigest(), **extra})
+    (root / 'manifest.json').write_text(json.dumps({'format': 'kura-library-recovery-v1', 'database_bytes': 1,
+                                                    'artifacts': [], 'media': entries}))
+    (root / 'permissions.dump').write_bytes(b'ACL fixture')
+    security = {'format': 'kura-library-security-v1', 'archive': {'path': 'permissions.dump', 'bytes': 11,
+                                                                  'sha256': hashlib.sha256(b'ACL fixture').hexdigest()}}
+    payload = json.dumps(security).encode(); (root / 'permissions.manifest.json').write_bytes(payload)
+    (root / 'permissions.checksum.json').write_text(json.dumps({'bytes': len(payload), 'sha256': hashlib.sha256(payload).hexdigest()}))
+    return root
+
+
+SOUND, DAMAGED = b'the rendition as stored', b'same length, other bits'
+
+
+@pytest.mark.parametrize('rel,extra', [
+    # an older manifest: the address comes from the name
+    (f'rendition/{hashlib.sha256(SOUND).hexdigest()[:2]}/{hashlib.sha256(SOUND).hexdigest()}.webp', {}),
+    (f'collector/originals/{hashlib.sha256(SOUND).hexdigest()[:2]}/{hashlib.sha256(SOUND).hexdigest()}', {}),
+    # a manifest from 1.303.9 on: the address is recorded
+    ('legacy/posts/7_0123456789abcdef.png', {'address_sha256': hashlib.sha256(SOUND).hexdigest()}),
+])
+def test_media_damaged_before_the_backup_does_not_verify(tmp_path, monkeypatch, rel, extra):
+    """#154: the backup copied the damaged bytes faithfully, so the transfer digest matches;
+    the file still is not what its content address (the restored database's key) names."""
+    root = _backup_dir(tmp_path, [(rel, DAMAGED, extra)])
+    usage = namedtuple('usage', 'total used free'); monkeypatch.setattr(verifier.shutil, 'disk_usage', lambda p: usage(1024**4, 0, 1024**4))
+    with pytest.raises(ValueError, match='does not hold its content address'):
+        verifier.verify(root, tmp_path / 'scratch')
+    assert not (root / 'restore/data').exists() and not (root / 'restore-proof.json').exists()
+
+
+def test_content_addresses_are_read_from_the_manifest_or_the_name():
+    h = hashlib.sha256(SOUND).hexdigest()
+    assert verifier.content_address({'path': f'rendition/{h[:2]}/{h}.webp'}) == h
+    assert verifier.content_address({'path': f'collector/originals/{h[:2]}/{h}'}) == h
+    assert verifier.content_address({'path': 'legacy/posts/7_0123456789abcdef.png'}) is None
+    assert verifier.content_address({'path': 'legacy/x.png', 'address_sha256': h}) == h
+
+
+def test_the_backup_refuses_content_that_is_not_its_address():
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    from scripts import library_recovery_backup as B
+    h = hashlib.sha256(SOUND).hexdigest()
+    with pytest.raises(ValueError, match='does not hold its address'):
+        B.media_entry(Path('rendition/aa/x.webp'), len(DAMAGED), hashlib.sha256(DAMAGED).hexdigest(), h)
+    assert B.media_entry(Path('rendition/aa/x.webp'), len(SOUND), h, h)['address_sha256'] == h
+    assert 'address_sha256' not in B.media_entry(Path('legacy/a.png'), 3, 'x', None)
