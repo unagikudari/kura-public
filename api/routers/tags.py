@@ -674,7 +674,9 @@ async def update_tag_link(
         link.url = payload.url.strip()
     if payload.handle is not None:
         link.handle = payload.handle or None
-    if payload.clear_uncensored:
+    # "uncensored": null sent on purpose means "unknown" again, as clear_uncensored does (#153);
+    # a request that does not mention it leaves it as it is.
+    if payload.clear_uncensored or ("uncensored" in payload.model_fields_set and payload.uncensored is None):
         link.uncensored = None
     elif payload.uncensored is not None:
         _validate_uncensored(payload.uncensored)

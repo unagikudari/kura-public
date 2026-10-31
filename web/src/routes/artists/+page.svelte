@@ -144,7 +144,7 @@
                   <button disabled={busy !== null} onclick={() => act('link:' + link.id, () => artistIntegration!.register(link.url))}>{a.registerPatrol}</button>
                 {/if}
                 <label class="verified" title={a.verified}><input type="checkbox" checked={link.verified} disabled={busy !== null} aria-label={a.verifiedLabel(link.platform)} onchange={(event) => act('link:' + link.id, () => updateTagLink(link.id, { verified:event.currentTarget.checked }))} />✓</label>
-                <select aria-label={a.censorLabel(link.platform)} value={String(link.uncensored ?? '')} disabled={busy !== null} onchange={(event) => { const value = event.currentTarget.value; act('link:' + link.id, () => updateTagLink(link.id, { uncensored:value === '' ? null : Number(value) as 0 | 1 })); }}><option value="">{a.unknown}</option><option value="0">{a.censored}</option><option value="1">{a.uncensored}</option></select>
+                <select aria-label={a.censorLabel(link.platform)} value={String(link.uncensored ?? '')} disabled={busy !== null} onchange={(event) => { const value = event.currentTarget.value; act('link:' + link.id, () => updateTagLink(link.id, value === '' ? { clear_uncensored: true } : { uncensored: Number(value) as 0 | 1 })); }}><option value="">{a.unknown}</option><option value="0">{a.censored}</option><option value="1">{a.uncensored}</option></select>
                 <button class="unlink" disabled={busy !== null} aria-label={a.unlinkLabel(link.platform)} title={a.unlinkTitle} onclick={() => act('link:' + link.id, () => deleteTagLink(link.id))}>×</button>
               </div>
             {/each}
