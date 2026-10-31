@@ -28,18 +28,29 @@ WATCH='^tagger/heads/(train_heads|planner)\.py$|^tests/test_heads_planner\.py$'
 # push される commit の範囲を stdin から読む (pre-push の契約)。
 # 読めない/空なら **走らせる** — 判断できないときに素通しするのは gate ではない。
 changed=""
+undecided=0
 while read -r _local_ref local_sha _remote_ref remote_sha; do
     [ "$local_sha" = "0000000000000000000000000000000000000000" ] && continue
     if [ "$remote_sha" = "0000000000000000000000000000000000000000" ]; then
-        range="$local_sha"          # 新しい branch: その commit だけ見る
-        changed+=$(git show --name-only --pretty=format: "$range" 2>/dev/null)
+        # 新しい branch: 先端の commit だけでなく、まだどの remote にも無い commit を全部見る
+        # (#123: 学習の変更の上に README だけの commit を積むと、先端だけでは素通りした)。
+        # -m: a merge commit's own changes too (git log hides merge diffs by default)
+        if out=$(git log -m --name-only --pretty=format: "$local_sha" --not --remotes 2>/dev/null); then
+            changed+="$out"
+        else
+            undecided=1             # 範囲を出せない = 判断できない: 走らせる
+        fi
     else
-        changed+=$(git diff --name-only "$remote_sha" "$local_sha" 2>/dev/null)
+        if out=$(git diff --name-only "$remote_sha" "$local_sha" 2>/dev/null); then
+            changed+="$out"
+        else
+            undecided=1
+        fi
     fi
     changed+=$'\n'
 done
 
-if [ -n "$changed" ] && ! echo "$changed" | grep -qE "$WATCH"; then
+if [ "$undecided" = 0 ] && [ -n "$changed" ] && ! echo "$changed" | grep -qE "$WATCH"; then
     exit 0
 fi
 
