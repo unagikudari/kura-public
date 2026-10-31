@@ -59,6 +59,8 @@ def database(postgres):
                    env=pg_environment(postgres), check=True, capture_output=True)
     subprocess.run(["psql", "-X", "-v", "ON_ERROR_STOP=1", "-f", str(REPO / "api/collector/migrations/0005_tag_summary.sql")],
                    env=pg_environment(postgres), check=True, capture_output=True)
+    subprocess.run(["psql", "-X", "-v", "ON_ERROR_STOP=1", "-f", str(REPO / "api/collector/migrations/0006_label_producer_origin.sql")],
+                   env=pg_environment(postgres), check=True, capture_output=True)
     return postgres
 
 
@@ -1111,7 +1113,8 @@ def reset_exchange_destination(database):
     subprocess.run(['psql', '-X', '-v', 'ON_ERROR_STOP=1', '-c',
                     'DROP SCHEMA collector_next CASCADE'], env=env, check=True, capture_output=True)
     for filename in ['schema.sql', 'migrations/0002_import_paths.sql',
-                     'migrations/0003_labels.sql', 'migrations/0004_import_operations.sql', 'migrations/0005_tag_summary.sql']:
+                     'migrations/0003_labels.sql', 'migrations/0004_import_operations.sql', 'migrations/0005_tag_summary.sql',
+                     'migrations/0006_label_producer_origin.sql']:
         subprocess.run(['psql', '-X', '-v', 'ON_ERROR_STOP=1', '-f',
                         str(REPO / 'api/collector' / filename)], env=env, check=True, capture_output=True)
 
@@ -1515,3 +1518,88 @@ def test_exchange_restore_metadata_is_batched_for_100_assets(database, tmp_path)
             print('Exchange restore:', json.dumps({'assets': 100, 'observations': 1600,
                   'sql_statements': trace.calls, 'elapsed_ms': round(elapsed, 3)}))
     run(database, target)
+
+
+def _producers(database):
+    async def read(sessions):
+        async with sessions.begin() as db:
+            return sorted(tuple(r) for r in (await db.execute(text(
+                'SELECT owner_id,reference,version,origin FROM collector_next.label_producer'))).all())
+    out = {}
+    async def go(sessions):
+        out['rows'] = await read(sessions)
+    run(database, go)
+    return out['rows']
+
+
+def _restore_into(database, tmp_path, data: bytes, owner: int, name: str):
+    from api.collector import restore
+    package = tmp_path / f'{name}.zip'
+    package.write_bytes(data)
+    async def target(sessions):
+        async with sessions.begin() as db:
+            await restore.restore(db, tmp_path / name, package, owner)
+    run(database, target)
+
+
+def test_restored_evidence_keeps_its_library_apart_from_local_edits(database, tmp_path):
+    """#152: library A's account 1 and library B's account 1 are not one producer. A package from
+    A restored into B for account 1, then edited in B by account 1, gives two producers; B's
+    export carries both origins and a restore into C keeps them apart."""
+    from api.collector import export
+    saved = exchange_fixture(database, tmp_path / 'source')            # library A
+    a_id = saved['manifest']['source_library']
+    assert saved['manifest']['format_version'] == '0.2.0'
+    assert {e['producer']['origin'] for e in saved['manifest']['evidence']} == {a_id}
+    reset_exchange_destination(database)                                # library B
+    _restore_into(database, tmp_path, saved['bytes'], 1, 'b')
+    out = {}
+    async def edit_in_b(sessions):
+        async with sessions.begin() as db:
+            c = (await service.collections(db, 1))[0]
+            rows = (await service.entries(db, 1, c['id']))['items']
+            await label_service.rebuild_asset(db, 1, rows[0]['id'])
+            await label_service.apply(db, 1, uuid4(), [(rows[0]['id'], 3)], ['Bで追加'], [])
+        async with sessions.begin() as db:
+            out['manifest'] = await export.snapshot(db, 1, c['id'])
+        archive, _ = export.build_archive(tmp_path / 'b', out['manifest'])
+        with archive:
+            out['bytes'] = archive.read()
+    run(database, edit_in_b)
+    producers = _producers(database)
+    assert producers == sorted([(1, '1', 'collector-label-api-v1', a_id), (1, '1', 'collector-label-api-v1', '')])
+    b_id = out['manifest']['source_library']
+    assert b_id != a_id
+    origins = {e['producer']['origin'] for e in out['manifest']['evidence']}
+    assert origins == {a_id, b_id}                                      # A's evidence still says A
+    reset_exchange_destination(database)                                # library C
+    _restore_into(database, tmp_path, out['bytes'], 1, 'c')
+    assert {p[3] for p in _producers(database)} == {a_id, b_id}         # neither became C's own
+
+
+def test_a_package_that_does_not_say_its_library_stays_unknown(database, tmp_path):
+    from api.collector import export
+    saved = exchange_fixture(database, tmp_path / 'source')
+    old = json.loads(json.dumps(saved['manifest']))
+    old['format_version'] = '0.1.0'
+    old.pop('source_library')
+    for e in old['evidence']:
+        e['producer'].pop('origin')
+    archive, _ = export.build_archive(tmp_path / 'source', old)
+    with archive:
+        data = archive.read()
+    reset_exchange_destination(database)
+    _restore_into(database, tmp_path, data, 1, 'b')
+    assert {p[3] for p in _producers(database)} == {f"unknown:{old['export_id']}"}   # not this library's own
+
+
+def test_a_package_restored_into_the_library_it_came_from_is_its_own_again(database, tmp_path):
+    saved = exchange_fixture(database, tmp_path / 'source')
+    a_id = saved['manifest']['source_library']
+    reset_exchange_destination(database)
+    async def same_library(sessions):
+        async with sessions.begin() as db:
+            await db.execute(text('UPDATE collector_next.library SET id=:i'), {'i': a_id})
+    run(database, same_library)
+    _restore_into(database, tmp_path, saved['bytes'], 1, 'home')
+    assert {p[3] for p in _producers(database)} == {''}

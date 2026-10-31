@@ -90,11 +90,13 @@ async def apply(db, owner: int, key: UUID, targets: list[tuple[int, int]], add: 
             raise ValueError("1件に付けられるタグは128個までです。不要なタグを外してから追加してください。")
     producer_params = {"o": owner, "ref": str(owner), "version": "collector-label-mcp-v1" if origin=="mcp" else "collector-label-api-v1"}
     await db.execute(text("""
-        INSERT INTO collector_next.label_producer(owner_id,kind_id,reference,version)
-        VALUES(:o,1,:ref,:version) ON CONFLICT(owner_id,kind_id,reference,version) DO NOTHING
+        INSERT INTO collector_next.label_producer(owner_id,kind_id,reference,version,origin)
+        VALUES(:o,1,:ref,:version,'') ON CONFLICT(owner_id,kind_id,reference,version,origin) DO NOTHING
     """), producer_params)
+    # origin '' = this library: an edit here never joins a producer restored from elsewhere (#152)
     producer = (await db.execute(text("""
-        SELECT id FROM collector_next.label_producer WHERE owner_id=:o AND kind_id=1 AND reference=:ref AND version=:version
+        SELECT id FROM collector_next.label_producer
+        WHERE owner_id=:o AND kind_id=1 AND reference=:ref AND version=:version AND origin=''
     """), producer_params)).scalar_one()
     await db.execute(text("""
         INSERT INTO collector_next.label_operation(owner_id,request_key,fingerprint,producer_id,asset_count,tag_count)

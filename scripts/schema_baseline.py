@@ -55,12 +55,14 @@ REFERENCE_TABLES = ("tag_category", "tagger_config", "tagger_stage", "tagger_sta
 #: claim-storage cutover, so a fresh install starts `active`. Generator 1 wrote none of them, and
 #: on the 1.291.34 public release a new install could not create a pool (pool_category FK),
 #: complete an auto-tag (claim_storage.migration) or activate a tagger release (2026-10-29).
+#: collector_next.library is this install's identity (#152): made fresh at install, never copied.
 INITIAL_ROWS = """\
 INSERT INTO public.pool_category (id, version, name, color, "default") VALUES (1, 1, 'default', 'default', true);
 SELECT pg_catalog.setval(pg_catalog.pg_get_serial_sequence('public.pool_category', 'id'), 1, true);
 INSERT INTO public.tagger_release_active (id, release_id) VALUES (1, NULL);
 INSERT INTO public.tagger_reconciler_state (id, paused) VALUES (true, false);
 INSERT INTO claim_storage.migration (singleton, phase) VALUES (true, 'active');
+INSERT INTO collector_next.library (id) VALUES (gen_random_uuid());
 """
 
 

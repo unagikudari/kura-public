@@ -65,10 +65,14 @@ async def snapshot(db, owner: int, collection: int):
         raise ExportLimit('この書き出しでは重複を除く原本合計2GiBまで対応しています。')
     ids = list(assets)
     params = {'o': owner, 'ids': ids, 'lim': MAX_EVIDENCE + 1}
+    # Evidence names the library it came from (#152): this library for its own producers, the
+    # library a restored producer came from for those, so A's and B's stay apart in C as well.
+    from .library import library_id
+    here = await library_id(db, create=False)        # export reads a snapshot: read only
     evidence = []
     for row in (await db.execute(text('''
         SELECT v.id,v.asset_id,t.name AS tag,t.normalized_name,v.present,v.prior_present,v.based_on_id,
-               v.observed_at,v.request_key,p.kind_id,k.name AS producer_kind,p.reference,p.version AS producer_version,
+               v.observed_at,v.request_key,p.kind_id,k.name AS producer_kind,p.reference,p.version AS producer_version,p.origin,
                policy.version AS policy,op.created_at AS operation_created_at,
                target.before_revision,target.after_revision
         FROM collector_next.label_observation v
@@ -88,7 +92,8 @@ async def snapshot(db, owner: int, collection: int):
             'observed_at': row['observed_at'].isoformat(), 'operation': str(row['request_key']),
             'operation_created_at': row['operation_created_at'].isoformat(),
             'before_revision': row['before_revision'], 'after_revision': row['after_revision'],
-            'producer': {'kind': row['producer_kind'], 'reference': row['reference'], 'version': row['producer_version']},
+            'producer': {'kind': row['producer_kind'], 'reference': row['reference'], 'version': row['producer_version'],
+                         'origin': row['origin'] or here},
             'policy': row['policy']})
     if len(evidence) > MAX_EVIDENCE:
         raise ExportLimit('この書き出しではタグ変更根拠20,000件まで対応しています。')
@@ -108,7 +113,8 @@ async def snapshot(db, owner: int, collection: int):
         projection[row['asset_id']]['heads'].append({'tag': row['name'], 'present': row['present'],
                                                     'evidence': str(row['observation_id'])})
     key = str(uuid4())
-    manifest = {'format': 'kura-collector-exchange', 'format_version': '0.1.0', 'export_id': key,
+    manifest = {'format': 'kura-collector-exchange', 'format_version': '0.2.0', 'export_id': key,
+        'source_library': here,
         'created_at': datetime.now(timezone.utc).isoformat(), 'selection_snapshot': key,
         'scope': 'one_collection', 'originals': list(assets.values()),
         'collections': [{'id': str(collection), 'title': title, 'entries': entries}],
@@ -188,7 +194,7 @@ def verify_archive(path, *, verify_content=True):
         if info.file_size > MAX_MANIFEST:
             raise ValueError('Manifest exceeds metadata budget')
         manifest = json.loads(archive.read(info))
-        if manifest.get('format') != 'kura-collector-exchange' or manifest.get('format_version') != '0.1.0':
+        if manifest.get('format') != 'kura-collector-exchange' or manifest.get('format_version') not in ('0.1.0', '0.2.0'):
             raise ValueError('Unsupported exchange format/version')
         originals = manifest['originals']
         original_ids = {o['id'] for o in originals}

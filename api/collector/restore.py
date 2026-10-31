@@ -1,4 +1,4 @@
-"""Bounded restore of an exchange v0.1.0 ZIP into a completely empty namespace.
+"""Bounded restore of an exchange v0.1.0 or v0.2.0 ZIP into a completely empty namespace.
 
 prepare() is synchronous and DB-free: it reads only the size-capped manifest and
 validates all metadata before any storage or DB write. restore() runs in the
@@ -35,12 +35,13 @@ from .labels import MAX_CHANGES, MAX_LABELS, MAX_TARGETS, POLICY_VERSION, normal
 from .service import validate_relative_path
 from .storage import FORMATS, MAX_BYTES as MAX_ORIGINAL_BYTES, MAX_PIXELS, MediaInputError, store_media
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 TABLES = ('asset', 'asset_label_state', 'blob', 'blob_location', 'collection', 'collection_entry',
           'import_item', 'import_operation', 'label_head', 'label_observation', 'label_operation',
           'label_policy', 'label_producer', 'label_producer_kind', 'label_target', 'media_current',
-          'receipt', 'schema_version', 'tag', 'tag_usage')
-SEEDED = frozenset({'label_policy', 'label_producer_kind', 'schema_version'})
+          'receipt', 'schema_version', 'tag', 'tag_usage', 'library')
+# library: this install's identity, made on first use; it is not the restored data
+SEEDED = frozenset({'label_policy', 'label_producer_kind', 'schema_version', 'library'})
 MEDIA_TYPES = frozenset(FORMATS.values()) | {'video/webm'}
 BIGINT = 2**63 - 1
 LOCAL_ID = re.compile(r'[1-9][0-9]{0,18}')
@@ -55,6 +56,9 @@ EVIDENCE_KEYS = frozenset({'id', 'original', 'type', 'tag', 'normalized_name', '
                            'observed_at', 'operation', 'operation_created_at', 'before_revision', 'after_revision',
                            'producer', 'policy'})
 PRODUCER_KEYS = frozenset({'kind', 'reference', 'version'})
+# 0.2.0 (#152): each producer says which library it came from, and the manifest which library wrote it
+FORMAT_VERSIONS = ('0.1.0', '0.2.0')
+ORIGIN = re.compile(r'(unknown:)?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}')
 PROJECTION_KEYS = frozenset({'original', 'revision', 'policy', 'heads'})
 HEAD_KEYS = frozenset({'tag', 'present', 'evidence'})
 
@@ -276,11 +280,17 @@ def prepare(archive) -> RestorePlan:
 
 
 def _validate(manifest) -> RestorePlan:
-    _obj(manifest, MANIFEST_KEYS, 'manifest')
-    if (manifest['format'] != 'kura-collector-exchange' or manifest['format_version'] != '0.1.0'
+    version = manifest.get('format_version') if type(manifest) is dict else None
+    _obj(manifest, MANIFEST_KEYS | ({'source_library'} if version == '0.2.0' else frozenset()), 'manifest')
+    if (manifest['format'] != 'kura-collector-exchange' or version not in FORMAT_VERSIONS
             or manifest['scope'] != 'one_collection'):
         raise ArchiveInvalid('manifest: unsupported format, version or scope')
     export_id = _uuid(manifest['export_id'], 'export_id')
+    if version == '0.2.0':
+        _uuid(manifest['source_library'], 'source_library')
+    # A 0.1.0 package does not say where its evidence came from: that stays unknown (per
+    # package), never taken for this library's own (#152).
+    producer_keys = PRODUCER_KEYS | ({'origin'} if version == '0.2.0' else frozenset())
     _uuid(manifest['selection_snapshot'], 'selection_snapshot')
     _time(manifest['created_at'], 'created_at')
     capabilities = _obj(manifest['capabilities'], CAPABILITY_KEYS, 'capabilities')
@@ -375,7 +385,10 @@ def _validate(manifest) -> RestorePlan:
             raise ArchiveInvalid(f'{where}.tag: not in normalized form')
         if tags.setdefault(normalized[1], normalized[0]) != normalized[0]:
             raise ArchiveInvalid(f'{where}.tag: normalized tag has two display names')
-        producer = _obj(e['producer'], PRODUCER_KEYS, where + '.producer')
+        producer = _obj(e['producer'], producer_keys, where + '.producer')
+        origin = producer.get('origin', f'unknown:{export_id}')
+        if type(origin) is not str or not ORIGIN.fullmatch(origin):
+            raise ArchiveInvalid(f'{where}.producer.origin: not a library id')
         observed = _time(e['observed_at'], where + '.observed_at')
         created = _time(e['operation_created_at'], where + '.operation_created_at')
         before = _int(e['before_revision'], where + '.before_revision', 0, BIGINT - 1)
@@ -390,7 +403,8 @@ def _validate(manifest) -> RestorePlan:
             'before': before,
             'producer': (_str(producer['kind'], where + '.producer.kind', 1, 100),
                          _str(producer['reference'], where + '.producer.reference', 1, 1000),
-                         _str(producer['version'], where + '.producer.version', 1, 1000))}
+                         _str(producer['version'], where + '.producer.version', 1, 1000),
+                         origin)}
 
     # Replay the writer's invariants in source-id order: linear correction chains,
     # contiguous operations per asset, consecutive revisions, full asset x tag grid.
@@ -508,7 +522,7 @@ async def _claim_empty_namespace(db, *, lock=True):
         WHERE n.nspname='collector_next' AND c.relkind IN ('r','p')
     """))).scalars())
     if tables != set(TABLES):
-        raise SchemaMismatch('schema: collector_next tables differ from schema version 5')
+        raise SchemaMismatch(f'schema: collector_next tables differ from schema version {SCHEMA_VERSION}')
     if lock:
         try:
             await db.execute(text('LOCK TABLE ' + ','.join('collector_next.' + t for t in TABLES)
@@ -611,13 +625,19 @@ async def _restore(db, root: Path, archive, owner: int, plan: RestorePlan):
         ORDER BY x.k COLLATE "C" RETURNING id,normalized_name
     """), {**o, 'names': [plan.tags[k] for k in keys], 'keys': keys})).mappings()}
     producers = sorted({op['producer'] for op in plan.operations.values()})
-    producer_ids = {(r['kind_id'], r['reference'], r['version']): r['id'] for r in (await db.execute(text("""
-        INSERT INTO collector_next.label_producer(owner_id,kind_id,reference,version)
-        SELECT :o,x.k,x.r,x.v FROM unnest(CAST(:kinds AS smallint[]),CAST(:refs AS text[]),CAST(:versions AS text[])) x(k,r,v)
-        RETURNING id,kind_id,reference,version
+    # Imported producers keep the library they came from; evidence that came from this very
+    # library (a package coming home) is this library's own again (#152).
+    from .library import library_id
+    here = await library_id(db)
+    local = {p: '' if p[3] == here else p[3] for p in producers}
+    producer_ids = {(r['kind_id'], r['reference'], r['version'], r['origin']): r['id'] for r in (await db.execute(text("""
+        INSERT INTO collector_next.label_producer(owner_id,kind_id,reference,version,origin)
+        SELECT :o,x.k,x.r,x.v,x.g FROM unnest(CAST(:kinds AS smallint[]),CAST(:refs AS text[]),CAST(:versions AS text[]),
+            CAST(:origins AS text[])) x(k,r,v,g)
+        RETURNING id,kind_id,reference,version,origin
     """), {**o, 'kinds': [kinds[p[0]] for p in producers], 'refs': [p[1] for p in producers],
-           'versions': [p[2] for p in producers]})).mappings()}
-    producer_of = {p: producer_ids[(kinds[p[0]], p[1], p[2])] for p in producers}
+           'versions': [p[2] for p in producers], 'origins': [local[p] for p in producers]})).mappings()}
+    producer_of = {p: producer_ids[(kinds[p[0]], p[1], p[2], local[p])] for p in producers}
 
     ops = sorted(plan.operations.items(), key=lambda item: (item[1]['created'], item[0]))
     op_params = {'keys': [], 'fps': [], 'producers': [], 'assets': [], 'tags': [], 'created': []}
