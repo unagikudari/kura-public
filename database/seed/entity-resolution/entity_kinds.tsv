@@ -1,3 +1,0 @@
-kind_slug	description
-person	A person entity (carries gender presentation, body, attributes, poses)
-object	A non-person object entity (object ontology)
