@@ -148,6 +148,29 @@ docker compose run --rm -v ~/Pictures/scans:/import:ro tools \
     --key-file /out/kura-admin.key --record /out/kura-import.jsonl /import
 ```
 
+To keep a folder in kura, add `--watch 60`: the command stays running, looks at the folder
+every 60 seconds and sends what was added or changed, once a file has not changed for
+`--settle` seconds (10 by default, so a file still being copied waits). A file kura refused
+stays out until it changes. To run it in the background and at boot, as a user service:
+
+```ini
+# ~/.config/systemd/user/kura-import-watch.service
+[Unit]
+Description=Keep ~/Pictures/inbox in kura
+
+[Service]
+ExecStart=/usr/bin/python3 %h/kura/scripts/kura_import.py %h/Pictures/inbox --watch 60 \
+    --url http://127.0.0.1:8001 --email you@example.org --key-file %h/kura-admin.key
+Restart=on-failure
+
+[Install]
+WantedBy=default.target
+```
+
+`systemctl --user enable --now kura-import-watch`, and `journalctl --user -u kura-import-watch`
+shows what it sent. It signs in only when there is something to send. Keep the key file
+somewhere the service can read; it must stay mode 0600.
+
 ## Moving in from szurubooru
 
 If your collection lives in a szurubooru, one command brings it over through the two APIs:
