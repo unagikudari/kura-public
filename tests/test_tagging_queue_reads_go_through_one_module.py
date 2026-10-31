@@ -28,9 +28,15 @@ SKIPPED = (
 )
 COLUMN = re.compile(r"(?<!meta_)\btagging_(status|locked_until|attempts|last_error)\b")
 
-#: (path, 何であるか) -> 片付ける段と理由
+#: (path, 使われ方, 何か) -> 理由。使われ方は "subscript" (鍵: 何か = "関数名:式[鍵]")、
+#: "str" (SQL などの文字列そのもの)、"attr" (属性・キーワード名)。ファイル単位でも鍵の名前
+#: だけでも免除しない (#155): どの関数の中で、何を subscript しているかまで一致したものだけ。
+#: 同じファイルに足した SQL、別の式への subscript (Post.table.c["tagging_attempts"] 等) は落ちる。
 ALLOWED = {
-    ("api/services/tagging.py", "str"): "不変: 統制関数 claim の戻り値の列名 (シグネチャは変えない)",
+    ("api/services/tagging.py", "subscript", "claim_auto_tag:row['tagging_attempts']"):
+        "不変: 統制関数 claim の戻り値 (rows.mappings() の row) の列名を鍵として読む",
+    ("api/services/tagging.py", "subscript", "claim_auto_tag:row['tagging_locked_until']"):
+        "不変: 統制関数 claim の戻り値 (rows.mappings() の row) の列名を鍵として読む",
 }
 
 
@@ -45,31 +51,45 @@ def _docstring_nodes(tree: ast.AST) -> set[int]:
     return ids
 
 
-def _references(path: Path) -> set[str]:
+def _references(path: Path) -> set[tuple[str, str]]:
+    """(how it is used, the name or the whole string) for every reference: a string used only
+    as a subscript key, any other string (normalized whitespace), an attribute or keyword."""
     tree = ast.parse(path.read_text(), filename=str(path))
     docstrings = _docstring_nodes(tree)
-    kinds: set[str] = set()
+    # a subscript key is named with its function and the expression it subscripts
+    keyed: dict[int, str] = {}
+    for fn in ast.walk(tree):
+        if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            for n in ast.walk(fn):
+                if isinstance(n, ast.Subscript):
+                    keyed[id(n.slice)] = f"{fn.name}:{ast.unparse(n)}"
+    for n in ast.walk(tree):
+        if isinstance(n, ast.Subscript) and id(n.slice) not in keyed:
+            keyed[id(n.slice)] = f"<module>:{ast.unparse(n)}"
+    refs: set[tuple[str, str]] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Constant) and isinstance(node.value, str) and id(node) not in docstrings:
             if COLUMN.search(node.value):
-                kinds.add("str")
-        elif isinstance(node, ast.Attribute) and COLUMN.fullmatch(node.attr) or (
-                isinstance(node, ast.Attribute) and node.attr == "initial_tagging_status"):
-            kinds.add("attr")
+                if id(node) in keyed and COLUMN.fullmatch(node.value):
+                    refs.add(("subscript", keyed[id(node)]))
+                else:
+                    refs.add(("str", " ".join(node.value.split())))
+        elif isinstance(node, ast.Attribute) and (COLUMN.fullmatch(node.attr) or node.attr == "initial_tagging_status"):
+            refs.add(("attr", node.attr))
         elif isinstance(node, ast.keyword) and node.arg and COLUMN.fullmatch(node.arg):
-            kinds.add("attr")
-    return kinds
+            refs.add(("attr", node.arg))
+    return refs
 
 
-def _found() -> dict[tuple[str, str], int]:
-    found: dict[tuple[str, str], int] = {}
+def _found() -> dict[tuple[str, str, str], int]:
+    found: dict[tuple[str, str, str], int] = {}
     for top in SCANNED:
         for path in sorted((ROOT / top).rglob("*.py")):
             rel = path.relative_to(ROOT).as_posix()
             if rel.startswith(SKIPPED) or "/overlay/" in rel:
                 continue
-            for kind in _references(path):
-                found[(rel, kind)] = found.get((rel, kind), 0) + 1
+            for kind, what in _references(path):
+                found[(rel, kind, what)] = found.get((rel, kind, what), 0) + 1
     return found
 
 
@@ -79,11 +99,27 @@ def test_no_new_reader_of_the_tagging_queue_outside_the_module():
         "post.tagging_* を tagging_queue.py の外で参照しています。読み手なら "
         "api/services/tagging_queue.py に関数を足して、そこを呼んでください "
         "(docs/notes/tagging-work-table-plan.md の段 2 が 1 ファイルで切り替えられるように):\n  "
-        + "\n  ".join(f"{p} ({k})" for p, k in unexpected))
+        + "\n  ".join(f"{p} ({k}: {w[:120]})" for p, k, w in unexpected))
 
 
 def test_every_allowance_is_still_needed():
     # 片付いた参照の許可が残ると、次に同じ場所へ足された読み手を見逃す。
     stale = sorted(k for k in ALLOWED if k not in _found())
     assert not stale, "もう参照が無いので ALLOWED から外してください:\n  " + "\n  ".join(
-        f"{p} ({k}) — {ALLOWED[(p, k)]}" for p, k in stale)
+        f"{p} ({k}: {w}) — {ALLOWED[(p, k, w)]}" for p, k, w in stale)
+
+
+def test_an_allowed_file_gets_no_new_reader_alongside_its_allowance(tmp_path, monkeypatch):
+    """#155: the allowance is for those two return-value keys, not for the file. A SQL reader
+    added next to them, or one that replaces a key, is reported."""
+    src = (ROOT / "api/services/tagging.py").read_text()
+    added = src + '\n\ndef _sneak(db):\n    return db.execute(text("SELECT tagging_status FROM post WHERE id=:id"))\n'
+    replaced = src.replace('row["tagging_attempts"]', 'db.execute(text("SELECT tagging_attempts FROM post")).scalar()', 1)
+    column = src + '\n\ndef _sneak2(db):\n    return db.execute(select(Post.__table__.c["tagging_attempts"]))\n'
+    elsewhere = src + '\n\ndef _sneak3(row):\n    return row["tagging_attempts"]\n'
+    assert replaced != src
+    for variant in (added, replaced, column, elsewhere):
+        f = tmp_path / "tagging.py"
+        f.write_text(variant)
+        refs = {("api/services/tagging.py",) + r for r in _references(f)}
+        assert refs - set(ALLOWED), variant[-200:]
