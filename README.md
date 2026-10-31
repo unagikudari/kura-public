@@ -10,9 +10,10 @@ and let the optional auto-tagger do the first pass.
   several tags at once and exclusions.
 - **Pools**: series and books kept in order, with a page-by-page reader.
 - **Bring what you have**: drag files or folders onto the page, import a folder from the
-  command line (or have `--watch` pick up new files as they arrive), take the tags that sit next to your files
-  (booru JSON, XMP keywords, text files), or bring the images and videos of a szurubooru or
-  Hydrus library over with their tags.
+  command line (or have `--watch` pick up new files as they arrive), take comic archives
+  (.zip, .cbz) as pools, take the tags that sit next to your files (booru JSON, XMP keywords,
+  text files, ComicInfo.xml), or bring the images and videos of a szurubooru or Hydrus
+  library, or the archives of a LANraragi, over with their tags.
 - **Auto-tagging** (optional): a WD14 tagger tags new images; it runs on a CPU, a GPU only
   makes it faster.
 - English and Japanese interface. Runs on one Linux machine, natively or with Docker Compose.
@@ -178,6 +179,17 @@ Spaces in a tag become underscores. A sidecar added or edited later sends its im
 on the next run, and kura adds the new tags to the post it already has (tags taken out of a
 sidecar stay on the post).
 
+Comics and other books kept as `.zip` or `.cbz` archives come in with `--archives`: each
+archive becomes a pool holding its pages in order (pages in a subfolder of the archive after
+the ones above it), named by its path in the folder (`Night Ferry`, or `Orbital Notes / Vol 1`
+for an archive in a subfolder), and with `--sidecars` the archive's `ComicInfo.xml` gives its
+pages tags (writer and artists, characters, series, genre and tags), a rating and a source.
+Hidden entries, macOS leftovers and two entries of one name inside are passed over, and so
+is a page that would unpack to more than 100 times its packed size or to more than 1 GiB; a
+page that is damaged fails on its own. A page added to an archive later is sent on the next
+run without sending the others again; an edited `ComicInfo.xml` sends the pages again so
+kura adds the new tags.
+
 To keep a folder in kura, add `--watch 60`: the command stays running, looks at the folder
 every 60 seconds and sends what was added or changed, once a file has not changed for
 `--settle` seconds (10 by default, so a file still being copied waits). A file kura refused
@@ -233,6 +245,25 @@ Every current file comes over with its tags: `creator:` tags become artist tags,
 namespaces keep their text), and the file's first known URL becomes its source. Hydrus has
 no safety rating, so `--safety` (default `unsafe`) applies to all of them. `--dry-run` and
 resuming work as for szurubooru.
+
+## Moving in from LANraragi
+
+A LANraragi library moves over through its API. Each archive becomes a pool of its pages in
+order, with the archive's tags on every page:
+
+```bash
+python3 scripts/lanraragi_migrate.py --from http://127.0.0.1:3000 \
+    --url http://127.0.0.1:8001 --email you@example.org --key-file ~/kura-admin.key
+```
+
+`artist:` and `group:` tags become artist tags, `character:` character tags, `parody:` and
+`series:` copyright tags (`--namespace` changes the mapping); `source:` becomes the source,
+`date_added:` is left out, and other namespaces keep their text (`female:glasses`). Archives
+are read as zip or cbz; a rar, 7z or pdf in the library is named and passed over, and so is
+a damaged page. Two archives with the same title get their archive id in the pool name; a
+book keeps the pool it started in. If
+LANraragi runs in No-Fun Mode, give its API key in a 0600 file with `--from-key-file`.
+`--safety` (default `unsafe`), `--dry-run` and resuming work as for the other migrations.
 
 ## Auto-tagging (optional)
 

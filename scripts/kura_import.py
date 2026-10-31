@@ -43,6 +43,8 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
+import zipfile
+import zlib
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -80,14 +82,85 @@ def natural_key(name: str) -> list:
     return [int(part) if part.isdigit() else part.lower() for part in re.split(r"(\d+)", name)]
 
 
-def plan(folder: Path, sent=None, settle: float = 0.0) -> tuple[list[Path], int, int]:
-    """Every media file under `folder`, folders and files in natural order; how many other
-    files were passed over; and how many are still changing (modified less than `settle`
-    seconds ago: not looked into yet). `sent(rel, stat)` says a file needs no look at all
-    (already in kura, unchanged), so a watched folder is not read again on every pass."""
-    files: list[Path] = []
+class Item:
+    """One thing to send: a file, or a page inside an archive (`member`). `rel` is its key in
+    the record: the file's path under the folder, or the archive's path / the member's name.
+    A page carries its size and CRC as the archive's directory gives them."""
+    __slots__ = ("rel", "path", "member", "size", "crc")
+
+    def __init__(self, rel: str, path: Path, member: str | None = None, size: int = 0, crc: int | None = None):
+        self.rel, self.path, self.member, self.size, self.crc = rel, path, member, size, crc
+
+    @property
+    def name(self) -> str:
+        return Path(self.member).name if self.member else self.path.name
+
+
+# A page bigger than this, or one that would grow more than RATIO times when unpacked, is not
+# taken from an archive (a crafted archive can unpack to far more than it looks).
+MEMBER_LIMIT = 1 << 30
+MEMBER_RATIO = 100
+COMIC_INFO = "comicinfo.xml"
+
+
+def is_zip(head: bytes) -> bool:
+    return head[:4] in (b"PK\x03\x04", b"PK\x05\x06")
+
+
+def archive_members(archive: zipfile.ZipFile) -> list[zipfile.ZipInfo]:
+    """The archive's entries that could be pages, in natural order of their names: no folders,
+    no hidden or macOS resource entries, nothing encrypted, nothing implausibly large."""
+    out = []
+    names: dict[str, int] = {}
+    for info in archive.infolist():
+        names[info.filename] = names.get(info.filename, 0) + 1
+    for info in archive.infolist():
+        if names[info.filename] > 1:    # two entries of one name: which one is the page is not knowable
+            continue
+        parts = info.filename.replace("\\", "/").split("/")
+        if (info.is_dir() or any(x.startswith(".") or x == "__MACOSX" for x in parts if x)
+                or info.flag_bits & 0x1 or info.file_size > MEMBER_LIMIT
+                or (info.compress_size and info.file_size / info.compress_size > MEMBER_RATIO)):
+            continue
+        out.append(info)
+    def key(info):                       # as a folder is walked: a level's files before its subfolders
+        parts = [x for x in info.filename.replace("\\", "/").split("/") if x]
+        return [(0 if n == len(parts) - 1 else 1, natural_key(x)) for n, x in enumerate(parts)]
+    return sorted(out, key=key)
+
+
+def plan(folder: Path, sent=None, settle: float = 0.0, archives: bool = False) -> tuple[list[Item], int, int]:
+    """Everything to send under `folder`, folders and files in natural order (with `archives`,
+    a .zip or .cbz stands for its pages, in their order); how many other files were passed
+    over; and how many are still changing (modified less than `settle` seconds ago: not looked
+    into yet). `sent(item, stat)` says an item needs no look at all (already in kura,
+    unchanged), so a watched folder is not read again on every pass."""
+    items: list[Item] = []
     skipped = unsettled = 0
     now = time.time()
+
+    def expand(p: Path, rel: str, st: os.stat_result) -> None:
+        nonlocal skipped
+        try:
+            with zipfile.ZipFile(p) as z:
+                for info in archive_members(z):
+                    it = Item(f"{rel}/{info.filename}", p, info.filename, info.file_size, info.CRC)
+                    if sent and sent(it, st):
+                        items.append(it)
+                        continue
+                    if Path(info.filename).name.lower() == COMIC_INFO:
+                        continue
+                    try:
+                        with z.open(info) as f:
+                            head = f.read(12)
+                    except Api.UNPACK_ERRORS:   # this page cannot be unpacked: the others still can
+                        head = b""
+                    if media_type(head) is None:
+                        skipped += 1
+                    else:
+                        items.append(it)
+        except (zipfile.BadZipFile, zlib.error, OSError, RuntimeError, NotImplementedError, EOFError):
+            skipped += 1                # not an archive we can read: passed over like any other file
 
     def walk(d: Path) -> None:
         nonlocal skipped, unsettled
@@ -101,23 +174,28 @@ def plan(folder: Path, sent=None, settle: float = 0.0) -> tuple[list[Path], int,
             if p.is_dir():
                 walk(p)
                 continue
+            rel = str(p.relative_to(folder))
+            it = Item(rel, p)
             try:
                 st = p.stat()
-                if sent and sent(str(p.relative_to(folder)), st):
-                    files.append(p)
+                if sent and sent(it, st):
+                    items.append(it)
                     continue
                 if settle and now - st.st_mtime < settle:
                     unsettled += 1
                     continue
                 with open(p, "rb") as f:
-                    if media_type(f.read(12)) is None:
-                        skipped += 1
-                        continue
+                    head = f.read(12)
             except OSError:             # gone between the listing and the look
                 continue
-            files.append(p)
+            if media_type(head) is not None:
+                items.append(it)
+            elif archives and is_zip(head):
+                expand(p, rel, st)
+            else:
+                skipped += 1
     walk(folder)
-    return files, skipped, unsettled
+    return items, skipped, unsettled
 
 
 # ---- sidecar files --------------------------------------------------------------------------
@@ -220,6 +298,50 @@ def _read_xmp(sc: Sidecar, raw: bytes) -> None:
                 sc.tag(li.text)
 
 
+# ComicInfo.xml (the ComicRack schema most comic tools write into a .cbz): creators are
+# artists, Characters characters, Series the copyright, Genre and Tags plain tags, Web the source.
+COMIC_FIELDS = {"Writer": "artist", "Penciller": "artist", "Inker": "artist", "Colorist": "artist",
+                "CoverArtist": "artist", "Characters": "character", "Series": "copyright",
+                "Genre": None, "Tags": None}
+COMIC_RATINGS = {"everyone": "safe", "g": "safe", "early childhood": "safe", "kids to adults": "safe",
+                 "everyone 10+": "sketchy", "pg": "sketchy", "teen": "sketchy",
+                 "mature 17+": "unsafe", "m": "unsafe", "adults only 18+": "unsafe", "r18+": "unsafe",
+                 "x18+": "unsafe"}
+
+
+def _read_comicinfo(sc: Sidecar, raw: bytes) -> None:
+    import xml.etree.ElementTree as ET
+    try:
+        root = ET.fromstring(raw)
+    except ET.ParseError:
+        return
+    fields = {el.tag: (el.text or "").strip() for el in root}
+    for field, cat in COMIC_FIELDS.items():
+        value = fields.get(field, "")
+        names = [value] if field == "Series" else value.split(",")
+        for n in names:
+            if n.strip():
+                sc.tag(n.strip(), cat) if cat else sc.tag(n.strip())
+    sc.safety = sc.safety or COMIC_RATINGS.get(fields.get("AgeRating", "").lower())
+    web = fields.get("Web", "").split()
+    if web and web[0].startswith(("http://", "https://")):
+        sc.source = sc.source or web[0]
+
+
+def comic_info(archive: Path) -> bytes | None:
+    """The ComicInfo.xml inside `archive` (at most SIDECAR_LIMIT bytes), or None."""
+    try:
+        with zipfile.ZipFile(archive) as z:
+            for info in z.infolist():
+                if Path(info.filename).name.lower() == COMIC_INFO and info.file_size <= SIDECAR_LIMIT \
+                        and not info.flag_bits & 0x1:
+                    with z.open(info) as f:
+                        return f.read(SIDECAR_LIMIT + 1)[:SIDECAR_LIMIT]
+    except (zipfile.BadZipFile, zlib.error, OSError, RuntimeError, NotImplementedError, EOFError):
+        return None
+    return None
+
+
 def _read_txt(sc: Sidecar, text: str) -> None:
     for line in text.splitlines():
         for part in line.split(","):
@@ -246,6 +368,34 @@ def _read_small(path: Path) -> bytes | None:
         return None
     finally:
         os.close(fd)
+
+
+_comic_sig_cache: dict = {}
+
+
+def item_sidecar_state(item: Item) -> list:
+    """The sidecar state a record row keeps for `item`: the files beside it (beside the archive,
+    for a page), and for a page the [name, size, CRC] of the archive's ComicInfo.xml, so editing
+    it sends the pages again while adding a page to the archive does not."""
+    sig = sidecar_signature(item.path)
+    if item.member is None:
+        return sig
+    try:
+        st = item.path.stat()
+    except OSError:
+        return sig
+    key = (str(item.path), st.st_size, st.st_mtime_ns)
+    if key not in _comic_sig_cache:
+        _comic_sig_cache.clear()
+        found = []
+        try:
+            with zipfile.ZipFile(item.path) as z:
+                found = [[COMIC_INFO, i.file_size, i.CRC] for i in z.infolist()
+                         if Path(i.filename).name.lower() == COMIC_INFO]
+        except (zipfile.BadZipFile, zlib.error, OSError, RuntimeError, NotImplementedError, EOFError):
+            pass
+        _comic_sig_cache[key] = found
+    return sig + _comic_sig_cache[key]
 
 
 def sidecar_signature(path: Path) -> list:
@@ -294,12 +444,37 @@ def sidecar_paths(path: Path) -> list[Path]:
     return out
 
 
-def fields_for(args, folder: Path, path: Path, categories: dict | None = None) -> dict[str, str]:
-    """What /api/upload gets for `path`: the command line's tags, safety and source, and with
+_comic_cache: dict = {}
+
+
+def item_sidecar(item: Item) -> Sidecar | None:
+    """The sidecars beside the file (or beside the archive, for a page in one), and for a page
+    the archive's ComicInfo.xml too (read once per archive)."""
+    sc = sidecar(item.path)
+    if item.member is None:
+        return sc
+    try:
+        st = item.path.stat()
+    except OSError:
+        return sc
+    key = (str(item.path), st.st_size, st.st_mtime_ns)
+    if key not in _comic_cache:
+        _comic_cache.clear()                # one archive at a time: pages come in archive order
+        _comic_cache[key] = comic_info(item.path)
+    raw = _comic_cache[key]
+    if raw is not None:
+        sc = sc or Sidecar()
+        _read_comicinfo(sc, raw)
+        sc.files.append(COMIC_INFO)
+    return sc
+
+
+def fields_for(args, folder: Path, item: Item, categories: dict | None = None) -> dict[str, str]:
+    """What /api/upload gets for `item`: the command line's tags, safety and source, and with
     --sidecars what its sidecar files add (their rating and source only where the command line
     gave none). The sidecars' tag categories are collected into `categories`."""
     tags, artists, safety, source = args.tags, "", args.safety or "unsafe", args.source
-    sc = sidecar(path) if args.sidecars else None
+    sc = item_sidecar(item) if args.sidecars else None
     if sc is not None:
         more, artists = sc.as_fields()
         tags = " ".join(t for t in (tags, more) if t)
@@ -309,7 +484,7 @@ def fields_for(args, folder: Path, path: Path, categories: dict | None = None) -
         if categories is not None:
             # artist too: artist_tags names the category only for a tag kura creates now
             categories.update({n: c for n, c in sc.tags.items() if c})
-    return {"tags": tags, "safety": safety, "source": source, "pool": pool_name(args, folder, path),
+    return {"tags": tags, "safety": safety, "source": source, "pool": pool_name(args, folder, item),
             "artist_tags": artists}
 
 
@@ -497,35 +672,87 @@ class Api:
         except (urllib.error.URLError, OSError, http.client.HTTPException):
             return False
 
-    def upload(self, path: Path, fields: dict[str, str]) -> tuple[int, dict, os.stat_result]:
-        """Send `path`; returns the status, the body and the stat of what was actually sent."""
-        boundary = uuid.uuid4().hex
-        parts = b"".join(
-            f"--{boundary}\r\ncontent-disposition: form-data; name=\"{k}\"\r\n\r\n{v}\r\n".encode()
-            for k, v in fields.items() if v)
-        with open(path, "rb", buffering=0) as f:    # unbuffered: a shrink is seen, not read from a cache
+    def upload(self, item, fields: dict[str, str]) -> tuple[int, dict, tuple[int, int]]:
+        """Send `item` (an Item, or a plain Path); returns the status, the body and the
+        (size, mtime_ns) of what was actually sent (for a page: its size, and no mtime)."""
+        if isinstance(item, Path):
+            item = Item(item.name, item)
+        if item.member is not None:
+            return self._upload_member(item, fields)
+        with open(item.path, "rb", buffering=0) as f:   # unbuffered: a shrink is seen, not read from a cache
             st = os.fstat(f.fileno())           # the opened file, not whatever the name points to now
             kind = media_type(f.read(12))
             f.seek(0)
-            name = path.name.replace('"', "_")
-            head = parts + (f"--{boundary}\r\ncontent-disposition: form-data; name=\"file\"; "
-                            f"filename=\"{name}\"\r\ncontent-type: {kind}\r\n\r\n").encode()
-            tail = f"\r\n--{boundary}--\r\n".encode()
 
-            def body():
-                yield head
+            def data():
                 left = st.st_size               # exactly the declared bytes, no more, no fewer
                 while left:
                     chunk = f.read(min(CHUNK, left))
                     if not chunk:
-                        raise FileChanged(f"{path}: shorter than when it was opened")
+                        raise FileChanged(f"{item.path}: shorter than when it was opened")
                     left -= len(chunk)
                     yield chunk
-                yield tail
-            status, reply = self.call("POST", "/api/upload", body(), {
-                "content-type": f"multipart/form-data; boundary={boundary}",
-                "content-length": str(len(head) + st.st_size + len(tail))}, timeout=600.0)
-            return status, reply, st
+            status, reply = self._post_file(item.name, kind, st.st_size, data(), fields)
+            return status, reply, (st.st_size, st.st_mtime_ns)
+
+    UNPACK_ERRORS = (zipfile.BadZipFile, zlib.error, EOFError, RuntimeError, NotImplementedError, KeyError)
+
+    def _upload_member(self, item, fields):
+        """A page out of an archive: the archive opened once, the page checked against what the
+        plan saw (size and CRC), its bytes streamed as they unpack; zipfile checks the CRC at
+        the end, and a mismatch fails the send."""
+        with open(item.path, "rb") as raw:
+            try:
+                z = zipfile.ZipFile(raw)
+                matches = [i for i in z.infolist() if i.filename == item.member]
+                if len(matches) != 1:
+                    raise KeyError(f"{len(matches)} entries named {item.member!r}")
+                info = matches[0]
+            except self.UNPACK_ERRORS as e:
+                raise FileChanged(f"{item.rel}: the archive changed ({e})") from None
+            if info.file_size != item.size or info.CRC != item.crc:
+                raise FileChanged(f"{item.rel}: changed since it was looked at")
+            try:
+                f = z.open(info)
+                first = f.read(min(CHUNK, info.file_size))
+            except self.UNPACK_ERRORS as e:
+                raise FileChanged(f"{item.rel}: cannot be unpacked ({e})") from None
+            kind = media_type(first[:12])
+            with f:
+
+                def data():
+                    left = info.file_size - len(first)
+                    yield first
+                    try:
+                        while left:
+                            chunk = f.read(min(CHUNK, left))
+                            if not chunk:
+                                raise FileChanged(f"{item.rel}: shorter than the archive says")
+                            left -= len(chunk)
+                            yield chunk
+                        f.read(1)                   # reach the end, where zipfile checks the CRC
+                    except self.UNPACK_ERRORS as e:
+                        raise FileChanged(f"{item.rel}: cannot be unpacked ({e})") from None
+                status, reply = self._post_file(item.name, kind, info.file_size, data(), fields)
+                return status, reply, (info.file_size, None)
+
+    def _post_file(self, name: str, kind: str | None, size: int, data, fields: dict[str, str]):
+        boundary = uuid.uuid4().hex
+        parts = b"".join(
+            f"--{boundary}\r\ncontent-disposition: form-data; name=\"{k}\"\r\n\r\n{v}\r\n".encode()
+            for k, v in fields.items() if v)
+        name = name.replace('"', "_")
+        head = parts + (f"--{boundary}\r\ncontent-disposition: form-data; name=\"file\"; "
+                        f"filename=\"{name}\"\r\ncontent-type: {kind}\r\n\r\n").encode()
+        tail = f"\r\n--{boundary}--\r\n".encode()
+
+        def body():
+            yield head
+            yield from data
+            yield tail
+        return self.call("POST", "/api/upload", body(), {
+            "content-type": f"multipart/form-data; boundary={boundary}",
+            "content-length": str(len(head) + size + len(tail))}, timeout=600.0)
 
 
 def _json(raw: bytes) -> dict:
@@ -551,6 +778,8 @@ def import_identity(args, folder: Path) -> dict:
     identity = {"folder": str(folder), "url": args.url.rstrip("/"), "tags": args.tags,
                 "safety": args.safety or "unsafe", "source": args.source, "pool": args.pool,
                 "pool_per_folder": args.pool_per_folder}
+    if args.archives:                   # likewise: without the flag the identity is what it always was
+        identity["archives"] = True
     if args.sidecars:                   # only then: a record made before --sidecars existed stays this import's
         identity["sidecars"] = True
         # With sidecars, an omitted --safety (each sidecar's rating) and --safety unsafe (all
@@ -571,10 +800,14 @@ REFUSED_FOR_GOOD = frozenset(range(400, 500)) - {401, 403, 408, 409, 425, 429}
 CATEGORY_RETRY = 600.0          # seconds between --watch passes that only retry tag categories
 
 
-def file_state(args, path: Path, st: os.stat_result) -> tuple:
-    """What a record row is compared with: the file's size and mtime, and with --sidecars the
-    state of its sidecar files."""
-    return (st.st_size, st.st_mtime_ns, sidecar_signature(path) if args.sidecars else None)
+def file_state(args, item: Item, st: os.stat_result) -> tuple:
+    """What a record row is compared with: the file's size and mtime (a page: its own size and
+    CRC, so a page added to an archive does not send the others again), and with --sidecars the
+    state of the sidecar files beside it."""
+    sig = item_sidecar_state(item) if args.sidecars else None
+    if item.member is not None:
+        return (item.size, None, sig, item.crc)
+    return (st.st_size, st.st_mtime_ns, sig, None)
 
 
 def open_record(record: Path, identity: dict, create: bool = True, refused: dict | None = None,
@@ -617,7 +850,7 @@ def open_record(record: Path, identity: dict, create: bool = True, refused: dict
             continue
         path = row.get("path")
         if row.get("id") is not None:
-            done[path] = (row.get("size"), row.get("mtime_ns"), row.get("sidecars"))
+            done[path] = (row.get("size"), row.get("mtime_ns"), row.get("sidecars"), row.get("crc"))
             if categories is not None and isinstance(row.get("categories"), dict):
                 # names as kura holds them: a row written by 1.301.0 kept the sidecar's case
                 categories.update({kura_name(n): c for n, c in row["categories"].items()})
@@ -626,7 +859,7 @@ def open_record(record: Path, identity: dict, create: bool = True, refused: dict
             if retrying is not None:
                 retrying.pop(path, None)
         elif refused is not None and row.get("status") in REFUSED_FOR_GOOD and "size" in row:
-            refused[path] = (row.get("size"), row.get("mtime_ns"), row.get("sidecars"))
+            refused[path] = (row.get("size"), row.get("mtime_ns"), row.get("sidecars"), row.get("crc"))
             if retrying is not None:
                 retrying.pop(path, None)
         elif retrying is not None and path is not None:
@@ -654,6 +887,9 @@ def arguments(argv=None):
     what.add_argument("--pool", default="", help="put every file in this pool, in order")
     what.add_argument("--pool-per-folder", action="store_true",
                       help="each folder that holds files becomes a pool named after it")
+    what.add_argument("--archives", action="store_true",
+                      help="also take the pages of .zip and .cbz archives, each archive a pool of its "
+                           "pages in order (with --sidecars, its ComicInfo.xml gives tags)")
     what.add_argument("--sidecars", action="store_true",
                       help="also take tags, rating and source from files next to each image: "
                            "photo.jpg.json (a booru post's JSON), photo.jpg.xmp (XMP keywords), photo.jpg.txt "
@@ -681,11 +917,17 @@ def arguments(argv=None):
     return a
 
 
-def pool_name(args, folder: Path, path: Path) -> str:
+def pool_name(args, folder: Path, item: Item) -> str:
+    """--pool for everything; else an archive is the pool of its pages (named by its path in the
+    folder: Book, or Series / Vol 1), and with --pool-per-folder each folder is the pool of its files."""
     if args.pool:
         return args.pool
+    if item.member is not None:
+        # the archive's path in the folder, so two "Vol 1.cbz" in different folders stay two books
+        rel = item.path.relative_to(folder).with_suffix("")
+        return " / ".join(rel.parts)
     if args.pool_per_folder:
-        rel = path.parent.relative_to(folder)
+        rel = item.path.parent.relative_to(folder)
         return folder.name if rel == Path(".") else " / ".join(rel.parts)
     return ""
 
@@ -716,7 +958,7 @@ def sign_in(api: Api, args) -> None:
         api.sign_in(args.email, private_file(args.key_file).strip())
 
 
-def send(api: Api, args, folder: Path, record: Path, todo: list[Path], counts: dict, stop: Stop,
+def send(api: Api, args, folder: Path, record: Path, todo: list[Item], counts: dict, stop: Stop,
          settle: float = 0.0) -> None:
     """Send `todo` in order. With `settle`, each file is looked at again just before it goes:
     one that changed while the files before it were being sent waits for the next pass."""
@@ -727,10 +969,10 @@ def send(api: Api, args, folder: Path, record: Path, todo: list[Path], counts: d
             if stop:
                 say("stopping: asked to")
                 break
-            rel = str(p.relative_to(folder))
+            rel = p.rel
             if settle:
                 try:
-                    looked = [p] + (sidecar_paths(p) if args.sidecars else [])
+                    looked = [p.path] + (sidecar_paths(p.path) if args.sidecars else [])
                     changing = any(time.time() - q.stat().st_mtime < settle for q in looked)
                 except OSError:             # gone since the pass looked
                     continue
@@ -740,10 +982,12 @@ def send(api: Api, args, folder: Path, record: Path, todo: list[Path], counts: d
             row: dict = {"path": rel}
             cats: dict = {}
             if args.sidecars:                   # taken before they are read: an edit after this is seen next time
-                row["sidecars"] = sidecar_signature(p)
+                row["sidecars"] = item_sidecar_state(p)
+            if p.member is not None:
+                row["crc"] = p.crc
             try:
-                status, body, st = api.upload(p, fields_for(args, folder, p, cats))
-                row.update(size=st.st_size, mtime_ns=st.st_mtime_ns)
+                status, body, (size, mtime_ns) = api.upload(p, fields_for(args, folder, p, cats))
+                row.update(size=size, mtime_ns=mtime_ns)
             except (urllib.error.URLError, OSError) as e:
                 status, body = 0, {"detail": str(getattr(e, "reason", e))[:200]}
             if status in (200, 202) and "id" in body:
@@ -776,14 +1020,14 @@ def main(argv=None) -> int:
     if args.watch is not None:
         return watch(args, folder, identity, record)
     done = open_record(record, identity, create=not args.dry_run)
-    files, not_media, _ = plan(folder)
-    todo = [p for p in files if done.get(str(p.relative_to(folder))) != file_state(args, p, p.stat())]
+    files, not_media, _ = plan(folder, archives=args.archives)
+    todo = [p for p in files if done.get(p.rel) != file_state(args, p, p.path.stat())]
     say(f"{folder}: {len(files)} media files, {not_media} other files passed over, "
         f"{len(files) - len(todo)} already sent (record: {record})")
     if args.dry_run:
         for p in todo:
             f = fields_for(args, folder, p)
-            print(f"{p.relative_to(folder)}" + (f"  → pool {f['pool']}" if f["pool"] else "")
+            print(f"{p.rel}" + (f"  → pool {f['pool']}" if f["pool"] else "")
                   + (f"  [{f['safety']}] {f['tags']}" if args.sidecars else ""))
         return 0
 
@@ -837,25 +1081,23 @@ def watch(args, folder: Path, identity: dict, record: Path) -> int:
         leftover: dict = {}
         done = open_record(record, identity, refused=refused, retrying=retrying, categories=leftover)
 
-        def unchanged(rel, st, table):
-            return rel in table and table[rel] == file_state(args, folder / rel, st)
-        files, _, waiting = plan(folder, sent=lambda rel, st: unchanged(rel, st, done) or unchanged(rel, st, refused),
-                                 settle=args.settle)
+        def unchanged(item, st, table):
+            return item.rel in table and table[item.rel] == file_state(args, item, st)
+        files, _, waiting = plan(folder, sent=lambda it, st: unchanged(it, st, done) or unchanged(it, st, refused),
+                                 settle=args.settle, archives=args.archives)
         todo = []
         for p in files:
             try:
-                st = p.stat()
+                st = p.path.stat()
             except OSError:
                 continue
-            rel = str(p.relative_to(folder))
-            if not unchanged(rel, st, done) and not unchanged(rel, st, refused):
+            if not unchanged(p, st, done) and not unchanged(p, st, refused):
                 todo.append(p)
         # Files not tried yet go first, then the ones that failed before, the one tried longest
         # ago first: a run of failures anywhere in the folder must not keep the files behind it
         # from ever being tried (a pass gives up after GIVE_UP_AFTER failures in a row).
-        fresh = [p for p in todo if str(p.relative_to(folder)) not in retrying]
-        again = sorted((p for p in todo if str(p.relative_to(folder)) in retrying),
-                       key=lambda p: retrying[str(p.relative_to(folder))])
+        fresh = [p for p in todo if p.rel not in retrying]
+        again = sorted((p for p in todo if p.rel in retrying), key=lambda p: retrying[p.rel])
         todo = fresh + again
         # Category work an earlier pass could not finish is taken up on its own as well, but
         # not on every pass: a category kura keeps refusing must not mean a sign-in a minute.

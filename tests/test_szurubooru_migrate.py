@@ -148,6 +148,8 @@ class _Kura(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         body = self._body()
         self.calls.append(("POST", self.path))
+        if len(body) < int(self.headers.get("content-length") or 0):
+            return _reply(self, 400, {"detail": "truncated body"})     # the sender stopped short, as kura drops it
         if self.path == "/api/auth/login":
             req = json.loads(body)
             if req.get("key") != "the-key":
