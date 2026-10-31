@@ -1319,6 +1319,9 @@ async def regenerate_thumbnail(
     return _serialize_post(post, auth_user, localize=localize)
 
 
+MAX_DUPLICATE_HOPS = 10      # merges re-point to the ok root (merge_duplicate_posts.ok_root): real chains are short
+
+
 @router.post("/post/{post_id}/favorite")
 async def toggle_favorite(
     post_id: int,
@@ -1332,6 +1335,26 @@ async def toggle_favorite(
     user = user_result.scalar_one_or_none()
     if user is None:
         raise KuraError(500, "no_user", fix="Create a user account first; favorites are recorded per user.")
+
+    # Lock the post's row (shared) before the favorites are read. A duplicate merge holds it for
+    # update and moves the duplicate's favorites to its representative; a toggle that waited on
+    # it then sees the merge's result and goes to the representative, instead of leaving a
+    # favorite on a post browse no longer shows (#157). A favorite is a choice of the image.
+    # Every post the toggle moves to is locked and looked at before anything is written; a
+    # chain that loops or runs on past MAX_DUPLICATE_HOPS is refused rather than written to.
+    followed: list[int] = []
+    while True:
+        row = (await db.execute(
+            select(Post.status, Post.duplicate_of).where(Post.post_id == post_id)
+            .with_for_update(read=True))).first()
+        if row is None or row.status != "exact_dup" or row.duplicate_of is None:
+            break
+        followed.append(post_id)
+        if row.duplicate_of in followed or len(followed) >= MAX_DUPLICATE_HOPS:
+            raise KuraError(409, "duplicate_chain_unresolved",
+                            fix=f"Post {followed[0]} is a merged duplicate whose chain {followed + [row.duplicate_of]} "
+                                f"loops or is too long; repair duplicate_of so it ends on a post that is ok.")
+        post_id = row.duplicate_of
 
     stmt = (
         select(Post)

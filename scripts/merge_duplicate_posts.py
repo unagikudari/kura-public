@@ -19,6 +19,8 @@ both posts must be ok. A duplicate whose checksum's file is gone merges only whe
   point at the representative.
 - post_tag: the tags the representative lacks are added as machine tags (audited as the auto
   tagger's are, actor merge_duplicate_posts:dup=N); one it has pinned absent stays absent.
+- post_favorite: each person's favorite goes to the representative (one per person; one the
+  representative already has keeps its own time), and the duplicate's rows go (#157).
 - Human pins and GT labels are governed: a pair whose duplicate carries ones the
   representative lacks is refused and reported, not merged — unless --carry-pins (an owner-approved
   run): then each pin goes to the representative with its pinned_by and an audit row saying it was
@@ -26,7 +28,8 @@ both posts must be ok. A duplicate whose checksum's file is gone merges only whe
   GT from it; GT no carried pin explains is still refused.
 - The duplicate's history, tagger output and display renditions stay with it; it becomes
   status='exact_dup' with duplicate_of = the representative. The journal holds what was done
-  (pool rows, covers, the tags actually added, old status and versions) for an undo.
+  (pool rows, covers, favorites, the tags and favorites actually added, old status and versions)
+  for an undo.
 
 Every change is journaled before its commit (scripts/repair_posts.py's Journal); a failure after
 the plan is on disk stops the run.
@@ -153,6 +156,12 @@ def _merge(pg, dup: int, rep: int, apply: bool, journal, planned: list, lost_ok:
             rep_pools = {p["pool_id"] for p in db.fetchall()}
             db.execute("SELECT id FROM pool WHERE cover_post_id = %s ORDER BY id", (dup,))
             covers = [p["id"] for p in db.fetchall()]
+            # Favorites are a person's choice of this image: they go with it to the representative
+            # (#157), one per person, and a favorite the representative already has keeps its time.
+            db.execute("SELECT user_id, time FROM post_favorite WHERE post_id = %s ORDER BY user_id", (dup,))
+            dup_favs = [(f["user_id"], f["time"]) for f in db.fetchall()]
+            db.execute("SELECT user_id FROM post_favorite WHERE post_id = %s", (rep,))
+            rep_favs = {f["user_id"] for f in db.fetchall()}
             # Human pins and GT labels are governed (GT is written only through kura_reconciler):
             # a pair that would need them moved is reported, not merged here.
             db.execute("""SELECT tag_id, state, pinned_by FROM post_tag_pin WHERE post_id = %s
@@ -174,6 +183,8 @@ def _merge(pg, dup: int, rep: int, apply: bool, journal, planned: list, lost_ok:
                       "pins": [{"tag": p[0], "state": p[1], "pinned_by": p[2]} for p in pins],
                       "pools": [{"pool": p, "ord": o, "rep_already_member": p in rep_pools} for p, o in dup_pools],
                       "covers": covers,
+                      "favorites": [{"user": u, "time": t.isoformat() if hasattr(t, "isoformat") else str(t),
+                                     "rep_already": u in rep_favs} for u, t in dup_favs],
                       "old": {"dup": {"status": d["status"], "version": d["version"],
                                       "duplicate_of": d["duplicate_of"]},
                               "rep": {"version": r["version"]}}}
@@ -192,6 +203,13 @@ def _merge(pg, dup: int, rep: int, apply: bool, journal, planned: list, lost_ok:
                 db.execute("SELECT count(*) AS n FROM pool WHERE id = ANY(%s) AND cover_post_id = %s", (covers, rep))
                 if db.fetchone()["n"] != len(covers):
                     raise Refused("a pool cover did not end on the representative")
+            fav_added = []
+            if dup_favs:
+                db.execute("""INSERT INTO post_favorite (post_id, user_id, time)
+                              SELECT %s, user_id, time FROM post_favorite WHERE post_id = %s
+                              ON CONFLICT DO NOTHING RETURNING user_id""", (rep, dup))
+                fav_added = sorted(f["user_id"] for f in db.fetchall())
+                db.execute("DELETE FROM post_favorite WHERE post_id = %s", (dup,))
             # Machine-added tags, like the auto tagger's; a tag the representative has pinned
             # absent is dropped by the pin guard and so is not among the rows returned.
             db.execute("""INSERT INTO post_tag (post_id, tag_id, locked)
@@ -232,6 +250,7 @@ def _merge(pg, dup: int, rep: int, apply: bool, journal, planned: list, lost_ok:
                        (rep, dup))
             db.execute("UPDATE post SET version = version + 1 WHERE id = %s", (rep,))
             record["applied"] = {"tags_added": added, "pool_rows": record["pools"], "covers_set": covers,
+                                 "favorites_added": fav_added, "favorites_moved_from_dup": len(dup_favs),
                                  "pins_carried": carried,
                                  "dup": {"status": "exact_dup", "duplicate_of": rep}}
             if journal is not None:
