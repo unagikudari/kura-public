@@ -602,6 +602,15 @@ class FileChanged(OSError):
     """The file shrank while it was being sent: what went out is not the file."""
 
 
+class Damaged(FileChanged):
+    """A page in an archive that cannot be unpacked: it will not go until the archive changes.
+    `archive_mtime` is the mtime of the copy that was read (from its open descriptor)."""
+
+    def __init__(self, message: str, archive_mtime: int):
+        super().__init__(message)
+        self.archive_mtime = archive_mtime
+
+
 class Api:
     def __init__(self, url: str, ca_file: str | None):
         self.url = url.rstrip("/")
@@ -702,6 +711,7 @@ class Api:
         plan saw (size and CRC), its bytes streamed as they unpack; zipfile checks the CRC at
         the end, and a mismatch fails the send."""
         with open(item.path, "rb") as raw:
+            read_mtime = os.fstat(raw.fileno()).st_mtime_ns     # the copy being read, whatever the name points to later
             try:
                 z = zipfile.ZipFile(raw)
                 matches = [i for i in z.infolist() if i.filename == item.member]
@@ -716,7 +726,7 @@ class Api:
                 f = z.open(info)
                 first = f.read(min(CHUNK, info.file_size))
             except self.UNPACK_ERRORS as e:
-                raise FileChanged(f"{item.rel}: cannot be unpacked ({e})") from None
+                raise Damaged(f"{item.rel}: cannot be unpacked ({e})", read_mtime) from None
             kind = media_type(first[:12])
             with f:
 
@@ -732,7 +742,7 @@ class Api:
                             yield chunk
                         f.read(1)                   # reach the end, where zipfile checks the CRC
                     except self.UNPACK_ERRORS as e:
-                        raise FileChanged(f"{item.rel}: cannot be unpacked ({e})") from None
+                        raise Damaged(f"{item.rel}: cannot be unpacked ({e})", read_mtime) from None
                 status, reply = self._post_file(item.name, kind, info.file_size, data(), fields)
                 return status, reply, (info.file_size, None)
 
@@ -810,6 +820,16 @@ def file_state(args, item: Item, st: os.stat_result) -> tuple:
     return (st.st_size, st.st_mtime_ns, sig, None)
 
 
+def refused_still(args, item: Item, st: os.stat_result, entry) -> bool:
+    """Whether a refused or damaged record entry still holds for `item` as it is now. A page
+    kura refused is known by its own size and CRC; a damaged page also by its archive's mtime,
+    because a repaired archive keeps the page's declared size and CRC."""
+    if entry is None:
+        return False
+    state = file_state(args, item, st)
+    return entry == state or (item.member is not None and entry == (state[0], st.st_mtime_ns) + state[2:])
+
+
 def open_record(record: Path, identity: dict, create: bool = True, refused: dict | None = None,
                 retrying: dict | None = None, categories: dict | None = None) -> dict[str, tuple]:
     """Make sure `record` is this import's, writing its header if it is new (unless `create`
@@ -858,7 +878,7 @@ def open_record(record: Path, identity: dict, create: bool = True, refused: dict
                 refused.pop(path, None)
             if retrying is not None:
                 retrying.pop(path, None)
-        elif refused is not None and row.get("status") in REFUSED_FOR_GOOD and "size" in row:
+        elif refused is not None and (row.get("status") in REFUSED_FOR_GOOD or row.get("damaged")) and "size" in row:
             refused[path] = (row.get("size"), row.get("mtime_ns"), row.get("sidecars"), row.get("crc"))
             if retrying is not None:
                 retrying.pop(path, None)
@@ -964,12 +984,19 @@ def send(api: Api, args, folder: Path, record: Path, todo: list[Item], counts: d
     one that changed while the files before it were being sent waits for the next pass."""
     started = time.monotonic()
     failures_in_a_row = 0
+    # A pool whose file could not go this time takes nothing more this pass: the files behind
+    # it wait, so when it goes in later the pool still has the folder's (or archive's) order.
+    held: set[str] = set()
     with open(record, "a") as out:
         for n, p in enumerate(todo, 1):
             if stop:
                 say("stopping: asked to")
                 break
             rel = p.rel
+            pool = pool_name(args, folder, p)
+            if pool and pool in held:
+                counts["held"] = counts.get("held", 0) + 1
+                continue
             if settle:
                 try:
                     looked = [p.path] + (sidecar_paths(p.path) if args.sidecars else [])
@@ -988,6 +1015,14 @@ def send(api: Api, args, folder: Path, record: Path, todo: list[Item], counts: d
             try:
                 status, body, (size, mtime_ns) = api.upload(p, fields_for(args, folder, p, cats))
                 row.update(size=size, mtime_ns=mtime_ns)
+            except Damaged as e:                # this page never will go; the rest of its pool can
+                # bound to the copy that was read: a repaired archive put in its place is tried again
+                row.update(size=p.size, mtime_ns=e.archive_mtime, damaged=str(e)[:200])
+                counts["damaged"] = counts.get("damaged", 0) + 1
+                say(f"  {rel}: damaged, passed over until the archive changes")
+                out.write(json.dumps(row, ensure_ascii=False) + "\n")
+                out.flush()
+                continue
             except (urllib.error.URLError, OSError) as e:
                 status, body = 0, {"detail": str(getattr(e, "reason", e))[:200]}
             if status in (200, 202) and "id" in body:
@@ -1001,6 +1036,8 @@ def send(api: Api, args, folder: Path, record: Path, todo: list[Item], counts: d
                 counts["failed"] += 1
                 failures_in_a_row += 1
                 say(f"  {rel}: {status or 'no connection'} {row['error']}")
+                if pool and status not in REFUSED_FOR_GOOD:
+                    held.add(pool)
             out.write(json.dumps(row, ensure_ascii=False) + "\n")
             out.flush()
             if n % PROGRESS_EVERY == 0 or (n == len(todo) and n > 1):
@@ -1019,11 +1056,18 @@ def main(argv=None) -> int:
     record = args.record or default_record(identity)
     if args.watch is not None:
         return watch(args, folder, identity, record)
-    done = open_record(record, identity, create=not args.dry_run)
+    refused: dict = {}
+    done = open_record(record, identity, create=not args.dry_run, refused=refused)
     files, not_media, _ = plan(folder, archives=args.archives)
-    todo = [p for p in files if done.get(p.rel) != file_state(args, p, p.path.stat())]
+    # what is in kura, and what kura refused (or a page that cannot be unpacked), stays as it is
+    # until the file changes; anything that failed otherwise is tried again
+    states = {p.rel: file_state(args, p, p.path.stat()) for p in files}
+    still = {p.rel: refused_still(args, p, p.path.stat(), refused.get(p.rel)) for p in files}
+    todo = [p for p in files if done.get(p.rel) != states[p.rel] and not still[p.rel]]
+    passed = sum(1 for p in files if done.get(p.rel) != states[p.rel] and still[p.rel])
     say(f"{folder}: {len(files)} media files, {not_media} other files passed over, "
-        f"{len(files) - len(todo)} already sent (record: {record})")
+        f"{len(files) - len(todo) - passed} already sent"
+        + (f", {passed} refused or damaged before and unchanged" if passed else "") + f" (record: {record})")
     if args.dry_run:
         for p in todo:
             f = fields_for(args, folder, p)
@@ -1033,8 +1077,10 @@ def main(argv=None) -> int:
 
     api = Api(args.url, args.ca_file)
     sign_in(api, args)
-    counts = {"added": 0, "duplicates": 0, "failed": 0, "skipped": len(files) - len(todo),
+    counts = {"added": 0, "duplicates": 0, "failed": 0, "skipped": len(files) - len(todo) - passed,
               "not_media": not_media}
+    if passed:
+        counts["refused_before"] = passed
     started = time.monotonic()
     try:                                        # from here on, sign-out happens whatever else does
         send(api, args, folder, record, todo, counts, Stop())
@@ -1082,6 +1128,8 @@ def watch(args, folder: Path, identity: dict, record: Path) -> int:
         done = open_record(record, identity, refused=refused, retrying=retrying, categories=leftover)
 
         def unchanged(item, st, table):
+            if table is refused:
+                return refused_still(args, item, st, refused.get(item.rel))
             return item.rel in table and table[item.rel] == file_state(args, item, st)
         files, _, waiting = plan(folder, sent=lambda it, st: unchanged(it, st, done) or unchanged(it, st, refused),
                                  settle=args.settle, archives=args.archives)
@@ -1096,9 +1144,18 @@ def watch(args, folder: Path, identity: dict, record: Path) -> int:
         # Files not tried yet go first, then the ones that failed before, the one tried longest
         # ago first: a run of failures anywhere in the folder must not keep the files behind it
         # from ever being tried (a pass gives up after GIVE_UP_AFTER failures in a row).
-        fresh = [p for p in todo if p.rel not in retrying]
-        again = sorted((p for p in todo if p.rel in retrying), key=lambda p: retrying[p.rel])
-        todo = fresh + again
+        # A pool's files stay together and in the folder's order (so a retried file goes in
+        # before the files behind it); pools and loose files with nothing to retry go first.
+        units: dict[str, list[Item]] = {}
+        for p in todo:
+            units.setdefault(pool_name(args, folder, p) or f"\0{p.rel}", []).append(p)
+
+        def rank(files: list[Item]) -> tuple:
+            # by the unit's latest attempt: a pool that just failed again goes behind those
+            # that have waited longer (an old row of a held page must not keep it in front)
+            tried = [retrying[p.rel] for p in files if p.rel in retrying]
+            return (1, max(tried)) if tried else (0, 0)
+        todo = [p for files in sorted(units.values(), key=rank) for p in files]
         # Category work an earlier pass could not finish is taken up on its own as well, but
         # not on every pass: a category kura keeps refusing must not mean a sign-in a minute.
         categories_due = bool(leftover) and time.monotonic() - last_category_try >= CATEGORY_RETRY

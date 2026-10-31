@@ -177,7 +177,7 @@ def test_the_watch_takes_an_archive_once_it_has_settled(kura, tmp_path):
         proc.communicate(timeout=20)
 
 
-def test_a_corrupt_page_fails_alone_and_the_run_goes_on(kura, tmp_path):
+def test_a_damaged_page_is_passed_over_until_its_archive_changes(kura, tmp_path):
     root = tmp_path / "bad"
     root.mkdir()
     marker = b"MARKER-0123456789"
@@ -194,12 +194,18 @@ def test_a_corrupt_page_fails_alone_and_the_run_goes_on(kura, tmp_path):
     raw[raw.index(marker)] ^= 0xFF
     (root / "book2.zip").write_bytes(bytes(raw))
     r = _import(root, kura, tmp_path, "--archives")
-    assert r.returncode == 1                                         # failures, recorded, not a crash
-    assert "Traceback" not in r.stderr and r.stderr.count("cannot be unpacked") == 2
+    assert r.returncode == 0, r.stderr                               # damaged pages are recorded, not a crash
+    assert "Traceback" not in r.stderr and r.stderr.count("damaged, passed over") == 2
     assert {u["name"] for u in _Kura.uploads} >= {"b.png", "d.png"}
     assert not {"a.png", "c.png"} & {u["name"] for u in _Kura.uploads}
     c = json.loads(r.stdout)
-    assert c["failed"] == 2
+    assert c["failed"] == 0 and c["damaged"] == 2
+    rows = [json.loads(l) for l in (tmp_path / "rec.jsonl").read_text().splitlines()[1:]]
+    assert sorted(x["path"] for x in rows if x.get("damaged")) == ["book.zip/a.png", "book2.zip/c.png"]
+    r = _import(root, kura, tmp_path, "--archives")                  # unchanged archives: not tried again
+    assert r.returncode == 0 and "damaged, passed over" not in r.stderr
+    c = json.loads(r.stdout)
+    assert c.get("damaged", 0) == 0 and c["refused_before"] == 2
 
 
 def test_two_entries_of_one_name_are_passed_over(kura, tmp_path):
@@ -248,3 +254,60 @@ def test_archives_of_one_name_in_two_folders_are_two_pools(kura, tmp_path):
     r = _import(root, kura, tmp_path, "--archives")
     assert r.returncode == 0, r.stderr
     assert [u["pool"] for u in _Kura.uploads] == ["Alpha / Vol 1", "Beta / Vol 1"]
+
+
+def test_a_repaired_archive_sends_the_page_that_was_damaged(kura, tmp_path):
+    """A repair restores the packed bytes; the page's declared size and CRC were right all
+    along. The damaged mark belongs to the broken copy of the archive, not to the page."""
+    root = tmp_path / "fix"
+    root.mkdir()
+    marker = b"MARKER-0123456789"
+    body = PNG + os.urandom(4000) + marker + os.urandom(4000)
+    _zip(root / "book.zip", {"a.png": body, "b.png": PNG + os.urandom(300)}, compression=zipfile.ZIP_DEFLATED)
+    good = (root / "book.zip").read_bytes()
+    raw = bytearray(good)
+    raw[raw.index(marker)] ^= 0xFF
+    (root / "book.zip").write_bytes(bytes(raw))
+    t = time.time() - 300
+    os.utime(root / "book.zip", (t, t))
+    r = _import(root, kura, tmp_path, "--archives")
+    assert r.returncode == 0 and "a.png: damaged" in r.stderr
+    (root / "book.zip").write_bytes(good)                           # repaired: same entries, sound bytes
+    r = _import(root, kura, tmp_path, "--archives")
+    assert r.returncode == 0, r.stderr
+    assert [u["name"] for u in _Kura.uploads] == ["b.png", "a.png"]
+
+
+def test_a_repair_that_lands_while_the_damaged_copy_is_read_is_not_marked(kura, tmp_path):
+    """The damaged mark carries the mtime of the copy that was read, from its open descriptor:
+    a repaired archive moved into place meanwhile is not marked by the old copy's failure."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("kura_import_r", SCRIPT)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    root = tmp_path / "race"
+    root.mkdir()
+    marker = b"MARKER-0123456789"
+    _zip(root / "book.zip", {"a.png": PNG + os.urandom(1_300_000) + marker + os.urandom(1000)},
+         compression=zipfile.ZIP_DEFLATED)
+    good = (root / "book.zip").read_bytes()
+    raw = bytearray(good)
+    raw[raw.index(marker)] ^= 0xFF
+    (root / "book.zip").write_bytes(bytes(raw))
+    t = time.time() - 300
+    os.utime(root / "book.zip", (t, t))
+    old_mtime = (root / "book.zip").stat().st_mtime_ns
+    items, _, _ = mod.plan(root, archives=True)
+    (root / "repaired.zip").write_bytes(good)
+
+    class Repairing(mod.Api):
+        def call(self, method, path, body=None, headers=None, timeout=60.0):
+            os.replace(root / "repaired.zip", root / "book.zip")    # the repair lands mid-stream
+            return super().call(method, path, body, headers, timeout)
+
+    api = Repairing(kura, None)
+    api.authorization = "Token x"
+    with pytest.raises(mod.Damaged) as caught:
+        api.upload(items[0], {"tags": ""})
+    assert caught.value.archive_mtime == old_mtime
+    assert (root / "book.zip").stat().st_mtime_ns != old_mtime

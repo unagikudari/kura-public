@@ -159,7 +159,9 @@ Every image and video under the folder is added in natural order (page 2 before 
 other files are passed over. `--pool-per-folder` makes a pool of each folder, `--pool NAME`
 puts everything in one pool, `--tags` and `--source` go on every file. Files kura already
 holds are reported as duplicates. If the run is interrupted, run it again: what was already
-sent is skipped. `--dry-run` lists what would be sent. With Docker, `--url http://api:8001`
+sent is skipped, and a file kura refused is tried again only once it has changed. When a file
+cannot go in, the files behind it in the same pool wait for it, so a pool keeps its order.
+`--dry-run` lists what would be sent. With Docker, `--url http://api:8001`
 and mount the folder:
 
 ```bash
