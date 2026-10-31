@@ -23,7 +23,7 @@
   <main>
     <a class="back" href="/?q=">{sm.back}</a>
     <h1>{sm.heading}</h1>
-    <p><a href="/settings/backup">{sm.backupLink}</a></p>
+    <p><a href="/settings/backup">{sm.backupLink}</a> · <a href="/settings/operator">{sm.operatorLink}</a></p>
     <p class="intro">{sm.intro}</p>
     <section aria-labelledby="identity-settings-title">
       <h2 id="identity-settings-title">{m.pages.identity.heading}</h2>

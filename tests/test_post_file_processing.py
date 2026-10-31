@@ -100,11 +100,9 @@ def test_a_refused_new_post_leaves_no_row_and_no_file(tmp_path, monkeypatch, fai
     assert list(tmp_path.iterdir()) == []
 
 
-@pytest.mark.parametrize('operation', ['create', 'replace'])
-def test_processing_yields_to_other_requests_and_persists_original(tmp_path, monkeypatch, operation):
+def test_processing_yields_to_other_requests_and_persists_original(tmp_path, monkeypatch):
     raw = png()
-    post = SimpleNamespace(post_id=17, version=4, type='image', tags=['keep'], safety='safe', source='keep') if operation == 'replace' else None
-    db, names = setup(tmp_path, monkeypatch, post)
+    db, names = setup(tmp_path, monkeypatch, None)
     entered, release = threading.Event(), threading.Event()
     prepare = F.prepare
     def slow_prepare(data):
@@ -121,10 +119,7 @@ def test_processing_yields_to_other_requests_and_persists_original(tmp_path, mon
     monkeypatch.setattr(U, '_synchronous_materialize', materialized)
     async def exercise():
         upload = UploadFile(io.BytesIO(raw), filename='folder/image.png')
-        if operation == 'create':
-            call = P.create_post(content=upload, file=None, metadata=None, db=db, auth_user=None, localize=False)
-        else:
-            call = P.replace_post_content(17, upload, db=db, auth_user=None, localize=False)
+        call = P.create_post(content=upload, file=None, metadata=None, db=db, auth_user=None, localize=False)
         task = asyncio.create_task(call)
         try:
             for _ in range(1000):
@@ -137,13 +132,10 @@ def test_processing_yields_to_other_requests_and_persists_original(tmp_path, mon
             release.set()
         assert await task == {'id': 17}
     asyncio.run(exercise())
-    post = post or db.post
+    post = db.post
     assert (post.canvas_width, post.canvas_height, post.mime_type) == (600, 200, 'image/png')
     assert post.checksum == hashlib.sha1(raw).hexdigest()
-    if operation == 'replace':
-        assert (post.version, post.tags, post.safety, post.source) == (5, ['keep'], 'safe', 'keep')
-    else:
-        assert post.status == 'ok' and post.safety == 'sketchy'     # visible on return
+    assert post.status == 'ok' and post.safety == 'sketchy'     # visible on return
     content = names('content', 17)
     assert content[0].read_bytes() == raw and content[0].samefile(content[1])
     posters = names('thumbnail', 17)
@@ -153,15 +145,10 @@ def test_processing_yields_to_other_requests_and_persists_original(tmp_path, mon
     db.commit.assert_awaited_once()
 
 
-@pytest.mark.parametrize('operation', ['create', 'replace'])
-def test_invalid_image_fails_before_file_writes_or_commit(tmp_path, monkeypatch, operation):
-    post = SimpleNamespace(post_id=17, version=4) if operation == 'replace' else None
-    db, _ = setup(tmp_path, monkeypatch, post)
+def test_invalid_image_fails_before_file_writes_or_commit(tmp_path, monkeypatch):
+    db, _ = setup(tmp_path, monkeypatch, None)
     upload = UploadFile(io.BytesIO(b'corrupt image'), filename='bad.png')
-    if operation == 'create':
-        call = P.create_post(content=upload, file=None, metadata=None, db=db, auth_user=None, localize=False)
-    else:
-        call = P.replace_post_content(17, upload, db=db, auth_user=None, localize=False)
+    call = P.create_post(content=upload, file=None, metadata=None, db=db, auth_user=None, localize=False)
     with pytest.raises(KuraError) as error:
         asyncio.run(call)
     assert error.value.status == 400 and error.value.error == "unsupported_media"

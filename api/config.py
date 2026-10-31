@@ -104,11 +104,10 @@ if FS_MEDIA not in ("", "none", "expected"):
         "to one of those two (kura#43-2)."
     )
 
-# Broker federation: kura validates a presented human key against the broker's
-# GET /whoami. This MUST hit the LOCAL broker replica (every node runs one on
-# :8000) — NOT the existing BROKER_URL env, which is kura's task-dispatch
-# endpoint pointed at a remote tailnet host (causes /whoami timeouts).
-BROKER_WHOAMI_URL: str = os.environ.get("BROKER_WHOAMI_URL", "http://localhost:8000")
+# The user new uploads are attributed to (kura#43 item 5). The default 1 is this
+# deployment's owner; a rebuilt DB with different ids, or a second deployment, sets it.
+# /api/settings/operator reads it back (kura#102).
+OWNER_USER_ID: int = int(os.environ.get("KURA_OWNER_USER_ID", "1"))
 
 OLLAMA_URL: str = os.environ.get("OLLAMA_URL", "http://localhost:11434")
 

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { setContext } from 'svelte';
+  import { onMount, setContext } from 'svelte';
   import { writable } from 'svelte/store';
   import { IDENTITY_DISPLAY_CONTEXT, readIdentityDisplay } from '#lib/identityDisplay.ts';
   import { TAG_LOCALE_CONTEXT, readTagLocale } from '#lib/tagLocale.ts';
@@ -7,7 +7,9 @@
   import '../app.css'; // app's single global CSS layer (loaded for every route)
   import DropImport from '#lib/components/DropImport.svelte';
   import { reorderActive, currentUser } from '#lib/stores.ts';
-  import { beforeNavigate } from '$app/navigation';
+  import { afterNavigate, beforeNavigate } from '$app/navigation';
+  import { installPaintTiming, onNavigated, onNavigating } from '#lib/paintTiming.ts';
+  import { BUILD_INFO } from '#lib/build_info.ts';
   import { updated, page } from '$app/state';
 
   let isReordering = false;
@@ -39,7 +41,11 @@
   // フルページロードに切替 — 長寿命タブが旧バンドルのまま固定される問題の根治。
   // SvelteKit 3 also reports shallow routing (the lightbox's history entries) here;
   // those change no code, so they never become a full reload.
-  beforeNavigate(({ willUnload, to, shallow }) => {
+  // Back/Forward and scroll paint timings from this browser (kura: "戻る進の反応が悪い").
+  onMount(() => installPaintTiming(BUILD_INFO.version));
+  afterNavigate(({ type }) => onNavigated(type));
+  beforeNavigate(({ willUnload, to, shallow, type }) => {
+    onNavigating(type);
     if (updated.current && !willUnload && !shallow && to?.url) {
       location.href = to.url.href;
     }

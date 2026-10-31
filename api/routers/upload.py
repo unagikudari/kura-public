@@ -60,12 +60,7 @@ from api.services.tags import expand_implications, create_tag_named, tag_by_name
 
 router = APIRouter(prefix="/api", tags=["upload"])
 
-# The user new uploads are attributed to. This deployment's owner is user 1
-# (owner); it was a bare literal (kura#43 item 5). Keep that as the default so
-# behaviour is unchanged, but make it an env so a rebuilt DB with different ids —
-# or a second deployment — does not silently attribute every upload to whoever
-# happens to be row 1.
-_OWNER_USER_ID = int(os.environ.get("KURA_OWNER_USER_ID", "1"))
+from api.config import OWNER_USER_ID as _OWNER_USER_ID  # kura#43 item 5, read back by kura#102
 
 from api.services.files import MIME_TO_EXT as MIME_EXT  # the one table (kura#61 PR-A)
 

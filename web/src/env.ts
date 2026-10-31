@@ -15,5 +15,4 @@ export const variables = defineEnvVars({
 	KURA_NAV_LINKS: { schema: optional, description: 'JSON list of extra navigation links' },
 	KURA_SOURCE_URL: { schema: optional, description: 'where the menu offers the source (AGPL-3.0)' },
 	KURA_BACKUP_STATUS_FILE: { schema: optional, description: 'backup status JSON shown on /settings/backup' },
-	BROKER_WHOAMI_URL: { schema: optional, description: 'resolves a fleet machine key to its identity' }
 });

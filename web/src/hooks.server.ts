@@ -1,7 +1,6 @@
 import { redirect } from '@sveltejs/kit';
 import type { Handle } from '@sveltejs/kit/hooks';
 import { SESSION_COOKIE } from '#lib/server/session.ts';
-import { MACHINE_HEADER, machineIdentity } from '#lib/server/machine.ts';
 import { credential } from '#lib/server/access.ts';
 import { error } from '@sveltejs/kit';
 import { messagesFor, resolveUiLocale, UI_LOCALE_COOKIE } from '#lib/i18n/index.ts';
@@ -24,14 +23,7 @@ export const handle: Handle = async ({ event, resolve }) => {
     let identity;
     try { identity = await credential(event.request, event.cookies.get(SESSION_COOKIE)); }
     catch { throw error(503, messagesFor(resolveUiLocale(event.cookies.get(UI_LOCALE_COOKIE), event.request.headers.get('accept-language'))).errors.authUnavailable); }
-    if (!identity) {
-      // A fleet agent presenting its broker key reads the pages anonymously
-      // (no session, no user token — see #lib/server/machine). Anything else
-      // goes to /login as before.
-      const who = await machineIdentity(event.request.headers.get(MACHINE_HEADER));
-      if (!who) throw redirect(303, '/login');
-      event.locals.machine = who;
-    }
+    if (!identity) throw redirect(303, '/login');
   }
   const lang = resolveUiLocale(event.cookies.get(UI_LOCALE_COOKIE), event.request.headers.get('accept-language'));
   const response = await resolve(event, { transformPageChunk: ({ html }) => html.replace('%kura.lang%', lang) });

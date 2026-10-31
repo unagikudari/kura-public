@@ -54,3 +54,15 @@ test('shared access verifies revocation, bounds read cache and refuses cookie CS
   status = 503;
   await assert.rejects(m.credential(request('GET'), 'signed'), /authentication_unavailable/);
 });
+
+test('a machine key equal to a session or filename secret opens nothing (kura#145)', async () => {
+  for (const other of ['KURA_SESSION_SECRET', 'KURA_SECRET', 'KURA_FS_NAME_SALT']) {
+    const m = await moduleSource('access', `import crypto from 'node:crypto'; const env={INTERNAL_API_URL:'http://127.0.0.1:9',KURA_API_KEY:'same',${other}:'same'};
+      const SESSION_COOKIE='session'; const readSession=()=>null; const authHeaderFromSession=()=>null;`);
+    const request = new Request('https://kura.invalid/post/1', { headers: { 'x-api-key': 'same' } });
+    assert.equal(await m.credential(request, undefined), null, other);
+  }
+  const unset = await moduleSource('access', `import crypto from 'node:crypto'; const env={INTERNAL_API_URL:'http://127.0.0.1:9'};
+    const SESSION_COOKIE='session'; const readSession=()=>null; const authHeaderFromSession=()=>null;`);
+  assert.equal(await unset.credential(new Request('https://kura.invalid/post/1', { headers: { 'x-api-key': '' } }), undefined), null);
+});

@@ -223,10 +223,8 @@ def test_router_no_broker_and_storage_failure_is_redacted(database, monkeypatch)
     from fastapi.testclient import TestClient
     from api.routers.auth import router
     from api.db.session import get_db
-    import api.broker_client as broker
-    async def forbidden(*a, **kw):
-        raise AssertionError("broker auth must never be invoked")
-    monkeypatch.setattr(broker, "whoami", forbidden)
+    import importlib.util
+    assert importlib.util.find_spec("api.broker_client") is None   # no broker path left to fall back on
     engine = create_async_engine(database[1], hide_parameters=True)
     factory = async_sessionmaker(engine, expire_on_commit=False)
     app = FastAPI(); app.include_router(router)

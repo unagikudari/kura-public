@@ -10,9 +10,13 @@ const pending = new Map<string, Promise<boolean>>();
 const MAX_IDENTITIES = 512;
 const READ_TTL_MS = 5000;
 
+/** The KURA_API_KEY the API checks (api/api_key.py), refused like the API refuses it when
+ *  it equals a session or filename secret: one value must not be two kinds of key material.
+ *  Unset or refused opens nothing. */
 function machineKey(value: string | null): boolean {
   const key = env.KURA_API_KEY;
   if (!value || !key) return false;
+  if ([env.KURA_SESSION_SECRET, env.KURA_FS_NAME_SALT, env.KURA_SECRET].some(other => other && other === key)) return false;
   const a = Buffer.from(value), b = Buffer.from(key);
   return a.length === b.length && crypto.timingSafeEqual(a, b);
 }
