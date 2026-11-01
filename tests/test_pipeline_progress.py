@@ -23,21 +23,30 @@ def test_sync_failure_stops_following_cycle_stages(monkeypatch, summary, code):
 
 
 @pytest.mark.parametrize('mode,code', [('missing', 1), ('exception', 1), ('bad_exit', 1), ('hold', 75)])
-def test_gate_fault_is_not_idle_success_and_never_claims(monkeypatch, tmp_path, mode, code):
+def test_gate_fault_is_not_idle_success_and_never_measures(monkeypatch, tmp_path, mode, code):
+    """A named GPU gate that is missing, fails or says hold stops the measurement
+    before anything is read or measured; it is never an idle success."""
     gate = tmp_path / 'gate.py'
     if mode != 'missing':
         gate.touch()
-    monkeypatch.setattr(vnext_runner, 'GPU_GATE', gate)
-    monkeypatch.setattr(vnext_runner, 'heartbeat', lambda: None)
+    monkeypatch.setattr(vnext_runner, 'GPU_GATE', str(gate))
+    monkeypatch.setattr(vnext_runner, 'KURA_API', 'http://192.0.2.1:1/api')
     def run(*args, **kwargs):
         if mode == 'exception':
             raise TimeoutError()
         return SimpleNamespace(returncode=75 if mode == 'hold' else 2)
     monkeypatch.setattr(vnext_runner.subprocess, 'run', run)
     def forbidden(*args, **kwargs):
-        pytest.fail('failed admission must not access inbox or claim work')
-    monkeypatch.setattr(vnext_runner, 'broker', forbidden)
-    assert vnext_runner.tick() == code
+        pytest.fail('failed admission must not measure')
+    monkeypatch.setattr(vnext_runner, 'process_task', forbidden)
+    monkeypatch.setattr('sys.argv', ['vnext_runner', '--tag', 'x', '--event', '1'])
+    assert vnext_runner.main() == code
+
+
+def test_no_gate_named_admits(monkeypatch):
+    """One install has no GPU to share: without KURA_GPU_GATE the measurement runs."""
+    monkeypatch.setattr(vnext_runner, 'GPU_GATE', '')
+    assert vnext_runner.gpu_admits() == (True, 'no_gate')
 
 
 NOW = datetime(2026, 9, 14, tzinfo=timezone.utc)

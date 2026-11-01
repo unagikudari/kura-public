@@ -1,31 +1,24 @@
 """v-next 決定論 runner — 訓練判断から LLM を外す実行主体。
 
-plan tagger-vnext-deterministic-runner rev6 Step 10/12/13/14/18。
-trainer の timer から oneshot で起動し、1 tick で以下を行う:
+1 回の起動で 1 タグを測る (docs/notes/tagger-learn-local.md step 3c):
 
-    heartbeat → GPU gate → claim → reconciliation → 測定 → 判定
-    → registration POST (どの判定でも) → complete
+    tagger/learn.py が lease を取って呼ぶ → GPU gate → reconciliation → 測定
+    → 判定 → artifact を API へ PUT → 登録 payload を JSON 1 行で出力
 
-**なぜ heartbeat が最初なのか (INV-R8)**: broker の
-`_reroute_dead_targets` は「status=ready かつ updated_at > now-10min」でない
-target 宛 task を**他 agent へ振り直す**。作業がある tick でしか heartbeat を
-打たない設計だと、idle の谷で dead 判定に落ち、GPU も kura replica も無い
-ノードへ GPU 学習 task が飛ぶ (2026-08-02 実害: 16 件が nodec/desk へ散布)。
-よって heartbeat は **作業の有無にも GPU gate の結果にも依存させない**。
+**登録はしない。** payload は learn.py が lease の下で送る (API が同じ
+transaction で lease と最新 lifecycle event を確かめる)。runner が自分で送ると、
+lease を失った後の古い測定が登録されうる。
 
-**周期の導出 (Step 13)**: `DEAD_TARGET_AGENT_STALE` = `DEAD_TARGET_TASK_MIN_AGE`
-= 10 分。heartbeat 間隔はこれを**下回らねばならない**。timer 周期 5 分 +
-最悪 1 tick 落ち = 10 分ちょうどでは境界に張り付くため、周期 5 分・
-許容落ち 1 回で余裕 5 分を持たせる。unit 側 `OnUnitActiveSec=5min` と
-この定数はペアで動く — 片方だけ変えないこと。
-
-**INV-R1**: kura DB へは書かない。読みは primary 直読と local replica、書きは
-primary:8443 API のみ。broker task 面 (claim/heartbeat/complete) は別勘定。
-**INV-R3**: **どの判定でも** registration-request を出す (silent drop 禁止)。
+**INV-R1**: kura DB へは書かない。読みは KURA_READ_DSN / KURA_CANONICAL_DSN、
+書きは API (artifact) のみ。
+**INV-R3**: **どの判定でも** 登録 payload を出す (silent drop 禁止)。
 判定の語彙は 4 クラス (不要/配備可/掃除可/保留) ただ 1 つ — 旧 2 値の
 PASS/HOLD は `vnext_arms` が絶対 (率) floor を表すための内部値であって、
 **測定の結論ではない**。この module は結論として旧 2 値を読まない。
 **INV-R5**: 配備しない。出口は registration 行まで。
+
+以前は trainer の timer が broker の inbox を読んでいた。broker は
+2026-09-23 に退役し、それ以降この経路は何も測っていなかった。
 """
 from __future__ import annotations
 
@@ -38,112 +31,49 @@ import ssl
 import subprocess
 import sys
 import time
-import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import Any, Mapping
 
 from tagger import vnext_escalate
 from tagger.vnext_class import HOLD
-from tagger.vnext_state import (AttemptLedger, IdempotencyKey, ordered_work_items,
-                                should_noop)
+from tagger.vnext_state import AttemptLedger, IdempotencyKey, should_noop
 
-# ── 定数 (Step 13 の導出結果を含む) ──────────────────────────────────────
-AGENT_ID = os.environ.get("VNEXT_AGENT_ID", "trainer-taggerrunner-primary")
-AGENT_HOST, AGENT_EXECUTOR = AGENT_ID.split("-", 2)[:2]
-BROKER_URL = os.environ.get("BROKER_URL", "http://localhost:8000")
+# ── 定数 ────────────────────────────────────────────────────────────────
+AGENT_HOST = os.environ.get("VNEXT_AGENT_HOST") or socket.gethostname().split(".")[0]
+AGENT_ID = os.environ.get("VNEXT_AGENT_ID") or f"{AGENT_HOST}-tagger-learn"
 from tagger.api_target import api_base
 KURA_API = api_base(required=False)
 
-# broker の dead 判定は 10 分。timer は 5 分周期 (unit と対で維持)。
-DEAD_TARGET_STALE_MINUTES = 10
-TIMER_PERIOD_MINUTES = 5
-assert TIMER_PERIOD_MINUTES * 2 <= DEAD_TARGET_STALE_MINUTES, (
-    "heartbeat 周期が broker の dead 判定に対して余裕不足 — Step 13 の導出を見直すこと")
-
-LEASE_SECONDS = 3600            # 測定は分オーダー。lease は heartbeat で延長する
-WALL_CLOCK_BUDGET_S = int(os.environ.get("VNEXT_BUDGET_S", 3600))
-GPU_GATE = Path.home() / "deploy-checkout" / "scripts" / "gpu_batch_gate.py"
+# 置いた node だけが持つ GPU arbiter (trainer の gpu_batch_gate.py)。名前が無ければ
+# 測定は止めない — 1 台の install に GPU を取り合う相手はいない。
+GPU_GATE = os.environ.get("KURA_GPU_GATE", "")
 GPU_HOLD_EXIT = 75              # gate が「今は走るな」と言うときの exit code
-STATE_DIR = Path.home() / "tagger-heads" / "vnext_state"
+STATE_DIR = Path(os.environ.get("VNEXT_STATE_DIR") or Path(
+    os.environ.get("XDG_STATE_HOME") or Path.home() / ".local" / "state") / "kura-tagger" / "vnext")
 
+# 以前は証明書検証を切っていた。KURA_URL は 127.0.0.1 か正規の証明書を持つ名前。
 _ctx = ssl.create_default_context()
-_ctx.check_hostname = False
-_ctx.verify_mode = ssl.CERT_NONE
 
 
 def log(event: str, **kv: Any) -> None:
     parts = " ".join(f"{k}={v}" for k, v in kv.items())
-    print(f"[vnext-runner] {event} {parts}".rstrip(), flush=True)
-
-
-# ── broker (task 面) ────────────────────────────────────────────────────
-RUNNER_KEY_FILE = Path.home() / "tagger-heads" / ".runner_key"
-
-
-def _broker_key() -> str:
-    """runner 専用の per-agent キー。
-
-    **他 agent のキーで代用しない**: broker は per-agent キーから
-    caller_agent_id を解決するので、cc のキーを使うと runner は
-    trainer-cc-primary として振る舞い、Phase 1 の「訓練 task は runner 宛
-    のみ」という前提が静かに崩れる (LLM 窓と同一 identity になる)。
-    キーが無ければ起動しない (fail-closed)。
-
-    識別の bootstrap 経路について: 同一ホストの非対話 id を per-agent キーで
-    名乗る broker 側の分岐は、trusted 非対話 executor (reviewer / claude_ios)
-    への昇格経路になるため 2026-08-02 に revert された (nodec-cc-primary の
-    レビューが実チェーンを提示)。よって runner の identity は broker DB に
-    agents 行を直接用意する運用対処で与える。
-    """
-    if RUNNER_KEY_FILE.exists():
-        key = RUNNER_KEY_FILE.read_text().strip()
-        if key:
-            return key
-    raise RuntimeError(
-        f"{RUNNER_KEY_FILE} が無い — {AGENT_ID} の per-agent キーを用意すること "
-        "(broker の agents 行と対で作る)")
-
-
-def broker(method: str, path: str, body: dict | None = None) -> Any:
-    req = urllib.request.Request(
-        BROKER_URL + path, method=method,
-        data=json.dumps(body).encode() if body is not None else None,
-        headers={"X-API-Key": _broker_key(), "Content-Type": "application/json"})
-    with urllib.request.urlopen(req, timeout=30) as res:
-        raw = res.read()
-        return json.loads(raw) if raw else None
-
-
-def heartbeat() -> None:
-    """agent-status を書いて AgentRow の鮮度を更新する (INV-R8)。
-
-    作業の有無・GPU gate の結果に依存させない。ここが落ちても tick 全体は
-    続ける (heartbeat 不達で測定を止める理由は無い) が、必ず記録は残す。
-    """
-    try:
-        broker("POST", "/memories", {
-            # type は broker の必須列挙 (agent_status)、kind は AgentRow upsert の
-            # 分岐キー (agent-status)。両方要る — 片方だけだと 422 か素通り。
-            "type": "agent_status", "kind": "agent-status", "status": "ready",
-            "scope": "global",
-            "source_agent_id": AGENT_ID, "source_executor": AGENT_EXECUTOR,
-            "host": AGENT_HOST,
-            "content": f"{AGENT_ID} alive (vnext runner tick)",
-            "tags": ["capability:tagger-training", "kind:agent-status"],
-        })
-        log("heartbeat.ok", agent=AGENT_ID)
-    except Exception as e:  # noqa: BLE001 — heartbeat 失敗で tick を殺さない
-        log("heartbeat.failed", error=type(e).__name__, detail=str(e)[:120])
+    # stdout は結果 1 行のために空けておく (learn.py が読む)。
+    print(f"[vnext-runner] {event} {parts}".rstrip(), file=sys.stderr, flush=True)
 
 
 # ── GPU gate (Step 10 / C4: 第二 arbiter を作らない) ────────────────────
 def gpu_admits() -> tuple[bool, str]:
-    """fleet 唯一の arbiter (gpu_batch_gate.py) に従う。自前の VRAM 予約はしない。"""
-    if not GPU_GATE.exists():
-        return False, "gate_missing"          # fail-closed
+    """KURA_GPU_GATE の arbiter に従う。自前の VRAM 予約はしない。
+
+    名前があるのに無いファイルは fail-closed (置いたはずの arbiter を黙って飛ばさない)。
+    """
+    if not GPU_GATE:
+        return True, "no_gate"
+    if not Path(GPU_GATE).exists():
+        return False, "gate_missing"
     try:
-        p = subprocess.run([sys.executable, str(GPU_GATE), "--check"],
+        p = subprocess.run([sys.executable, GPU_GATE, "--check"],
                            capture_output=True, text=True, timeout=120)
     except Exception as e:  # noqa: BLE001
         return False, f"gate_error:{type(e).__name__}"
@@ -183,14 +113,22 @@ def kura_read_primary(sql: str, args: tuple = ()) -> list[tuple]:
         conn.close()
 
 
-def kura_post(path: str, body: dict) -> dict:
-    tok = (Path.home() / "tagger-heads" / ".ktok").read_text().strip()
-    auth = "Token " + base64.b64encode(f"owner:{tok}".encode()).decode()
-    req = urllib.request.Request(
-        KURA_API + path, method="POST", data=json.dumps(body).encode(),
-        headers={"Authorization": auth, "Content-Type": "application/json"})
-    with urllib.request.urlopen(req, context=_ctx, timeout=60) as res:
-        return json.loads(res.read())
+def _auth() -> str:
+    """worker と同じ資格情報 (tagger/env の KURA_USER / KURA_TOKEN)。"""
+    user, tok = os.environ.get("KURA_USER", ""), os.environ.get("KURA_TOKEN", "")
+    if not user or not tok:
+        raise RuntimeError("KURA_USER / KURA_TOKEN が無い — tagger/env を読ませる")
+    return "Token " + base64.b64encode(f"{user}:{tok}".encode()).decode()
+
+
+# 1 回の起動で送るはずだった登録 (learn.py へ渡す)。
+_PAYLOADS: list[dict] = []
+
+
+def _register(body: dict) -> dict:
+    """登録は送らずに預ける — 送るのは lease を持つ learn.py (module docstring)。"""
+    _PAYLOADS.append(body)
+    return {"id": None}
 
 
 def current_stage(tag: str) -> tuple[str | None, int]:
@@ -339,7 +277,8 @@ def _try_backfill_registration(tag: str, prev_doc, prev_path,
     """
     try:
         # backfill 経路は key を持たないのでここで引く。0 を渡すと「event 不明」の
-        # 1 行に全タグの backfill が潰れるので、必ず実際の event を使う。
+        # 1 行に全タグの backfill が潰れるので、必ず実際の event を使う
+        # (learn.py は送る前に、これが lease を取った event と同じかを確かめる)。
         _, _event_id = current_stage(tag)
         art_sha, art_ref = _artifact_for_registration(prev_doc, prev_path)
         reg = submit_registration(tag, {**dict(prev_doc), "gt": dict(gt)},
@@ -348,8 +287,11 @@ def _try_backfill_registration(tag: str, prev_doc, prev_path,
         log("registration.submitted", tag=tag, id=reg.get("id"),
             lifecycle_event=_event_id, why="backfill")
     except Exception as exc:  # noqa: BLE001
+        # 送れなかった (artifact の PUT 等) は失敗として上げる — 黙って
+        # gt-unchanged で帰ると、learn.py は「測るものが無い」と読んで片付ける。
         log("registration.failed", tag=tag, error=type(exc).__name__,
             detail=str(exc)[:200], why="backfill")
+        raise
 
 
 def _try_hold_registration(tag: str, gt: Mapping[str, int] | None, *,
@@ -397,7 +339,7 @@ def submit_hold_registration(tag: str, gt: Mapping[str, int], *, reason: str,
     floor は metrics が無いので当然通らず rejected になる — それが正しい:
     GT baseline だけが記録され、次に GT が育つまで再 dispatch されない。
     """
-    return kura_post("/tagger/registration-request", {
+    return _register({
         "tag": tag, "source_host": AGENT_HOST,
         "artifact_ref": f"(no artifact: {reason})",
         "artifact_sha256": f"(none: {reason})",
@@ -415,33 +357,30 @@ def submit_hold_registration(tag: str, gt: Mapping[str, int], *, reason: str,
 
 
 def _upload_artifact(sha: str | None, ref: str | None) -> None:
-    """head の bytes を primary へ置く。**identity は中身の hash** なので冪等。
+    """head の bytes を API へ置く。**identity は中身の hash** なので冪等。
 
-    送れなくても測定・登録は止めない (次の tick で送り直せる) が、**黙らない** —
-    送れていない head は他ノードから見えないので、静かに失敗すると
-    「登録されているのに誰も適用できない」状態が続く。
+    **送れなければ例外。** 以前は log だけ残して登録へ進んでいたが、bytes の無い
+    登録は head-policies が配らない — 「登録されているのに誰も適用できない」
+    状態が黙って続く。API は受け取った bytes を hash し直すので、返ってきた
+    sha と大きさが手元と一致すれば届いている。
     """
     import re as _re
     if not sha or not _re.fullmatch(r"[0-9a-f]{64}", sha):
         return                      # 測定 JSON の hash 等は artifact ではない
     path = Path(ref) if ref else None
     if path is None or not path.is_file():
-        log("artifact.missing", sha=sha[:12], ref=str(ref))
-        return
-    try:
-        tok = (Path.home() / "tagger-heads" / ".ktok").read_text().strip()
-        auth = "Token " + base64.b64encode(f"owner:{tok}".encode()).decode()
+        raise RuntimeError(f"artifact {sha[:12]} の実体が無い: {ref}")
+    size = path.stat().st_size
+    with path.open("rb") as f:
         req = urllib.request.Request(
-            f"{KURA_API}/tagger/artifact/{sha}", method="PUT",
-            data=path.read_bytes(),
-            headers={"Authorization": auth,
+            f"{KURA_API}/tagger/artifact/{sha}", method="PUT", data=f,
+            headers={"Authorization": _auth(), "Content-Length": str(size),
                      "Content-Type": "application/octet-stream"})
-        with urllib.request.urlopen(req, context=_ctx, timeout=300) as res:
-            res.read()
-        log("artifact.uploaded", sha=sha[:12], bytes=path.stat().st_size)
-    except Exception as e:  # noqa: BLE001
-        log("artifact.upload_failed", sha=sha[:12], error=type(e).__name__,
-            detail=str(e)[:160])
+        with urllib.request.urlopen(req, context=_ctx, timeout=900) as res:
+            got = json.loads(res.read())
+    if got.get("content_sha256") != sha or got.get("byte_size") != size:
+        raise RuntimeError(f"artifact {sha[:12]} の受領が一致しない: {got}")
+    log("artifact.uploaded", sha=sha[:12], bytes=size)
 
 
 def submit_registration(tag: str, result: Mapping[str, Any], artifact_ref: str,
@@ -482,7 +421,7 @@ def submit_registration(tag: str, result: Mapping[str, Any], artifact_ref: str,
     # ローカルディスクに留まり続ける — 「配布は未自動化」と docstring に
     # 書かれていた穴がこれ。
     _upload_artifact(artifact_sha256, artifact_ref)
-    return kura_post("/tagger/registration-request", {
+    return _register({
         "tag": tag, "source_host": AGENT_HOST,
         "artifact_ref": artifact_ref, "artifact_sha256": artifact_sha256,
         "metrics": metrics, "gt": gt,
@@ -494,70 +433,33 @@ def submit_registration(tag: str, result: Mapping[str, Any], artifact_ref: str,
 
 
 # ── 1 タグの処理 ────────────────────────────────────────────────────────
-def process_task(task: Mapping[str, Any], ledger: AttemptLedger,
-                 deadline: float, dry_run: bool, register: bool = True) -> str:
-    tag = task.get("_tag") or ""
-    task_id = task["id"]
+def process_task(tag: str, event_id: int, ledger: AttemptLedger,
+                 escalations: list) -> str:
+    """1 タグを測り、結論の語を返す。登録 payload は `_PAYLOADS` に、
+    escalation は `escalations` に積む (どちらも main が 1 行で出す)。"""
 
     # ── reconciliation (INV-R11): kura の stage が唯一の真実 ──
-    # 鍵は (tag, 最新 lifecycle イベント id)。GT が育って再 dispatch されれば
-    # 新しいイベント id になるので改めて測定され、同一イベントの再配達は
-    # 同じ鍵なので測定は 1 回だけになる。
-    stage, event_id = current_stage(tag)
+    # 鍵は (tag, 最新 lifecycle イベント id)。learn.py が lease を取ってから
+    # 確かめた event を渡す。ここで違えば、その間に誰かが動かしている。
+    stage, latest = current_stage(tag)
     key = IdempotencyKey(tag=tag, lifecycle_event_id=event_id)
-    if should_noop(stage):
-        log("noop", tag=tag, stage=stage, reason="kura stage は training ではない")
-        if not dry_run:
-            broker("POST", f"/tasks/{task_id}/complete",
-                   {"handled_by": AGENT_ID,
-                    "result_payload": {"disposition": "noop", "stage": stage}})
+    if should_noop(stage) or latest != event_id:
+        log("noop", tag=tag, stage=stage, latest_event=latest, expected=event_id,
+            reason="kura の stage/event が依頼と違う")
         return "noop"
-
-    if not ledger.should_attempt(key):
-        # 既に判定済み (done) か dead-letter。**task を閉じないと queue に残り、
-        # 毎 tick これを拾っては何もせず終わる空回りになる** (実測 2026-08-03:
-        # deepthroat が 5 分ごとに skipped を繰り返し、後続タグが 1 件も進まな
-        # かった)。判定済みであることを結果に残して閉じる。
-        state = "dead-letter" if ledger.is_dead(key) else "already-judged"
-        log("skip", tag=tag, reason=state)
-        if not dry_run:
-            try:
-                broker("POST", f"/tasks/{task_id}/complete", {
-                    "handled_by": AGENT_ID,
-                    "result_payload": {"disposition": "noop", "reason": state,
-                                       "note": "この (tag, lifecycle event) は既に判定済み"}})
-            except Exception as e:  # noqa: BLE001
-                log("skip.complete_failed", tag=tag, error=type(e).__name__)
-        return "skipped"
+    # 「済んだか」は DB の登録が決める (learn.py が調べてから呼ぶ)。ledger は
+    # HOLD streak の前回値を覚えておくためだけに使う — host ごとのファイルが
+    # 「判定済み」を名乗ると、登録を送る前に落ちたとき永久に測られない。
 
     # ── E0: 測定前の構造前提 ──
     esc = vnext_escalate.structural_preconditions(structural_context(tag))
     if vnext_escalate.blocking(esc):
         for e in esc:
             log("escalate", tag=tag, code=e.code, summary=e.summary)
-        ledger.record_attempt(key, "escalated", {"codes": [e.code for e in esc]})
-        # **owner へ届ける**。ここは長らく log だけで、escalation は誰にも
-        # 届いていなかった (配送関数は存在するのに繋がっていない = 「機構が
-        # あると思っていたが強制力が無い」系の 3 例目)。
-        gt = _current_gt(tag) or {}
-        _deliver_escalations(tag, esc, gt.get("positive", 0), gt.get("negative", 0), None)
-        # **task を閉じる**。閉じないと queue に残り、次の tick も同じ E0 で
-        # 止まる。構造前提の欠落は再測定では直らない (release 行が無い・語彙から
-        # 消えた等) ので、拾い直しても意味が無く、queue を汚すだけ。
-        # 登録は出さない — E0 は GT の問題ではないので、GT baseline を書くと
-        # 「GT が育てば直る」という誤った含意になる。直し方は escalation 側にある。
-        if not dry_run:
-            try:
-                broker("POST", f"/tasks/{task_id}/complete", {
-                    "handled_by": AGENT_ID,
-                    "result_payload": {
-                        "verdict": HOLD, "reason": "structural_precondition",
-                        "escalations": [e.code for e in esc],
-                        "detail": "; ".join(e.summary for e in esc)[:300],
-                        "note": "測定前の構造前提が満たせない。再測定では直らないので "
-                                "owner の対応が要る (escalation を送出済み)"}})
-            except Exception as ce:  # noqa: BLE001
-                log("escalate.complete_failed", tag=tag, error=type(ce).__name__)
+        # 届け先は learn.py (disposition の defer と journal)。登録は出さない —
+        # E0 は GT の問題ではないので、GT baseline を書くと「GT が育てば直る」
+        # という誤った含意になる。
+        escalations.extend(esc)
         return "escalated"
 
     # ── GT が前回測定から動いていなければ測り直さない ──
@@ -627,8 +529,7 @@ def process_task(task: Mapping[str, Any], ledger: AttemptLedger,
                     # baseline だけ作る (skip の目的は再測定の省略なので保つ)。
                     log("gt.unchanged.backfill_registration", tag=tag,
                         baseline=baseline, gt=cur_gt)
-                    if not dry_run:
-                        _try_backfill_registration(tag, prev_doc, prev_path, cur_gt)
+                    _try_backfill_registration(tag, prev_doc, prev_path, cur_gt)
                 else:
                     # **登録できない結果は skip の根拠にならない。**
                     # 旧スキーマ (classification 無し) はここに来る — 測り直せば
@@ -642,17 +543,6 @@ def process_task(task: Mapping[str, Any], ledger: AttemptLedger,
                 # 「HOLD(gt-unchanged)」として記録され、判定が退行して見える。
                 prev_disposition = (prev_doc.get("classification") or {}).get("verdict") or HOLD
                 log("gt.unchanged", tag=tag, gt=cur_gt, verdict=prev_disposition)
-                ledger.record_attempt(key, "gt_unchanged", {"gt": cur_gt})
-                ledger.mark_done(key)
-                if not dry_run:
-                    broker("POST", f"/tasks/{task_id}/complete", {
-                        "handled_by": AGENT_ID,
-                        "result_payload": {
-                            "reason": "gt_unchanged",
-                            "verdict": prev_disposition,
-                            "gt": cur_gt, "measurement": str(prev_path),
-                            "note": "前回測定から GT が動いていないため再測定を省略 "
-                                    "(判定は前回のまま)"}})
                 return f"{prev_disposition}(gt-unchanged)"
 
     # ── 測定 (唯一の実装 = INV-R9) ──
@@ -670,38 +560,20 @@ def process_task(task: Mapping[str, Any], ledger: AttemptLedger,
         # task にも残らない (INV-R3 の silent drop と同じ害)。
         # 実例 2026-08-03 deepthroat: 正例 11 件で外側 fold に pos=0 が出た。
         log("measure.insufficient_gt", tag=tag, detail=str(e)[:200])
-        ledger.record_attempt(key, "hold_insufficient_gt", {"error": str(e)[:300]})
-        ledger.mark_done(key)
-        # **登録を出す** — 出さないと成長ゲートの baseline が無いままになり、
-        # reconciler が毎サイクル同じタグを再 dispatch する (2026-08-04 実測:
-        # deepthroat は登録 0 件で 1 日 8 回の reopen 枠を使い切っていた)。
-        reg_id = None if dry_run else _try_hold_registration(
+        _try_hold_registration(
             tag, cur_gt, reason="insufficient_gt_for_cv",
             detail=f"GT の正例が CV の層別下限に届かない: {str(e)[:200]}")
-        if not dry_run:
-            broker("POST", f"/tasks/{task_id}/complete", {
-                "handled_by": AGENT_ID,
-                "result_payload": {
-                    "verdict": HOLD, "binding": ["min_gt_positive (split 層別下限)"],
-                    "reason": "insufficient_gt_for_cv", "detail": str(e)[:300],
-                    "registration_id": reg_id,
-                    "note": "GT の正例が CV の層別下限に届かない。正例を増やせば測定可能",
-                }})
         return f"{HOLD}(insufficient_gt)"
     except Exception as e:  # noqa: BLE001
         log("measure.failed", tag=tag, error=type(e).__name__, detail=str(e)[:200])
-        ledger.record_attempt(key, "error", {"error": str(e)[:300]})
         # 例外で終わった測定に判定は無い。**None を明示的に渡す** — 既定値で
         # 黙って埋めると「判定が無い」と「判定が読めなかった」が同じ形になる。
         esc = vnext_escalate.evaluate(tag=tag, verdict={}, arms={}, floor={},
                                       hold_streak=0, gt_pos=0, gt_neg=0,
                                       disposition=None, exception=e)
+        escalations.extend(esc)
         return "error"
     log("measure.done", tag=tag, seconds=round(time.time() - t0, 1))
-
-    if time.time() > deadline:
-        # 予算超過: 測定結果は捨てず記録し、次 tick で続きから (Step 10)。
-        log("budget.exceeded", tag=tag)
 
     verdict = result.get("verdict") or {}
     arms = _arms_of(result)
@@ -740,13 +612,10 @@ def process_task(task: Mapping[str, Any], ledger: AttemptLedger,
         gt_pos=gt_pos, gt_neg=gt_neg, disposition=disposition)
     for e in esc:
         log("escalate", tag=tag, code=e.code, blocking=e.blocking, summary=e.summary)
-    # **届けなければ escalation は存在しないのと同じ** (INV-R6: LLM の唯一の
-    # 入口は述語合致時の dispatch)。初版は log に出すだけで誰にも届かず、
-    # dark_anus の E2 (corpus arm 逆相関 AUC 0.405) が実際に誰にも見られない
-    # まま流れた (2026-08-03 実測)。dedup 鍵は GT bucket 化済みなので、同じ
-    # 状況では 1 回しか鳴らない。
-    if not dry_run:
-        _deliver_escalations(tag, esc, gt_pos, gt_neg, out_path=None)
+    # **届けなければ escalation は存在しないのと同じ** — 初版は log に出すだけで
+    # 誰にも届かず、dark_anus の E2 (corpus arm 逆相関 AUC 0.405) が誰にも
+    # 見られないまま流れた (2026-08-03 実測)。learn.py が journal に出す。
+    escalations.extend(esc)
 
     # ── registration (どの判定でも出す = INV-R3) ──
     out_path = STATE_DIR / f"{tag}.measurement.json"
@@ -757,72 +626,14 @@ def process_task(task: Mapping[str, Any], ledger: AttemptLedger,
         (STATE_DIR / f"{tag}.gt.json").write_text(json.dumps(cur_gt))
     art_sha, art_ref = _artifact_for_registration(result, out_path)
 
-    if dry_run or not register:
-        # Phase 1 (本番経路の shadow): claim/complete は本番どおり行い
-        # registration だけ止める。measurement は成果物として残すので、
-        # Phase 2 で有効化したときに同じ判定が再現するかを確かめられる。
-        log("registration.disabled", tag=tag, phase="shadow" if not dry_run else "dry-run",
-            verdict=disposition, measurement=str(out_path))
-        if not dry_run:
-            broker("POST", f"/tasks/{task_id}/complete", {
-                "handled_by": AGENT_ID,
-                "result_payload": {
-                    "phase": "shadow", "registration": "disabled",
-                    "verdict": disposition, "why": klass.get("why"),
-                    "net_fp_removed_deploy": klass.get("net_fp_removed_deploy"),
-                    "at": klass.get("at"), "lift": klass.get("lift"),
-                    "binding": verdict.get("binding_floor_terms_by_arm"),
-                    "measurement": str(out_path),
-                    "escalations": [e.code for e in esc]}})
-    else:
-        reg = submit_registration(tag, result, art_ref, art_sha,
-                                  lifecycle_event_id=key.lifecycle_event_id)
-        log("registration.submitted", tag=tag, id=reg.get("id"),
-            lifecycle_event=key.lifecycle_event_id)
-        broker("POST", f"/tasks/{task_id}/complete", {
-            "handled_by": AGENT_ID,
-            "result_payload": {
-                "verdict": disposition, "why": klass.get("why"),
-                "net_fp_removed_deploy": klass.get("net_fp_removed_deploy"),
-                "at": klass.get("at"), "lift": klass.get("lift"),
-                "binding": verdict.get("binding"),
-                "registration_id": reg.get("id"),
-                "escalations": [e.code for e in esc],
-            }})
+    reg = submit_registration(tag, result, art_ref, art_sha,
+                              lifecycle_event_id=key.lifecycle_event_id)
+    log("registration.prepared", tag=tag, verdict=disposition,
+        lifecycle_event=key.lifecycle_event_id, measurement=str(out_path))
+    del reg
 
     ledger.record_attempt(key, "done", {"hold_streak": streak, "gt_bucket": list(bucket)})
-    ledger.mark_done(key)
     return disposition
-
-
-def _deliver_escalations(tag: str, escalations, gt_pos: int, gt_neg: int,
-                         out_path) -> None:
-    """escalation を owner へ届ける。**鳴らしすぎない**ことも要件。
-
-    dedup 鍵は (code, tag, GT bucket) — 同じ状況で繰り返し鳴らさず、GT が
-    まとまって育てば改めて鳴る。情報提供型 (blocking=False) も届けるが
-    importance を下げる: E7 は「正例を増やせば届く」という**次の行動が分かる**
-    情報で、握り潰すと HOLD の理由が人間に見えなくなる。
-    """
-    for e in escalations:
-        try:
-            broker("POST", "/tasks/dispatch", {
-                "content": (f"[vnext escalation {e.code}] tag={tag}\n{e.summary}\n\n"
-                            f"詳細: {json.dumps(e.detail, ensure_ascii=False)[:800]}\n"
-                            f"GT: positive={gt_pos} negative={gt_neg}\n"
-                            f"測定: {out_path or STATE_DIR / f'{tag}.measurement.json'}\n"
-                            f"(runner が自動送出。blocking={e.blocking})"),
-                "task_kind": "message",
-                "target_agent_id": "trainer-cc-primary",
-                "target_host": "trainer",
-                "source_agent_id": AGENT_ID,
-                "dedup_key": e.dedup_key(tag, gt_pos, gt_neg),
-                "importance": "medium" if e.blocking else "low",
-            })
-            log("escalate.delivered", tag=tag, code=e.code)
-        except Exception as ex:  # noqa: BLE001 — 配送失敗で測定結果は捨てない
-            log("escalate.deliver_failed", tag=tag, code=e.code,
-                error=type(ex).__name__)
 
 
 def _current_gt(tag: str) -> dict[str, int] | None:
@@ -918,85 +729,30 @@ def _extract_tag(task: Mapping[str, Any]) -> tuple[str | None, int]:
     return (m.group(1) if m else None), 0
 
 
-def tick(dry_run: bool = False, limit: int = 1, register: bool = True) -> int:
-    # 1) heartbeat は常に最初 (INV-R8) — GPU gate より前、作業の有無に依らない
-    heartbeat()
-
-    # 2) GPU gate (第二 arbiter を作らない)
-    admit, why = gpu_admits()
-    if not admit:
-        log("gpu.hold" if why == "hold" else "gpu.failed", reason=why)
-        return GPU_HOLD_EXIT if why == "hold" else 1
-
-    # 3) claim 対象を探す
-    try:
-        inbox = broker("GET", f"/tasks/inbox?target_agent_id={AGENT_ID}&limit=20") or []
-    except Exception as e:  # noqa: BLE001
-        log("inbox.failed", error=type(e).__name__, detail=str(e)[:150])
-        return 1
-    work = []
-    for t in inbox:
-        if t.get("task_kind") != "code-edit":
-            continue
-        tag, _ = _extract_tag(t)
-        if not tag:
-            continue
-        work.append({**t, "_tag": tag})
-    if not work:
-        log("no-work")
-        return 0
-
-    ledger = AttemptLedger(STATE_DIR / "ledger.json")
-    # 並び順を決めるためだけの鍵 (タグ昇順)。**実際の冪等キーは process_task が
-    # kura の lifecycle イベント id から作る** — ここで id を埋めると task 本文
-    # 由来の固定値が鍵になり、再 dispatch が永久に skip される。
-    keys = ordered_work_items([IdempotencyKey(tag=w["_tag"], lifecycle_event_id=0)
-                               for w in work])
-    by_tag = {w["_tag"]: w for w in work}
-    deadline = time.time() + WALL_CLOCK_BUDGET_S
-    done = 0
-    for key in keys:
-        if done >= limit or time.time() > deadline:
-            break
-        task = by_tag[key.tag]
-        if not dry_run:
-            try:
-                broker("POST", f"/tasks/{task['id']}/claim",
-                       {"handled_by": AGENT_ID, "lease_seconds": LEASE_SECONDS})
-            except urllib.error.HTTPError as e:
-                log("claim.failed", tag=key.tag, code=e.code)
-                continue
-        outcome = process_task(task, ledger, deadline, dry_run, register)
-        log("tag.done", tag=key.tag, outcome=outcome)
-        # 空振り (既判定/stage 不一致) は「1 タグ処理した」に数えない。数えると
-        # 判定済みタグが列の先頭にいる限り毎 tick そこで打ち切られ、後続が
-        # 永遠に進まない (2026-08-03 実測)。
-        if outcome not in ("skipped", "noop"):
-            done += 1
-    return 0
-
-
 def main() -> int:
-    ap = argparse.ArgumentParser(description="v-next deterministic training runner")
-    ap.add_argument("--dry-run", action="store_true",
-                    help="claim/registration/complete を行わず判定だけ出す")
-    ap.add_argument("--limit", type=int, default=1, help="1 tick で処理するタグ数")
-    ap.add_argument("--no-registration", action="store_true",
-                    help="Phase 1 (shadow): claim/complete はするが registration を出さない")
-    ap.add_argument("--heartbeat-only", action="store_true",
-                    help="heartbeat だけ打って終了 (Phase 1 の liveness 確認用)")
+    ap = argparse.ArgumentParser(
+        description="1 タグを測り、登録 payload を JSON 1 行で stdout に出す (tagger/learn.py が呼ぶ)")
+    ap.add_argument("--tag", required=True)
+    ap.add_argument("--event", type=int, required=True,
+                    help="learn.py が lease を取って確かめた lifecycle event id (→ training)")
     args = ap.parse_args()
     if not KURA_API:
         log("configuration-required", fix="set KURA_URL or KURA_API to the canonical Kura endpoint")
         return 2
-    if socket.gethostname().split(".")[0] != AGENT_HOST:
-        log("wrong-host", expected=AGENT_HOST, actual=socket.gethostname())
-        return 2
-    if args.heartbeat_only:
-        heartbeat()
-        return 0
-    return tick(dry_run=args.dry_run, limit=args.limit,
-                register=not args.no_registration)
+    admit, why = gpu_admits()
+    if not admit:
+        log("gpu.hold" if why == "hold" else "gpu.failed", reason=why)
+        print(json.dumps({"outcome": "gpu_" + why}), flush=True)
+        return GPU_HOLD_EXIT if why == "hold" else 1
+    escalations: list = []
+    ledger = AttemptLedger(STATE_DIR / "ledger.json")
+    outcome = process_task(args.tag, args.event, ledger, escalations)
+    print(json.dumps({
+        "outcome": outcome, "registration": _PAYLOADS[-1] if _PAYLOADS else None,
+        "escalations": [{"code": e.code, "blocking": e.blocking, "summary": e.summary,
+                         "detail": e.detail} for e in escalations],
+    }, ensure_ascii=False, default=str), flush=True)
+    return 0 if outcome != "error" else 1
 
 
 if __name__ == "__main__":

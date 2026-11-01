@@ -2,7 +2,7 @@
 
 A self-hosted archive for your image and video collection, built for libraries of hundreds of
 thousands of files. Tag it, search it, keep series in order as pools, read them page by page,
-and let the optional auto-tagger do the first pass.
+and let an auto-tagger do the first pass, one that learns from the tags you correct.
 
 ![Tags by category beside the grid of a library of woodblock prints](docs/screenshots/grid.jpg)
 
@@ -14,11 +14,24 @@ and let the optional auto-tagger do the first pass.
   (.zip, .cbz) as pools, take the tags that sit next to your files (booru JSON, XMP keywords,
   text files, ComicInfo.xml), or bring the images and videos of a szurubooru or Hydrus
   library, or the archives of a LANraragi, over with their tags.
-- **Auto-tagging** (optional): a WD14 tagger tags new images; it runs on a CPU, a GPU only
-  makes it faster.
+- **An auto-tagger that learns from you** (optional): a WD14 tagger tags new images, on a
+  CPU or faster on a GPU. When you correct a tag — remove it where it is wrong, lock it where
+  it is right — kura trains a head for that tag on your machine, checks it against your
+  corrections, and uses it for new images once it does better than the tagger. Nothing
+  leaves the machine.
 - English and Japanese interface. Runs on one Linux machine, natively or with Docker Compose.
 
 ![A post with its tags](docs/screenshots/post.jpg)
+
+How much a round of corrections changes, on the test library behind these screenshots (346
+woodblock prints and 70 old photographs, a small test): the tagger had tagged 162 of the
+prints *monochrome*, 140 of them plainly in colour. After the tag was removed from those 140
+and locked on 71 truly single-tone images, one learning pass (9 minutes on a 4-core CPU)
+deployed a head, and of 30 images added afterwards none of the 15 colour prints and all of
+the 15 single-tone photographs came out tagged *monochrome*
+(["Learning from your corrections"](#learning-from-your-corrections-optional)).
+
+![Images added after one round of corrections: colour prints without the tag, photographs with it](docs/screenshots/learning.jpg)
 
 The API is FastAPI on PostgreSQL; the web front end is SvelteKit. The screenshots show prints
 by Hokusai and Hiroshige from the Art Institute of Chicago's public-domain collection (CC0).
@@ -296,6 +309,36 @@ systemctl --user enable --now kura-tagger-worker
 
 `journalctl --user -u kura-tagger-worker` shows each image it tags. Images added before the
 worker started are tagged too.
+
+## Learning from your corrections (optional)
+
+The tagger gets better at the tags you correct. Removing a wrong tag from an image, or
+locking a right one (the lock next to a tag), is a correction. Once a tag has enough of
+them, kura trains a small head for it on top of the tagger, checks it against your
+corrections, and the worker starts using it for new images. Nothing is sent anywhere;
+training runs on this machine, on the CPU unless the tagger venv has a GPU build of torch.
+
+It needs the auto-tagging above, then, from `~/kura`:
+
+```bash
+~/.local/share/kura-tagger/venv/bin/pip install -r tagger/requirements.txt
+cp systemd/user/kura-tagger-learn.service systemd/user/kura-tagger-learn.timer ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now kura-tagger-learn.timer
+```
+
+Every 30 minutes a pass turns new corrections into labels, picks a tag that has enough,
+trains one head and deploys it if it beats the tagger. `journalctl --user -u
+kura-tagger-learn` shows each pass. A tag is picked once it has been removed from 10
+images by hand and at least 20 images have it (locked, or still tagged); its head is
+deployed only if it measures better than the tagger on your corrections. The numbers live
+in the `tagger_config` table (`min_gt_labels`, `min_gt_positive`, `min_precision`,
+`min_recall` and others). Lock the images where a tag is right as well as removing it
+where it is wrong: a head learned mostly from removals cannot tell what the tag looks
+like. A head applies to every image; to limit a tag's head to images that have
+other tags, add a rule for it in `tagger_tag_rule`, or start the pass with
+`--undeclared-domain block` to deploy only heads that have one. Why a tag is not being
+trained shows in `tagger_candidate_disposition_current` and in the pass's log.
 
 ## Upgrading
 

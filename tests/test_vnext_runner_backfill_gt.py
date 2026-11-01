@@ -39,8 +39,8 @@ STALE_DOC = {
 
 def _capture(monkeypatch):
     sent: list[tuple[str, dict]] = []
-    monkeypatch.setattr(vr, "kura_post",
-                        lambda path, body: sent.append((path, body)) or {"id": 7})
+    monkeypatch.setattr(vr, "_register",
+                        lambda body, path="/tagger/registration-request": sent.append((path, body)) or {"id": 7})
     monkeypatch.setattr(vr, "current_stage", lambda tag: ("candidate", 4242))
     monkeypatch.setattr(vr, "_upload_artifact", lambda sha, ref: None)
     return sent

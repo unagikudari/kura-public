@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-# Description: auto-dispatches training work for open tagger_head_candidate rows to trainer
+# Description: queues training for open tagger_head_candidate rows (candidate -> training)
 # Kind: tool
-# Effects: mutating (kura DB lifecycle_event rows) + dispatches broker tasks (external side effect)
-# Runs-on: primary
+# Effects: mutating (kura DB lifecycle_event rows)
+# Runs-on: the machine that holds the database (tagger/learn.py runs it)
 """tagger/reconciler.py — closes the "detected weak point -> triggers
 training" gap (plan:kura-tagger-lifecycle-redesign, user directive
 2026-07-20: この plan の原案の目標そのもの、人手を一切介さずタガーが
@@ -16,7 +16,15 @@ loop (get someone/something to actually train a fix) was never wired up.
 The tagger was structurally incapable of improving itself even though the
 "this needs improvement" signal was already flowing correctly.
 
-What this script does, each run:
+**2026-11-01**: the queue is the ledger. A tag whose latest lifecycle event
+is `-> training` and that has no registration for that event is waiting to
+be measured; tagger/learn.py measures it (docs/notes/tagger-learn-local.md).
+The broker task this used to send died with the broker on 2026-09-23, and
+the 60-minute stale-training reaper is replaced by settle_judged_training,
+which moves a tag off 'training' as soon as its measurement was judged.
+
+What this script does, each run (the paragraphs below predate that; read
+"dispatch" as "queue"):
   1. Reads every OPEN head candidate (status='candidate'), deduped by tag
      (the same tag can get flagged from multiple pools -- one training
      request per tag, not one per pool).
@@ -49,7 +57,6 @@ from __future__ import annotations
 
 import json
 import os
-import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -67,56 +74,10 @@ from api.tagger_core.transitions import (
 from api.tagger_core.config import QUARANTINE_TAGS, is_non_trainable, load_config
 from api.tagger_core.transitions import TransitionError, acquire_lease, record_lifecycle_event, release_lease
 
-BROKER_DISPATCH_CLI = str(Path.home() / "broker" / "scripts" / "broker_dispatch_task.py")
-# Training must go to the SPECIFIC trainer agent that has full env access (kura
-# DB + filesystem writes + network to POST registration). Dispatching to the bare
-# host let the broker route to whichever trainer agent was 'ready' -- and the
-# 2026-07-23 8-tag burst all landed on trainer-CODEX-primary, a read-only/network-
-# restricted sandbox that cannot connect to the DB, write an artifact, or POST a
-# registration, so it correctly refused all 8 (rather than fabricate). Those tags
-# then sat stuck in stage=training (see _reap_stale_training). trainer-cc-primary
-# is the training-capable agent. Pinning it (target_agent_id) also means the
-# no-allow-stale preflight fails CLOSED if it isn't live -- retried next tick --
-# instead of misrouting to a sandboxed sibling.
-# Phase 1 cutover (2026-08-03、plan tagger-vnext-deterministic-runner rev6 の
-# E-H1): 訓練 dispatch の宛先を LLM 窓から決定論 runner へ切り替える。切替を
-# Phase 3 に置くと「shadow が始まらない」(dispatch は完全一致なので runner に
-# 1 件も届かない) ため、Phase 1 の開始条件がこの切替そのもの。runner 側は
-# --no-registration で走り、判定は出すが登録はしない = 本番経路の shadow。
-# LLM fallback は Phase 1 では常時有効のまま (Phase 3 で stale 時限定に絞る)。
-TRAINING_TARGET_AGENT = "trainer-taggerrunner-primary"
-# Host/executor derived from the agent id ({host}-{executor}-{n} convention) so a
-# target switch (plan tagger-vnext-deterministic-runner Phase 1: -> taggerrunner)
-# updates all three in one edit. Passing BOTH to the dispatch CLI is plan Step 4:
-# --host alone still lets find_ready_agent fall through to trainer's sandboxed
-# codex/gemini workers when the executor filter is NULL (dispatch.py:300-303);
-# --host + --executor makes the pinned agent the only candidate, so the broker's
-# dead-target reroute takes its reroute-skipped path instead of spraying the
-# task cross-host (target_host NULL fail-open, plan explicit-target-reroute-
-# fails-open).
-TRAINING_TARGET_HOST, TRAINING_TARGET_EXECUTOR = TRAINING_TARGET_AGENT.split("-", 2)[:2]
-# A tag dispatched to training but never advanced (no approved registration) is
-# stuck: auto_review.py only moves training->approved on an APPROVED registration,
-# so a refused/failed/held/rejected attempt leaves the tag in 'training' forever
-# (measured 2026-07-23: ~40 tags stuck, oldest 60h). _reap_stale_training rolls a
-# stale one back to 'candidate' (a legal rollback edge, migration 0077) so it can
-# re-dispatch to the right agent. Bounded per-tag so a tag trainer legitimately
-# HOLDS (e.g. a rename artifact) can't loop forever -- after the cap it is left for
-# the dismissal flow (primary-cc-primary's domain). ops/timing knobs, NOT ML-quality
-# thresholds, so they stay module constants (same call as STALE_LEASE_GRACE, see
-# api/tagger_core/config.py docstring), not tagger_config rows.
-STALE_TRAINING_MINUTES = 60      # real cc-primary training round ~23min; 60 = >2.5x margin
-# 2026-08-03: 2 -> 8。この上限は **LLM 時代の throttle** だった (1 回 23 分の
-# 対話セッションで訓練窓を溢れさせない)。Phase 1 で消費者が決定論 runner に
-# 変わり、実測で「GPU 0% / 16 タグが 24h 窓の空きを待って停止」という、資源を
-# 遊ばせるだけの状態になった (user 指摘 2026-08-03「時間だけでなく使用率も見ろ /
-# 待っている間、一番大切な時間という予算を失っている」)。無限ループ防止は
-# 既に (a) GT 成長ゲート (GT が動いていなければ再 dispatch しない) (b) runner の
-# attempt ledger と dead-letter (c) MAX_REOPENS_PER_RUN の per-tick 平滑化 が
-# 担っており、この定数はその 4 重目。runner の 1 回のコストは可観測かつ小さい
-# (測定 1 タグ ~30 分・GPU gate 経由) ので、窓を広げる側に倒す。
-MAX_TRAINING_REOPENS = 8         # per tag per 24h -- caps held/untrainable tag looping
-MAX_REOPENS_PER_RUN = 8          # smooth the backlog drain across ticks, don't flood one agent
+# _reap_approved_without_head's bounds: a tag reopened this many times in 24h is
+# left for a person, and at most this many are reopened per tick.
+MAX_TRAINING_REOPENS = 8
+MAX_REOPENS_PER_RUN = 8
 # Per-tick snapshot of the reconciler's decision for EVERY open head_candidate
 # tag (dispatch vs hold + why), written atomically each run. The dashboard reads
 # it to show the true automation disposition instead of re-deriving the gate (no
@@ -472,220 +433,104 @@ def _saturated(backlog: int | None, dispatched_this_tick: int, backlog_max: int)
     return backlog + dispatched_this_tick >= backlog_max
 
 
-def _downstream_backlog(agent_id: str) -> int | None:
-    """How many tasks are queued to `agent_id` and not yet claimed.
+# A decision that stops a tag (issue #55 P1). The reconciler's loop skips
+# these tags; the training queue and the settle step use the same set, so a
+# tag the reconciler would not queue is never measured and does not sit in
+# 'training' either.
+HELD_BY_DECISION = ("defer", "dismiss", "block")
 
-    This is an OBSERVATION the reconciler reads before adding more — "is the
-    runner already behind?" — not a decision about any one tag (#55's disposition
-    ledger holds decisions; saturation is not one). Returns None when the broker
-    cannot be read: backpressure then fails OPEN (dispatch as before), because a
-    transient read failure must not silently halt all training. The cost of
-    failing open is at worst the pre-#62 behaviour for one tick.
+# Tags waiting to be measured: latest event moves to 'training', nothing has
+# registered a result for that event, and no standing decision holds the tag.
+# Oldest first. tagger/learn.py reads this; the reconciler counts it.
+QUEUED_TRAINING_SQL = """
+WITH latest AS (
+  SELECT DISTINCT ON (tag_id) tag_id, tag, id, to_stage, occurred_at
+  FROM tagger_lifecycle_event ORDER BY tag_id, occurred_at DESC, id DESC)
+SELECT l.tag, l.id AS event_id, l.occurred_at
+FROM latest l
+WHERE l.to_stage = 'training'
+  AND NOT EXISTS (SELECT 1 FROM tagger_registration_request r
+                  WHERE r.tag_id = l.tag_id AND r.lifecycle_event_id = l.id)
+  AND NOT EXISTS (SELECT 1 FROM tagger_candidate_disposition_current d
+                  WHERE d.tag = l.tag AND d.disposition IN ('defer', 'dismiss', 'block'))
+ORDER BY l.occurred_at, l.id
+"""
+
+
+async def _queued_training(db) -> int:
+    """How many tags are queued and not yet measured — the backpressure input
+    (kura#62). The broker's pending count used to be read here; the ledger is
+    the queue now, so the count comes from the same query the runner uses."""
+    return len((await db.execute(text(QUEUED_TRAINING_SQL))).all())
+
+
+async def _settle_rows(db, tag: str | None = None):
+    """Each tag in 'training' with its latest event, whether a standing decision holds
+    it, and the id of a judged, undeployed result for that event (None if none)."""
+    return (await db.execute(text("""
+WITH latest AS (
+  SELECT DISTINCT ON (tag_id) tag_id, tag, id, to_stage
+  FROM tagger_lifecycle_event ORDER BY tag_id, occurred_at DESC, id DESC)
+SELECT l.tag, l.id AS event_id,
+  EXISTS (SELECT 1 FROM tagger_candidate_disposition_current d
+          WHERE d.tag = l.tag AND d.disposition IN ('defer', 'dismiss', 'block')) AS held,
+  (SELECT r.id FROM tagger_registration_request r
+   WHERE r.tag_id = l.tag_id AND r.lifecycle_event_id = l.id
+     AND (r.status = 'rejected'
+          OR (r.status = 'validated' AND r.promoted_patch_id IS NULL
+              AND r.review_class IS DISTINCT FROM 'deployable'))
+   ORDER BY r.id LIMIT 1) AS judged
+FROM latest l WHERE l.to_stage = 'training' AND (CAST(:tag AS text) IS NULL OR l.tag = :tag)
+"""), {"tag": tag})).mappings().all()
+
+
+async def settle_judged_training(db) -> list[str]:
+    """Move tags off 'training' once nothing more will happen there.
+
+    A tag leaves 'training' for 'approved' only when auto_review promotes its
+    registration. Every other ending — a hold, a rejection, a validated result
+    that is not deployed, a standing decision that holds the tag — used to
+    leave it in 'training' until the 60-minute reaper noticed (measured
+    2026-07-23: ~40 tags stuck, oldest 60h). Here it goes back to 'candidate'
+    at once, so the growth gate decides whether it is measured again. A
+    registration still 'pending' has not been judged yet and is left alone,
+    as is a 'validated' one auto_review may still promote (domain or kind
+    gate passing later).
     """
-    try:
-        sys.path.insert(0, str(Path.home() / "broker" / "scripts"))
-        from broker_api_client import BrokerApiClient
-        client = BrokerApiClient.from_env()
-        rows = client.list_tasks(status="pending", target_agent_id=agent_id)
-        return len(rows) if rows is not None else None
-    except Exception as e:  # noqa: BLE001
-        print(f"[reconciler] backlog read failed ({e}) — backpressure fails open this tick",
-              file=sys.stderr)
-        return None
-
-
-def _dispatch_training_request(
-    tag: str, candidates: list[dict], gt_pos: int, gt_neg: int, min_gt_labels: float,
-    trigger: str = "new-candidate", corpus_pos: int | None = None,
-) -> bool:
-    """Fire-and-forget-ish: returns True if the broker CLI reported success.
-    A failed dispatch here must NOT record a training transition (the
-    lifecycle ledger would then claim work is in flight that never
-    actually got requested) -- caller only records the transition when
-    this returns True.
-
-    Deliberately does NOT pass --allow-stale (bug found live 2026-07-21,
-    nodec-cc-primary task 2ef1f836): --allow-stale skips broker_dispatch_
-    task.py's client-side live-agent preflight and lets the server's
-    resolve_routing() cross-host fallback pick ANY ready cc agent when
-    trainer's isn't in the freshness window at that exact tick -- it
-    misrouted 16 dispatches to nodec-cc-primary, which has no GPU/kura
-    repo/tagger_gt_label access and correctly bounced all of them. Without
-    --allow-stale, a missed preflight just fails closed (rc!=0, no
-    transition recorded) and the tag stays a candidate for the next
-    15-minute reconciler tick -- self-healing instead of misrouting."""
-    pools = sorted({str(c["source_pool_id"]) for c in candidates if c["source_pool_id"] is not None})
-    # Broker code-edit tasks are hard-capped at 4,000 chars (task-body-oversize,
-    # rc=3) — an unbounded reasons list breaks the WHOLE tick: the dispatch
-    # fails, the reconciler exits 1 and auto_review never runs (smegma with 9+
-    # pools, measured 2026-08-02: content_chars 4970 → unit FAILURE every tick).
-    # Cap the per-pool reasons; the full candidate rows stay queryable in
-    # tagger_head_candidate, so the tail carries no information the trainer
-    # can't already reach with one SELECT.
-    _MAX_REASONS = 6
-    reasons = "\n".join(f"- pool #{c['source_pool_id']}: {c['reason']}"
-                        for c in candidates[:_MAX_REASONS])
-    if len(candidates) > _MAX_REASONS:
-        reasons += (f"\n- (他 {len(candidates) - _MAX_REASONS} pool — 全件は "
-                    f"SELECT * FROM tagger_head_candidate WHERE tag='{tag}' で参照)")
-    # POSITIVE SOURCE for a v-next: gt_label positives are few for an over-
-    # detected tag (humans only ever DELETE it), so a precision retrain draws
-    # its positive class from the tag's LIVE CORPUS (posts still holding the
-    # tag) and its hard negatives from the human deletions (negative GT). User
-    # 2026-07-23: 検知済み正例は学習プールではなくそのタグを持つ全体にしたほうがいい.
-    corpus_note = (
-        f"\n正例源: このタグを現在保持する corpus 全体 = {corpus_pos} 件"
-        f"(SELECT pt.post_id FROM post_tag pt JOIN tag_name tn ON tn.tag_id=pt.tag_id "
-        f"AND tn.ord=0 WHERE tn.name='{tag}')。gt_label 正例({gt_pos}件)は検証プール由来で"
-        f"少数のため、正例は corpus-present から sample し、negative GT({gt_neg}件=人手削除の"
-        f"FP補正)を hard negative に使うこと。" if corpus_pos is not None else "")
-    if trigger == "new-candidate":
-        trigger_note = "トリガ=new-candidate: 未学習(または未 approved)の新規候補。"
-    else:
-        base = ("既存 approved patch の再学習(v-next)" if trigger.endswith("v-next")
-                else "base WD14 タグの過検出に対する新規の抑制/精度ヘッド(approved patch 無し)")
-        aspect = ("recall+precision(取りこぼし FN と過検出 FP の両方を是正)"
-                  if trigger.startswith("recall+precision")
-                  else "recall(取りこぼし false negative を減らす)" if trigger.startswith("recall")
-                  else "precision(過検出 false positive を抑制、決定境界を negative 側に締める)")
-        trigger_note = f"トリガ={trigger}: {base} — {aspect} を依頼する。"
-    trigger_note += corpus_note
-    content = (
-        f"PLANS_CHECKED: kura-tagger-lifecycle-redesign (completed, fact 2fe6daf6) — "
-        f"auto-dispatched by tagger/reconciler.py, no human triggered this specific request.\n\n"
-        f"tag={tag} が head_candidate として自動検出されました({len(candidates)}件、"
-        f"pool: {', '.join(pools) if pools else '(なし)'})。学習/改善の検討・実施をお願いします。\n\n"
-        f"{trigger_note}\n\n"
-        f"検出理由:\n{reasons}\n\n"
-        f"GTラベル(tagger_gt_label、post_tag_audit訂正+検証済みpoolから自動導出): "
-        f"positive={gt_pos} / negative={gt_neg}(合計{gt_pos + gt_neg}件、閾値{min_gt_labels:.0f}件以上のみdispatch)。\n"
-        f"SELECT * FROM tagger_gt_label WHERE tag='{tag}' で全件参照可能。\n\n"
-        f"完了したら POST /api/tagger/registration-request で登録してください "
-        f"(tag/source_host/artifact_ref/artifact_sha256/metrics/gt)。"
-    )
-    # 最終安全弁: broker の code-edit 上限 4,000 chars (rc=3 task-body-oversize)。
-    # _MAX_REASONS で通常は届かないが、単一 reason が異常長でも tick を殺さない。
-    if len(content) > 3900:
-        content = content[:3800] + "\n…(truncated — 全文は tagger_head_candidate を SELECT)"
-    try:
-        result = subprocess.run(
-            [sys.executable, BROKER_DISPATCH_CLI, "--content", content, "--kind", "code-edit",
-             # target the SPECIFIC training-capable agent, not the bare host --
-             # a host dispatch can land on trainer's sandboxed codex/gemini
-             # agents which cannot train (2026-07-23 incident, see the constant).
-             "--agent", TRAINING_TARGET_AGENT,
-             # Plan tagger-vnext-deterministic-runner Step 4: without --host the
-             # task row's target_host stays NULL (code-edit has no KIND_DEFAULTS
-             # host) and the dead-target reroute fails OPEN to an all-host
-             # search; --executor is required with it or find_ready_agent falls
-             # through to this host's sandboxed codex/gemini workers.
-             "--host", TRAINING_TARGET_HOST, "--executor", TRAINING_TARGET_EXECUTOR,
-             # **未処理の同一依頼を二度作らない。** tasks.dedup_key の UNIQUE は
-             # open な status だけに掛かる部分索引なので、「まだ誰も着手して
-             # いない依頼が 1 つある間は作らない、完了したらまた作れる」になる。
-             #
-             # 2026-08-07 実測: male_pubic_hair は tagger_head_policy 行を 1 つも
-             # 持たないので `deployable=False` になり、**成長ゲートを素通りして
-             # 毎 tick dispatch されていた**。同一内容の code-edit が 20 件
-             # trainer の inbox に積み上がった。成長ゲートは「配備できている
-             # タグ」の再測定を抑えるためのもので、配備できていないタグには
-             # 掛からない — その経路に回数制限が無かった。
-             #
-             # 時刻でスコープしない。日バケットは「持続する状態に応答側が
-             # close で再武装をかける」signal の incident 側で要るもので、
-             # ここは完了した依頼を作り直してよい別の話 (broker_signal_consumer
-             # と揃えるべきではない)。
-             "--dedup-key", f"tagger-train:{tag}",
-             "--importance", "medium",
-             # Found live 2026-07-21: every timer-triggered dispatch this
-             # session was silently failing (rc=2, "cannot identify the
-             # calling executor") because broker_dispatch_task.py's identity
-             # detection falls back to CLAUDECODE/BROKER_EXECUTOR env vars,
-             # neither of which kura-tagger-auto-cycle.service's systemd
-             # environment sets -- it's a plain oneshot unit, not a Claude
-             # Code session. Passing --source-executor explicitly makes this
-             # call self-contained instead of depending on ambient session
-             # state that can silently disappear (e.g. across a systemd user
-             # manager restart).
-             "--source-executor", "cc",
-             # 2026-08-08: この dispatch は primary-cc-primary の identity で行う
-             # しかない (bootstrap の {host}-cc-* prefix gate が非対話 identity
-             # の新規 mint を許さない — security_exposure_audit.py の
-             # audit_agent_id と同じ制約)。そのままだと、この完全自動ループの
-             # 完了 1 件ごとに、その identity を握っている対話セッション (人間
-             # が今使っている pane) へ割り込み通知が飛ぶ。reconciler の完了は
-             # 人間の判断を要さないので、要求元 push だけを明示的に止める
-             # (get_briefing の unacked completions には引き続き残る)。
-             "--tags", "notify:silent"],
-            capture_output=True, text=True, timeout=30,
-        )
-        print(f"[reconciler] dispatch({tag}): rc={result.returncode} {result.stdout.strip()[:200]}")
-        return result.returncode == 0
-    except Exception as e:  # noqa: BLE001
-        print(f"[reconciler] dispatch({tag}) failed: {e}", file=sys.stderr)
-        return False
-
-
-async def _reap_stale_training(db) -> list[str]:
-    """Roll stale 'training' tags back to 'candidate' so they can re-dispatch.
-
-    A tag advances OFF 'training' only when auto_review.py approves a registration
-    (training->approved). A dispatch that was refused (sandboxed agent, see the
-    routing fix), failed, held, or rejected produces NO approved registration, so
-    the tag sits in 'training' forever -- measured 2026-07-23: ~40 tags stuck,
-    oldest 60h. This GC finds a stale one (training transition older than
-    STALE_TRAINING_MINUTES) that still has an open head_candidate and rolls it
-    back to 'candidate' (a legal rollback edge, migration 0077), letting the main
-    loop re-evaluate it: it either re-dispatches (now to the training-capable
-    agent) or, if a rejected registration already advanced its GT baseline, the
-    growth gate HOLDS it -- so a just-rejected tag does not respawn.
-
-    Bounded so a tag trainer legitimately HOLDS (e.g. the paruru rename artifact)
-    cannot loop forever: a tag reopened >= MAX_TRAINING_REOPENS times in the last
-    24h is left in 'training' for the dismissal flow (primary-cc-primary's domain) to
-    resolve, and at most MAX_REOPENS_PER_RUN are reopened per tick to drain the
-    backlog smoothly instead of flooding the single training node."""
-    rows = (await db.execute(text(
-        "WITH latest_ev AS ("
-        "  SELECT DISTINCT ON (tag) tag, to_stage, occurred_at "
-        "  FROM tagger_lifecycle_event ORDER BY tag, occurred_at DESC, id DESC), "
-        "reopens AS ("
-        "  SELECT tag, count(*) AS n FROM tagger_lifecycle_event "
-        "  WHERE from_stage='training' AND to_stage='candidate' "
-        "    AND occurred_at > now() - interval '24 hours' GROUP BY tag) "
-        "SELECT e.tag FROM latest_ev e LEFT JOIN reopens r ON r.tag = e.tag "
-        "WHERE e.to_stage = 'training' "
-        "  AND e.occurred_at < now() - make_interval(mins => :stale_min) "
-        "  AND COALESCE(r.n, 0) < :max_reopens "
-        "  AND EXISTS (SELECT 1 FROM tagger_head_candidate hc "
-        "              WHERE hc.tag = e.tag AND hc.status = 'candidate') "
-        "ORDER BY e.occurred_at ASC LIMIT :cap"
-    ), {"stale_min": STALE_TRAINING_MINUTES, "max_reopens": MAX_TRAINING_REOPENS,
-        "cap": MAX_REOPENS_PER_RUN})).all()
-    reopened: list[str] = []
+    rows = await _settle_rows(db)
+    settled: list[str] = []
     for r in rows:
+        if not r["held"] and r["judged"] is None:
+            continue
+        why = (f"held by a standing decision" if r["held"]
+               else f"registration {r['judged']} for event {r['event_id']} was judged and not deployed")
         lease = None
         try:
-            lease = await acquire_lease(db, f"lifecycle:{r.tag}", lease_seconds=30)
+            lease = await acquire_lease(db, f"lifecycle:{r['tag']}", lease_seconds=30)
+            # The lease is ours now; the tag must still be where we read it — the same
+            # event, still held or judged — or a newer request would be settled by an
+            # older verdict.
+            now = await _settle_rows(db, r["tag"])
+            if not now or now[0]["event_id"] != r["event_id"] or (
+                    not now[0]["held"] and now[0]["judged"] is None):
+                continue
             await record_lifecycle_event(
-                db, tag=r.tag, from_stage="training", to_stage="candidate",
-                reason=f"stale-training GC: {STALE_TRAINING_MINUTES}分経過・approved 登録なし "
-                       f"→ candidate に戻し再ディスパッチ可能化(training 前進は approved 登録のみ、"
-                       f"refused/failed/held/rejected は放置されるため)",
-                lease=lease,
-            )
-            reopened.append(r.tag)
+                db, tag=r["tag"], from_stage="training", to_stage="candidate",
+                reason=f"settled: {why}", lease=lease)
+            settled.append(r["tag"])
         except TransitionError as e:
-            print(f"[reconciler] stale-training reopen failed for {r.tag}: {e}", file=sys.stderr)
+            # Held by a measuring learn.py (its 8 h lease) or a concurrent writer:
+            # the next run settles it.
+            print(f"[reconciler] settle skipped for {r['tag']}: {e}", file=sys.stderr)
         finally:
             if lease is not None:
                 try:
                     await release_lease(db, lease)
                 except TransitionError:
                     pass
-    if reopened:
-        print(f"[reconciler] stale-training GC reopened {len(reopened)}: {reopened}")
-    return reopened
+    if settled:
+        print(f"[reconciler] settled {len(settled)}: {settled}")
+    return settled
 
 
 async def _reap_approved_without_head(db) -> list[str]:
@@ -871,17 +716,16 @@ async def run_reconcile() -> dict:
         min_gt_labels = config["min_gt_labels"]
         min_gt_positive = config["min_gt_positive"]
         min_gt_negative = config["min_gt_negative"]
-        # kura#62: read the runner's queue depth ONCE per tick. If it is already at
-        # or past the ceiling, this tick adds nothing (dispatch would only deepen a
-        # queue it cannot drain). Held tags are not consumed — they dispatch on a
-        # later tick once the runner has caught up.
+        # kura#62: read the queue depth ONCE per tick. If it is already at or past
+        # the ceiling, this tick adds nothing (queueing more would only deepen a
+        # queue nobody is draining). Held tags are not consumed — they are queued
+        # on a later tick once the runner has caught up.
         backlog_max = int(config.get("dispatch_backlog_max", _DEFAULT_BACKLOG_MAX))
-        downstream_backlog = _downstream_backlog(TRAINING_TARGET_AGENT)
+        downstream_backlog = await _queued_training(db)
         backpressure_held: list[str] = []
-        # Recover tags stuck in 'training' (dispatched but never approved) BEFORE
-        # reading candidates, so the main loop sees them as 'candidate' and can
-        # re-dispatch/hold them this same tick.
-        reopened_stale = await _reap_stale_training(db)
+        # Tags whose measurement was judged go back to 'candidate' BEFORE reading
+        # candidates, so the main loop can queue/hold them this same tick.
+        reopened_stale = await settle_judged_training(db)
         # 終端 (approved) に着いたのに配備できるものが無いタグも戻す。
         # training の stuck と同じ害で、しかも**終端なので誰も見に来ない**。
         reopened_stale += await _reap_approved_without_head(db)
@@ -1174,10 +1018,9 @@ async def run_reconcile() -> dict:
                 continue
 
             # kura#62 backpressure: the queue depth we would create this tick is
-            # what the runner has NOT claimed plus what we have already dispatched
+            # what is queued and not measured plus what we have already queued
             # here. Past the ceiling, hold — the tag is not consumed, so it goes
-            # out on a later tick once the runner catches up. Fails open: a None
-            # backlog (broker unreadable) does not block, matching pre-#62.
+            # out on a later tick once the runner catches up.
             if _saturated(downstream_backlog, len(dispatched), backlog_max):
                 disp[tag] = {"disposition": "hold", "reason": "downstream_saturated",
                              "backlog": downstream_backlog, "backlog_max": backlog_max,
@@ -1186,15 +1029,13 @@ async def run_reconcile() -> dict:
                 backpressure_held.append(tag)
                 continue
 
-            ok = _dispatch_training_request(tag, candidates, gt_pos, gt_neg, min_gt_labels,
-                                            trigger, corpus_pos)
-            disp[tag] = {"disposition": "dispatch" if ok else "dispatch_failed",
+            # The candidate -> training write below IS the dispatch: tagger/learn.py
+            # measures what is queued. It is recorded as 'dispatch' only once the
+            # write committed.
+            disp[tag] = {"disposition": "dispatch_failed",
                          "trigger": trigger, "gt_pos": gt_pos, "gt_neg": gt_neg,
                          "corpus_pos": corpus_pos, "established": established,
                          "is_v_next": is_v_next}
-            if not ok:
-                failed.append(tag)
-                continue
 
             lease = None
             try:
@@ -1229,14 +1070,16 @@ async def run_reconcile() -> dict:
                     stage = "candidate"
                 await record_lifecycle_event(
                     db, tag=tag, from_stage="candidate", to_stage="training",
-                    reason=f"auto-dispatched training request to {TRAINING_TARGET_AGENT} "
-                            f"({len(candidates)} candidate row(s))",
+                    reason=f"queued for training ({trigger}: {len(candidates)} candidate row(s), "
+                           f"GT positive={gt_pos}/negative={gt_neg})",
                     lease=lease,
                 )
             except TransitionError as e:
-                # Dispatch already happened -- do not silently lose that fact,
-                # but do surface the ledger-write failure loudly.
-                print(f"[reconciler] WARNING: dispatched {tag} but ledger write failed: {e}", file=sys.stderr)
+                # The write is the dispatch, so nothing was queued: a learn.py
+                # measuring this tag holds the lease, or another writer moved it.
+                print(f"[reconciler] WARNING: could not queue {tag}: {e}", file=sys.stderr)
+                failed.append(tag)
+                continue
             finally:
                 # Release the lifecycle:<tag> lease as soon as this tag's unit
                 # of work is done, instead of leaving the row to expire and
@@ -1251,6 +1094,7 @@ async def run_reconcile() -> dict:
                     except TransitionError as e:
                         print(f"[reconciler] WARNING: lease release failed for {tag} "
                               f"(reclaim-on-acquire will still self-heal): {e}", file=sys.stderr)
+            disp[tag]["disposition"] = "dispatch"
             dispatched.append(tag)
 
     # Snapshot every candidate tag's decision for the dashboard (single source of

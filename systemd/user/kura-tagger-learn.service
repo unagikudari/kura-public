@@ -1,0 +1,21 @@
+[Unit]
+Description=kura tagger learning pass (README "Learning from your corrections")
+After=network-online.target kura-api.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/kura
+EnvironmentFile=%h/kura/api/env
+EnvironmentFile=%h/kura/tagger/env
+Environment=PYTHONUNBUFFERED=1
+Environment=KURA_MODELS_DIR=%h/.cache/kura-tagger/models
+# --undeclared-domain always: a head learned for a tag applies to every image unless a
+# tagger_tag_rule narrows it. Use block to promote only heads whose tag has a rule.
+ExecStart=%h/.local/share/kura-api/venv/bin/python tagger/learn.py --undeclared-domain always
+# One measurement can take hours on a CPU; learn.py bounds it by its lease.
+TimeoutStartSec=infinity
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=kura-tagger-learn
+Nice=10
+IOSchedulingClass=idle

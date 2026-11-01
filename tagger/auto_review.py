@@ -61,6 +61,7 @@ here rather than silently glossed over):
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from datetime import date
@@ -82,8 +83,10 @@ from api.tagger_core.transitions import (
     validate_registration_metrics_floor,
 )
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
-PATCHES = REPO_ROOT / "tagger" / "patches"
+# patch JSON の置き場 (git で追う checkout)。名前が無ければファイルは書かない —
+# 行 (tagger_patch / tagger_head_policy) が記録で、install の checkout には
+# 書き込まない (docs/notes/tagger-learn-local.md change 3)。
+_PATCH_REPO = os.environ.get("KURA_PATCH_REPO", "")
 
 
 async def _latest_stage(db, tag: str) -> str | None:
@@ -387,7 +390,54 @@ def _looks_like_sha256(v: str | None) -> bool:
     return bool(v) and bool(re.fullmatch(r"[0-9a-f]{64}", v))
 
 
-async def promote_validated(db) -> list[str]:
+async def _record_approved(db, tag: str, reg_id: int, patch_id: int, version: int) -> str | None:
+    """Record the move to 'approved' for a promotion; None when done (or already done),
+    otherwise why not.
+
+    Found live 2026-07-21: this promotion never recorded a lifecycle_event, so
+    tagger-health's lifecycle-consistency check flagged every tag this promoted as
+    "approved but no ledger entry -- possible bypass of governed path". Fixed then +
+    migration 0104 (candidate/training -> approved skip-ahead edges, matching 0094's
+    NULL->approved precedent -- this fully-automated path never records separate
+    trained/verified steps, so 'approved' is reached directly from whatever stage the
+    tag was actually last at)."""
+    from_stage = await _latest_stage(db, tag)
+    if from_stage == "approved":
+        return None                      # a resumed promotion: already recorded
+    lease = None
+    try:
+        lease = await acquire_lease(db, f"lifecycle:{tag}", lease_seconds=30)
+        await record_lifecycle_event(
+            db, tag=tag, from_stage=from_stage, to_stage="approved",
+            reason=f"auto-promoted (user directive 2026-07-21: 自動化すること): "
+                   f"registration_request id={reg_id} -> patch id={patch_id} (v{version})",
+            lease=lease,
+        )
+        return None
+    except TransitionError as e:
+        print(f"[auto_review] WARNING: {tag} approved move not recorded: {e}", file=sys.stderr)
+        return "lifecycle"
+    finally:
+        # Release the lifecycle:<tag> lease promptly so it never expires into a
+        # stale-lease CRIT (incident 2026-07-22). Fencing-matched + idempotent; a
+        # failure here is non-fatal (reclaim-on-acquire still self-heals the row).
+        if lease is not None:
+            try:
+                await release_lease(db, lease)
+            except TransitionError as e:
+                print(f"[auto_review] WARNING: lease release failed for {tag}: {e}", file=sys.stderr)
+
+
+async def promote_validated(db, *, undeclared_domain: str = "block",
+                            patch_repo: str | None = None) -> list[str]:
+    """undeclared_domain: domain 宣言 (tagger_tag_rule) の無いタグの head を
+    'block' = 昇格させない (2026-09-03 以来の fleet の規則) か
+    'always' = 全画像に適用する (tagger/learn.py の公開 install 既定 — 人が直した
+    タグを、宣言を書かせずに学習へつなぐため)。"""
+    if undeclared_domain not in ("block", "always"):
+        raise ValueError(f"undeclared_domain must be block or always, not {undeclared_domain!r}")
+    patch_repo = _PATCH_REPO if patch_repo is None else patch_repo
+    patches = Path(patch_repo) / "tagger" / "patches" if patch_repo else None
     config = await load_config(db)
     rows = (await db.execute(text(
         "SELECT id, tag, source_host, artifact_ref, artifact_sha256, metrics, gt "
@@ -445,6 +495,10 @@ async def promote_validated(db) -> list[str]:
         # 実害: dark_labia_minora は `in_pussy_domain` 宣言済みなのに昇格が
         # 読まず gate_tags=[] で配備され、アーカイブの 45% に発火した。
         domain_gates = await head_policy.domain_gate_tags(db, tag)
+        if (domain_gates is None and undeclared_domain == "always"
+                and not await head_policy.has_domain_rule(db, tag)):
+            print(f"[auto_review] {tag}: domain 宣言なし — 全画像に適用 (undeclared_domain=always)")
+            domain_gates = ()
         if domain_gates is None:
             reason = (
                 "domain 未宣言 — tagger_tag_rule にこのタグの行が無い (または "
@@ -477,11 +531,12 @@ async def promote_validated(db) -> list[str]:
             # 次の publish_release が黙って降格させる (2026-09-03 実測)。
             "head_type": "content_head",
         }
-        patch_dir = PATCHES / tag
-        patch_dir.mkdir(parents=True, exist_ok=True)
-        json_path = patch_dir / f"v{version}.json"
-        json_path.write_text(json.dumps(patch_json, indent=2, ensure_ascii=False, sort_keys=True) + "\n")
-        new_files.append(json_path)
+        if patches is not None:
+            patch_dir = patches / tag
+            patch_dir.mkdir(parents=True, exist_ok=True)
+            json_path = patch_dir / f"v{version}.json"
+            json_path.write_text(json.dumps(patch_json, indent=2, ensure_ascii=False, sort_keys=True) + "\n")
+            new_files.append(json_path)
 
         # content_head, not wd14_logit_patch -- see module docstring. model_data
         # intentionally NULL (distribution gap, documented above).
@@ -499,9 +554,6 @@ async def promote_validated(db) -> list[str]:
             "SELECT id FROM tagger_patch WHERE tag = :tag AND version = :version"
         ), {"tag": tag, "version": version})).scalar_one()
 
-        await db.execute(text(
-            "SELECT tagger_governed_promote_registration(:reg_id, :patch_id)"
-        ), {"reg_id": r["id"], "patch_id": patch_id})
         await db.commit()
 
         # ── 適用方法を行にする (migration 0134) ──────────────────────────
@@ -524,6 +576,7 @@ async def promote_validated(db) -> list[str]:
             ), {"s": r["artifact_sha256"], "n": int(art_bytes or 0)})
             await db.commit()
 
+        incomplete: str | None = None
         pol = head_policy.derive(metrics, config=config, gate_tags=domain_gates)
         if pol is None:
             # 閾値を導けない測定からは policy を作らない (fail-closed)。既定値で
@@ -555,75 +608,71 @@ async def promote_validated(db) -> list[str]:
                 print(f"[auto_review] {tag} v{version}: policy を書けない — {e}",
                       file=sys.stderr)
                 no_policy.append(tag)
+                incomplete = "policy"
 
-        # Found live 2026-07-21: this promotion never recorded a lifecycle_event,
-        # so tagger-health's lifecycle-consistency check flagged every tag this
-        # promoted as "approved but no ledger entry -- possible bypass of
-        # governed path". Fixed here + migration 0104 (candidate/training ->
-        # approved skip-ahead edges, matching 0094's NULL->approved precedent --
-        # this fully-automated path never records separate trained/verified
-        # steps, so 'approved' is reached directly from whatever stage the tag
-        # was actually last at).
-        lease = None
-        try:
-            from_stage = await _latest_stage(db, tag)
-            lease = await acquire_lease(db, f"lifecycle:{tag}", lease_seconds=30)
-            await record_lifecycle_event(
-                db, tag=tag, from_stage=from_stage, to_stage="approved",
-                reason=f"auto-promoted (user directive 2026-07-21: 自動化すること): "
-                       f"registration_request id={r['id']} -> patch id={patch_id} (v{version})",
-                lease=lease,
-            )
-        except TransitionError as e:
-            print(f"[auto_review] WARNING: {tag} promoted but ledger write failed: {e}", file=sys.stderr)
-        finally:
-            # Release the lifecycle:<tag> lease promptly so it never expires
-            # into a stale-lease CRIT (incident 2026-07-22). Fencing-matched +
-            # idempotent; a failure here is non-fatal (reclaim-on-acquire still
-            # self-heals the row on the next acquire).
-            if lease is not None:
-                try:
-                    await release_lease(db, lease)
-                except TransitionError as e:
-                    print(f"[auto_review] WARNING: lease release failed for {tag}: {e}", file=sys.stderr)
+        if incomplete is None:
+            incomplete = await _record_approved(db, tag, r["id"], patch_id, version)
 
+        # **The registration is marked promoted last, and only when every step above
+        # succeeded.** Until then the row stays 'validated' with no patch id, so a
+        # stop or a failed step is resumed by the next pass: the version comes back the
+        # same for the same bytes, the patch and the policy are upserts, and the move to
+        # approved is not repeated. Marking it first (as before 2026-11-01) left a
+        # promotion without its policy or its ledger entry, and nothing that would ever
+        # look at it again. A policy that cannot be derived (pol is None) is not a
+        # failure here: no retry would derive it; a new measurement does.
+        if incomplete is not None:
+            print(f"[auto_review] {tag} (id={r['id']}): promotion not finished ({incomplete}) "
+                  f"— the next pass resumes it", file=sys.stderr)
+            continue
+        await db.execute(text(
+            "SELECT tagger_governed_promote_registration(:reg_id, :patch_id)"
+        ), {"reg_id": r["id"], "patch_id": patch_id})
+        await db.commit()
         promoted.append(f"{tag} v{version} (patch id={patch_id})")
         print(f"[auto_review] {tag} (id={r['id']}): promoted to patch id={patch_id} (v{version})")
 
     if new_files:
-        rel_paths = [str(p.relative_to(REPO_ROOT)) for p in new_files]
-        subprocess.run(["git", "add", *rel_paths], cwd=REPO_ROOT, check=True)
-        subprocess.run(
-            ["git", "commit", "-m",
-             "feat(tagger): auto-promote " + ", ".join(rel_paths) + "\n\n"
-             "Written by tagger/auto_review.py (user directive 2026-07-21: 自動化すること).\n\n"
-             "Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"],
-            cwd=REPO_ROOT, check=True,
-        )
-        print(f"[auto_review] git-committed {len(new_files)} patch file(s)")
-        # **commit しただけでは誰にも届かない。**
-        #
-        # 2026-08-05 まで nodec / desk は primary の作業ツリーから直接 pull していた
-        # ので、push しなくても伝わっていた。その経路を GitHub に一本化した結果、
-        # **push しないと canonical にも他ノードにも届かない**。
-        # `build_release.py` は `tagger/patches/<tag>/v{version}.json` を読むので、
-        # 届かなければ release が組めなくなる。
-        #
-        # 失敗しても昇格は取り消さない (patch 行は既に DB にあり、そちらが権威) が、
-        # **黙らない** — 溜まった未 push は「動いているのに伝わっていない」状態で、
-        # 気づく手段が無いと今日の分裂を繰り返す。
+        repo = Path(patch_repo)
+        rel_paths = [str(p.relative_to(repo)) for p in new_files]
         try:
-            subprocess.run(["git", "push", "origin", "HEAD"],
-                           cwd=REPO_ROOT, check=True, capture_output=True, timeout=120)
-            print("[auto_review] pushed to origin")
+            subprocess.run(["git", "add", *rel_paths], cwd=repo, check=True)
+            subprocess.run(
+                ["git", "commit", "-m",
+                 "feat(tagger): auto-promote " + ", ".join(rel_paths) + "\n\n"
+                 "Written by tagger/auto_review.py (user directive 2026-07-21: 自動化すること).\n\n"
+                 "Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"],
+                cwd=repo, check=True,
+            )
         except Exception as e:  # noqa: BLE001
-            unpushed = subprocess.run(
-                ["git", "rev-list", "--count", "origin/main..HEAD"],
-                cwd=REPO_ROOT, capture_output=True, text=True).stdout.strip() or "?"
-            print(f"[auto_review] WARNING: push に失敗 ({type(e).__name__}) — "
-                  f"未 push が {unpushed} 件たまっています。**他ノードには届いて"
-                  f"いません** (patch 行は DB にあるので昇格自体は有効)",
-                  file=sys.stderr)
+            # 昇格は取り消さない — 行が権威。ファイルは記録の写しに過ぎない。
+            print(f"[auto_review] WARNING: patch file の commit に失敗 ({type(e).__name__}) — "
+                  f"{', '.join(rel_paths)} は未 commit (昇格自体は有効)", file=sys.stderr)
+        else:
+            print(f"[auto_review] git-committed {len(new_files)} patch file(s)")
+            # **commit しただけでは誰にも届かない。**
+            #
+            # 2026-08-05 まで nodec / desk は primary の作業ツリーから直接 pull していた
+            # ので、push しなくても伝わっていた。その経路を GitHub に一本化した結果、
+            # **push しないと canonical にも他ノードにも届かない**。
+            # `build_release.py` は `tagger/patches/<tag>/v{version}.json` を読むので、
+            # 届かなければ release が組めなくなる。
+            #
+            # 失敗しても昇格は取り消さない (patch 行は既に DB にあり、そちらが権威) が、
+            # **黙らない** — 溜まった未 push は「動いているのに伝わっていない」状態で、
+            # 気づく手段が無いと今日の分裂を繰り返す。
+            try:
+                subprocess.run(["git", "push", "origin", "HEAD"],
+                               cwd=repo, check=True, capture_output=True, timeout=120)
+                print("[auto_review] pushed to origin")
+            except Exception as e:  # noqa: BLE001
+                unpushed = subprocess.run(
+                    ["git", "rev-list", "--count", "origin/main..HEAD"],
+                    cwd=repo, capture_output=True, text=True).stdout.strip() or "?"
+                print(f"[auto_review] WARNING: push に失敗 ({type(e).__name__}) — "
+                      f"未 push が {unpushed} 件たまっています。**他ノードには届いて"
+                      f"いません** (patch 行は DB にあるので昇格自体は有効)",
+                      file=sys.stderr)
 
     if no_policy:
         # **黙らない。** policy が無い head は適用されないので、patch が
@@ -645,10 +694,10 @@ async def promote_validated(db) -> list[str]:
     return promoted
 
 
-async def run() -> dict:
+async def run(*, undeclared_domain: str = "block") -> dict:
     async with async_session() as db:
         review = await review_pending(db)
-        promoted = await promote_validated(db)
+        promoted = await promote_validated(db, undeclared_domain=undeclared_domain)
     return {"review": review, "promoted": promoted}
 
 

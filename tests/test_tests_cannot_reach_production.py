@@ -19,22 +19,23 @@ def test_the_broker_url_is_not_production_during_tests():
     assert "192.0.2." in url, "到達しないアドレスに倒されていない"
 
 
-def test_the_module_constant_is_redirected_too():
-    """import 済みモジュールが定数を束縛していても差し替わること。
-    env だけ変えても、既に読み込まれた側は古い値を持つ。"""
+def test_the_runner_has_no_broker_to_reach():
+    """2026-11-01: the runner no longer talks to a broker at all (it died on
+    2026-09-23; tagger/learn.py feeds the runner from the lifecycle ledger).
+    The guard above stays for anything else that still names BROKER_URL; the
+    runner is out of its reach by construction."""
     from tagger import vnext_runner as vr
-    assert "localhost:8000" not in vr.BROKER_URL
+    assert not hasattr(vr, "BROKER_URL")
+    assert not hasattr(vr, "broker")
 
 
-def test_an_explicit_patch_still_wins():
-    """broker とのやり取りを検証したいテストは今まで通り patch できること
-    (guard が既存テストを壊さない)。"""
+def test_the_runner_hands_registrations_over_instead_of_sending_them():
+    """Only the holder of the lease registers (docs/notes/tagger-learn-local.md
+    step 3d), so a test exercising the runner cannot reach the API either."""
     from tagger import vnext_runner as vr
-    seen = []
-    orig = vr.broker
+    vr._PAYLOADS.clear()
     try:
-        vr.broker = lambda m, p, b=None: seen.append((m, p))
-        vr.broker("POST", "/x")
-        assert seen == [("POST", "/x")]
+        assert vr._register({"tag": "x"}) == {"id": None}
+        assert vr._PAYLOADS == [{"tag": "x"}]
     finally:
-        vr.broker = orig
+        vr._PAYLOADS.clear()

@@ -7,9 +7,14 @@ registration を出さない」= 成長ゲートの baseline が生まれず毎�
 される、という欠陥が本番で初めて出た。deepthroat は登録 0 件のまま 1 日 8 回の
 reopen 枠を使い切り、14 タグが training に滞留していた。
 
-**契約**: どの終了経路も、次のどちらかを必ず満たす。
-  (a) registration を出す  → 成長ゲートに baseline ができ、GT が育つまで再投入されない
-  (b) task を閉じる        → queue から消え、毎 tick 拾っては何もしない空回りにならない
+**契約** (2026-11-01 から。runner は登録 payload を返し、tagger/learn.py が
+lease の下で送る — docs/notes/tagger-learn-local.md): どの終了経路も、次の
+どちらかを必ず満たす。
+  (a) 登録 payload を出す  → 送られれば成長ゲートに baseline ができ、GT が育つまで
+                             再投入されない
+  (b) learn.py が DB を動かせる結論の語を返す — escalated (defer して candidate へ)、
+      …(gt-unchanged) (前回の登録が立っているので candidate へ)、noop (stage が
+      既に動いた)。それ以外の語は失敗として後で測り直す
 両方欠けた経路は「タグが前に進まないのに、また来る」= ループになる。
 
 shadow (`--no-registration`) ではこの契約は**原理的に検証できない** — (a) を
@@ -35,43 +40,25 @@ _MEASURE = [lambda tag: {}]
 
 
 class _Ledger:
-    """判定済みかどうかだけを持つ最小の台帳。"""
+    """HOLD streak の前回値だけを持つ最小の台帳。"""
 
-    def __init__(self, attempt=True):
-        self._attempt = attempt
+    def __init__(self):
         self.attempts: list = []
-        self.done: list = []
 
-    def should_attempt(self, key):
-        return self._attempt
-
-    def is_dead(self, key):
-        return False
+    def last_detail(self, key):
+        return {}
 
     def record_attempt(self, key, outcome, detail=None):
         self.attempts.append((outcome, detail))
 
-    def mark_done(self, key):
-        self.done.append(True)
-
 
 @pytest.fixture
 def harness(monkeypatch, tmp_path):
-    """process_task を I/O 無しで走らせ、broker / kura への書き込みを記録する。"""
-    calls = {"complete": [], "registration": [], "broker": []}
-
-    def _broker(method, path, body=None):
-        calls["broker"].append((method, path, body))
-        if path.endswith("/complete"):
-            calls["complete"].append(body)
-        return {}
-
-    def _kura_post(path, body):
-        calls["registration"].append((path, body))
-        return {"id": 123}
-
-    monkeypatch.setattr(vr, "broker", _broker)
-    monkeypatch.setattr(vr, "kura_post", _kura_post)
+    """process_task を I/O 無しで走らせ、出した登録 payload と escalation を記録する。"""
+    calls = {"registration": [], "escalated": []}
+    vr._PAYLOADS.clear()
+    monkeypatch.setattr(vr, "_PAYLOADS", calls["registration"])
+    monkeypatch.setattr(vr, "_upload_artifact", lambda sha, ref: None)
     monkeypatch.setattr(vr, "STATE_DIR", tmp_path)
     monkeypatch.setattr(vr, "current_stage", lambda tag: ("training", 42))
     monkeypatch.setattr(vr, "_current_gt", lambda tag: {"positive": 11, "negative": 33})
@@ -82,18 +69,14 @@ def harness(monkeypatch, tmp_path):
     # runner の属性ではなく module 本体を差し替える。
     import tagger.vnext_arms as arms
     monkeypatch.setattr(arms, "measure_tag", lambda tag: _MEASURE[0](tag))
-    calls["escalated"] = []
-    monkeypatch.setattr(vr, "_deliver_escalations",
-                        lambda tag, esc, *a, **k: calls["escalated"].append((tag, esc)),
-                        raising=False)
     return calls
 
 
-def _run(ledger=None, deadline=None):
-    import time
-    return vr.process_task({"id": "t1", "_tag": "deepthroat"},
-                           ledger or _Ledger(), deadline or (time.time() + 600),
-                           dry_run=False)
+def _run(ledger=None, event_id=42):
+    return vr.process_task("deepthroat", event_id, ledger or _Ledger(), _ESCALATED)
+
+
+_ESCALATED: list = []
 
 
 # ── 契約: 登録するか、task を閉じるか、どちらかは必ずやる ────────────────
@@ -109,13 +92,12 @@ def test_insufficient_gt_registers_so_the_growth_gate_gets_a_baseline(harness, m
 
     assert out == "hold(insufficient_gt)"
     assert harness["registration"], "登録が無いと baseline が生まれず毎サイクル再投入される"
-    _path, body = harness["registration"][0]
+    body = harness["registration"][0]
     assert body["gt"] == {"positive": 11, "negative": 33}, "成長ゲートが読む値"
-    assert harness["complete"], "task も閉じる"
 
 
 def test_structural_precondition_block_does_not_leave_the_tag_looping(harness, monkeypatch):
-    """E0 (構造前提) で止まる経路も、登録か task 完了のどちらかは要る。
+    """E0 (構造前提) で止まる経路も、登録か learn.py が動ける語のどちらかは要る。
 
     どちらも無いと、タグは前に進まないのに次の tick でまた来る = ループ。
     insufficient_gt と同じ形の欠陥がここに無いかを実際に走らせて確かめる。
@@ -125,33 +107,41 @@ def test_structural_precondition_block_does_not_leave_the_tag_looping(harness, m
     blocking = [vnext_escalate.Escalation("E0", True, "release 行が無い")]
     monkeypatch.setattr(vr.vnext_escalate, "structural_preconditions",
                         lambda ctx: blocking)
+    _ESCALATED.clear()
     out = _run()
 
-    assert out == "escalated"
-    assert harness["complete"], (
-        "登録も task 完了も無い経路は、タグが進まないまま毎 tick 再来する")
+    assert out == "escalated", "learn.py はこの語で defer して candidate へ戻す"
     # E0 は GT の問題ではないので登録は出さない — GT baseline を書くと
     # 「GT が育てば直る」という誤った含意になる。直し方は escalation 側にある。
     assert not harness["registration"], "構造前提の欠落を GT の不足として記録しない"
-    body = harness["complete"][0]["result_payload"]
-    assert body["reason"] == "structural_precondition"
-    assert body["escalations"] == ["E0"], "どの述語で止まったかを残す"
-    assert harness["escalated"], "log だけで終わらせず owner へ届ける"
+    assert [e.code for e in _ESCALATED] == ["E0"], "どの述語で止まったかを learn.py に渡す"
 
 
-def test_already_judged_closes_the_task(harness):
-    """判定済みは登録しない (前回の判定で出ている) が、task は必ず閉じる。"""
-    out = _run(ledger=_Ledger(attempt=False))
-    assert out == "skipped"
-    assert harness["complete"], "閉じないと queue に残り毎 tick 空回りする"
+def test_a_local_ledger_does_not_decide_that_an_event_is_done(harness):
+    """「済んだか」は DB の登録が決める。host ごとの台帳が判定済みを名乗ると、
+    登録を送る前に落ちたとき、その event は永久に測られない。"""
+    class _SaysDone(_Ledger):
+        def should_attempt(self, key):
+            return False
+    _MEASURE[0] = lambda tag: (_ for _ in ()).throw(
+        __import__("tagger.vnext_manifest", fromlist=["ManifestError"]).ManifestError("stub"))
+    out = _run(ledger=_SaysDone())
+    assert out == "hold(insufficient_gt)", "台帳ではなく依頼された event を測る"
 
 
-def test_wrong_stage_is_a_noop_that_still_closes_the_task(harness, monkeypatch):
-    """kura の stage が training でなければ触らない — ただし task は閉じる。"""
+def test_wrong_stage_is_a_noop(harness, monkeypatch):
+    """kura の stage が training でなければ触らない。"""
     monkeypatch.setattr(vr, "current_stage", lambda tag: ("approved", 42))
-    out = _run()
-    assert out == "noop"
-    assert harness["complete"], "他人の仕事でも、拾った task は閉じる"
+    assert _run() == "noop"
+    assert not harness["registration"]
+
+
+def test_a_newer_event_than_the_one_leased_is_a_noop(harness, monkeypatch):
+    """learn.py が lease を取って確かめた event と今の最新が違えば、その間に誰かが
+    動かしている — 古い依頼で測らない。"""
+    monkeypatch.setattr(vr, "current_stage", lambda tag: ("training", 43))
+    assert _run(event_id=42) == "noop"
+    assert not harness["registration"]
 
 
 # ── 5 本目の終了経路: gt-unchanged ────────────────────────────────────
@@ -201,9 +191,8 @@ def test_gt_unchanged_skips_when_a_baseline_already_exists(harness, monkeypatch,
                         lambda tag: {"positive": 11, "negative": 33})
     out = _run()
 
-    assert out.endswith("(gt-unchanged)")
+    assert out.endswith("(gt-unchanged)"), "learn.py はこの語で candidate へ戻す"
     assert not harness["registration"], "何も変わっていないなら登録も増やさない"
-    assert harness["complete"], "task は閉じる"
 
 
 def test_gt_unchanged_backfills_the_missing_baseline(harness, monkeypatch, tmp_path):
@@ -219,7 +208,7 @@ def test_gt_unchanged_backfills_the_missing_baseline(harness, monkeypatch, tmp_p
 
     assert out.endswith("(gt-unchanged)"), "再測定はしない (skip の目的は保つ)"
     assert harness["registration"], "baseline を作らないと再 dispatch が止まらない"
-    _path, body = harness["registration"][0]
+    body = harness["registration"][0]
     assert body["gt"] == {"positive": 11, "negative": 33}
 
 

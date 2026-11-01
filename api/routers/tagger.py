@@ -430,6 +430,11 @@ class RegistrationRequestIn(BaseModel):
     # 作られず artifact_sha256 が固定値になるため、これが無いと同じタグの
     # HOLD がすべて 1 行に潰れ、GT が育っても記録が初回のまま残る (0132)。
     lifecycle_event_id: int | None = None
+    # 送り手が持つ lease (tagger/learn.py)。両方あれば、登録と同じ transaction で
+    # 「その lease がまだ生きている」「タグの最新 event がこの測定のもの」を確かめる
+    # (docs/notes/tagger-learn-local.md step 3d)。無ければ従来どおり。
+    lease_scope: str | None = None
+    fencing_token: int | None = None
 
     @field_validator("gt")
     @classmethod
@@ -494,7 +499,71 @@ async def submit_registration_request(
     referencing this request's artifact, exactly as today. See
     tagger_governed_submit_registration's migration (0086) docstring for
     the full reasoning.
+
+    One measurement, one row: every request that names a lifecycle event
+    takes a transaction lock on it first, so two requests for the same event
+    are decided one after the other. A fenced request (lease_scope +
+    fencing_token) is refused with 409 unless its lease is still held and
+    unexpired, the event is the tag's latest and is a move to training, and
+    no other registration exists for that event; sending the same payload
+    again returns the row already written (a retry after a lost reply).
     """
+    fenced = body.lease_scope is not None or body.fencing_token is not None
+    if fenced and (body.lease_scope is None or body.fencing_token is None
+                   or not body.lifecycle_event_id):
+        raise KuraError(422, "incomplete_fence",
+                        fix="send lease_scope, fencing_token and lifecycle_event_id together, or none of them.")
+    if body.lifecycle_event_id:
+        await db.execute(sa.text(
+            "SELECT pg_advisory_xact_lock(hashtextextended("
+            "'tagger-registration:' || CAST(CAST(:ev AS bigint) AS text), 0))"),
+            {"ev": body.lifecycle_event_id})
+    if fenced:
+        if body.lease_scope != f"lifecycle:{body.tag}":
+            raise KuraError(409, "lease_for_another_scope",
+                            context={"lease_scope": body.lease_scope, "tag": body.tag},
+                            fix="hold lifecycle:<tag> for the tag being registered.")
+        # clock_timestamp, not now(): now() is the transaction's start, and the
+        # advisory lock above may have waited past the lease's end.
+        lock = (await db.execute(sa.text(
+            "SELECT fencing_token, expires_at > clock_timestamp() AS live "
+            "FROM tagger_lifecycle_lock WHERE scope = :scope FOR UPDATE"),
+            {"scope": body.lease_scope})).first()
+        if lock is None or lock.fencing_token != body.fencing_token or not lock.live:
+            await db.rollback()
+            raise KuraError(409, "lease_not_held", context={"lease_scope": body.lease_scope},
+                            fix="the lease expired or was taken over; measure again under a new lease.")
+        latest = (await db.execute(sa.text(
+            "SELECT id, to_stage FROM tagger_lifecycle_event "
+            "WHERE tag_id = tagger_tag_id_of(:tag) ORDER BY occurred_at DESC, id DESC LIMIT 1"),
+            {"tag": body.tag})).first()
+        if latest is None or latest.id != body.lifecycle_event_id or latest.to_stage != "training":
+            await db.rollback()
+            raise KuraError(409, "event_not_latest_training",
+                            context={"lifecycle_event_id": body.lifecycle_event_id,
+                                     "latest": None if latest is None else latest.id},
+                            fix="the tag moved on; this measurement is for an older request.")
+    if body.lifecycle_event_id:
+        # One lifecycle event, one result — fenced or not.
+        same = (await db.execute(sa.text(
+            "SELECT id, (source_host = :host AND artifact_ref = :ref AND artifact_sha256 = :sha "
+            " AND metrics IS NOT DISTINCT FROM CAST(:metrics AS jsonb) "
+            " AND gt IS NOT DISTINCT FROM CAST(:gt AS jsonb)) AS same "
+            "FROM tagger_registration_request "
+            "WHERE tag_id = tagger_tag_id_of(:tag) AND lifecycle_event_id = :ev "
+            "ORDER BY id LIMIT 1"),
+            {"tag": body.tag, "host": body.source_host, "ref": body.artifact_ref,
+             "sha": body.artifact_sha256, "ev": body.lifecycle_event_id,
+             "metrics": None if body.metrics is None else json.dumps(body.metrics),
+             "gt": None if body.gt is None else json.dumps(body.gt)})).first()
+        if same is not None:
+            await db.rollback()
+            if same.same:
+                return RegistrationRequestOut(id=same.id)
+            raise KuraError(409, "event_already_has_a_result",
+                            context={"registration_id": same.id,
+                                     "lifecycle_event_id": body.lifecycle_event_id},
+                            fix="a lifecycle event takes one result; measure again after the next move to training.")
     row = (await db.execute(
         sa.text(
             "SELECT tagger_governed_submit_registration(:tag, :host, :ref, :sha, "

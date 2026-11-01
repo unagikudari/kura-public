@@ -14,3 +14,7 @@ requests>=2.31
 # timm/torchvision は torch のビルドと衝突しないので通常 pip install で足せる。
 timm>=1.0
 torchvision>=0.20
+
+# tagger/vnext_runner.py (README "Learning from your corrections") は測定のために
+# データベースを直接読む (tagger/kura_db.py)。
+psycopg2-binary>=2.9

@@ -267,10 +267,12 @@ def test_runner_feeds_the_streak_from_the_four_class_verdict():
 
 
 def test_runner_reports_the_same_verdict_it_escalated_on():
-    """broker へ返す `verdict` と escalation の判定材料が同じ値であること。
-    ここが割れると、task 履歴と escalation が別の話をする。"""
+    """記録する `verdict` と escalation の判定材料が同じ値であること。
+    ここが割れると、記録と escalation が別の話をする。2026-11-01 から結果は
+    broker ではなく learn.py へ返す (登録 payload と結論の語)。"""
     code = _runner_code()
-    assert code.count('"verdict": disposition') == 2, "shadow と本番の両方で揃える"
+    assert 'log("registration.prepared", tag=tag, verdict=disposition' in code
+    assert "disposition=disposition)" in code, "escalation も同じ disposition で判定する"
     assert "return disposition" in code
 
 

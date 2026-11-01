@@ -444,11 +444,14 @@ def test_manifest_error_is_a_hold_not_a_retry_loop():
     src = inspect.getsource(vnext_runner.process_task)
     assert "except ManifestError" in src, "ManifestError を個別に捕まえること"
     head = src.split("except ManifestError")[1].split("except Exception")[0]
-    assert "mark_done" in head, "再試行ループを避けるため ledger を閉じる"
+    # 再試行ループを止めるのは登録 (成長ゲートの baseline)。2026-11-01 までは
+    # host の ledger を閉じていたが、「済んだか」は DB の登録が決める。
+    assert "_try_hold_registration" in head, "HOLD を登録 payload にして返す"
     # 語彙は 4 クラスの定数から取る (リテラルを散らさない)。
     assert "HOLD" in head, "判定は保留 (hold) として記録する"
     assert '"HOLD"' not in head, "旧 2 値のリテラルを書かない — 定数を使う"
-    assert "binding" in head, "どの floor 項が binding かを必ず添える (Step 14)"
+    # binding は submit_hold_registration の classification が運ぶ
+    # (test_vnext_runner_hold_registration が固定)。
 
 
 def test_noop_outcomes_do_not_consume_the_per_tick_limit():
@@ -456,21 +459,14 @@ def test_noop_outcomes_do_not_consume_the_per_tick_limit():
 
     実測 2026-08-03: deepthroat が判定済みのまま queue に残り、runner は
     5 分ごとに「skipped」を出して打ち切り、後続 5 タグが 1 件も進まなかった。
+    2026-11-01 から列を回すのは tagger/learn.py: lease が取れない (busy) /
+    stage が動いた (moved) は数えない。
     """
-    import inspect
-    from tagger import vnext_runner
-    src = inspect.getsource(vnext_runner.tick)
-    assert 'if outcome not in ("skipped", "noop")' in src, \
-        "空振りは done を増やさないこと"
-
-
-def test_already_judged_task_is_closed_not_left_in_queue():
-    """判定済み key の task は complete して queue から外す (さもないと毎 tick 再来)。"""
-    import inspect
-    from tagger import vnext_runner
-    src = inspect.getsource(vnext_runner.process_task)
-    head = src.split("should_attempt")[1].split("# ── E0")[0]
-    assert "/complete" in head, "判定済みでも task は閉じること"
+    src = (REPO / "tagger" / "learn.py").read_text()
+    body = src[src.index("async def run_pass("):]
+    counted = body[body.index("if result in ("):].split(")")[0]
+    assert '"busy"' not in counted and '"moved"' not in counted, "空振りは枠を使わない"
+    assert '"registered"' in counted
 
 
 def test_idempotency_key_uses_the_lifecycle_event_id_not_a_constant():
@@ -483,11 +479,9 @@ def test_idempotency_key_uses_the_lifecycle_event_id_not_a_constant():
     import inspect
     from tagger import vnext_runner
     src = inspect.getsource(vnext_runner.process_task)
-    assert "stage, event_id = current_stage(tag)" in src
+    assert "stage, latest = current_stage(tag)" in src
     assert "lifecycle_event_id=event_id" in src
-    tick_src = inspect.getsource(vnext_runner.tick)
-    assert "lifecycle_event_id=0" in tick_src and "並び順を決めるためだけ" in tick_src, \
-        "tick の鍵は並び順専用であることが読めること"
+    assert "latest != event_id" in src, "lease を取った event と今の最新が違えば測らない"
 
 
 def test_unchanged_gt_skips_remeasurement_but_still_reports():
@@ -506,11 +500,11 @@ def test_unchanged_gt_skips_remeasurement_but_still_reports():
     assert "gt_stamp" in src, "測定結果の gt (ゲート内件数) と混同しないこと"
     # **"gt_unchanged" は判定 (disposition) ではなく省略の理由**。4 クラスの
     # 語彙に混ぜると「5 つ目のクラス」が生えたように読める。
-    assert '"reason": "gt_unchanged"' in src, "省略したことを記録に残すこと"
+    assert 'log("gt.unchanged"' in src, "省略したことを記録に残すこと"
     assert '"disposition": "gt_unchanged"' not in src, "理由を判定の欄に書かない"
-    assert '"verdict": prev_disposition' in src, "判定は前回のものをそのまま名乗る"
-    tail = src.split('"reason": "gt_unchanged"')[1][:500]
-    assert '"verdict":' in tail, "前回判定を再掲すること"
+    assert 'verdict=prev_disposition' in src, "判定は前回のものをそのまま名乗る"
+    assert 'return f"{prev_disposition}(gt-unchanged)"' in src, \
+        "learn.py が candidate へ戻すための語 (判定 + 省略の理由)"
     assert "prev_doc" in src.split("if prev_gt == cur_gt:")[2][:400], \
         "前回判定は測定 doc の classification から取る (旧 2 値の verdict_absolute ではない)"
 

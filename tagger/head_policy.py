@@ -225,6 +225,15 @@ async def domain_gate_tags(db, tag: str) -> tuple[str, ...] | None:
     return tuple(sorted(gates))
 
 
+async def has_domain_rule(db, tag: str) -> bool:
+    """Whether the tag has any curated rule at all. domain_gate_tags answers None both
+    when there is none and when the rule cannot be written as gate_tags (any/none
+    conditions); only the first may be read as "apply everywhere"."""
+    from sqlalchemy import text
+    return (await db.execute(text("SELECT 1 FROM tagger_tag_rule WHERE tag = :tag LIMIT 1"),
+                             {"tag": tag})).first() is not None
+
+
 # ── 読み出し (推論側の唯一の入口) ────────────────────────────────────────
 
 # The policy in force per tag is defined once, by the tagger_current_head_policy view

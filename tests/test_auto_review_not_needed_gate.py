@@ -53,6 +53,9 @@ class _Result:
     def scalar(self):
         return self._scalar
 
+    def first(self):
+        return self._rows[0] if self._rows else None
+
     def scalar_one_or_none(self):
         return self._scalar
 
@@ -215,7 +218,8 @@ class _PromoteDB(_FakeDB):
         return _Result([])
 
 
-def _promote(rows, monkeypatch, tmp_path, floor=None):
+def _promote(rows, monkeypatch, tmp_path, floor=None, *, db_class=None, patch_repo=None,
+             undeclared_domain="block", acquire=None):
     """promote_validated を**最後まで**走らせる。
 
     途中で止まる偽物にすると「配備されたか」を確かめられない — 実際、旧テストは
@@ -241,16 +245,16 @@ def _promote(rows, monkeypatch, tmp_path, floor=None):
     monkeypatch.setattr(auto_review, "load_config", _load_config)
     monkeypatch.setattr(auto_review, "validate_registration_metrics_floor",
                         floor or (lambda m, c: called.append(m)))
-    monkeypatch.setattr(auto_review, "PATCHES", tmp_path)
-    monkeypatch.setattr(auto_review, "REPO_ROOT", tmp_path)
     monkeypatch.setattr(auto_review, "_latest_stage", _stage)
-    monkeypatch.setattr(auto_review, "acquire_lease", _acquire)
+    monkeypatch.setattr(auto_review, "acquire_lease", acquire or _acquire)
     monkeypatch.setattr(auto_review, "record_lifecycle_event", _record)
     monkeypatch.setattr(auto_review, "release_lease", _release)
-    # git は触らない (patch ファイルは tmp_path に書かれるので REPO_ROOT の外)
+    # git は触らない (patch ファイルは tmp_path の checkout に書かれる)
     monkeypatch.setattr(auto_review.subprocess, "run", lambda *a, **k: None)
-    db = _PromoteDB(rows)
-    return asyncio.run(auto_review.promote_validated(db)), db, called
+    db = (db_class or _PromoteDB)(rows)
+    repo = str(tmp_path) if patch_repo is None else patch_repo
+    return asyncio.run(auto_review.promote_validated(
+        db, patch_repo=repo, undeclared_domain=undeclared_domain)), db, called
 
 
 NOT_NEEDED_ROW = {"id": 9, "tag": "dark_anus", "source_host": "trainer",
@@ -315,7 +319,7 @@ def test_promote_does_not_send_the_new_format_to_the_old_floor_gate(monkeypatch,
 
     promoted, _db, _ = _promote([DEPLOYABLE_ROW], monkeypatch, tmp_path, floor=_floor)
     assert [p.split()[0] for p in promoted] == ["monochrome"], "配備されていない"
-    assert (tmp_path / "monochrome" / "v1.json").exists(), "patch ファイルが書かれていない"
+    assert (tmp_path / "tagger" / "patches" / "monochrome" / "v1.json").exists(), "patch ファイルが書かれていない"
 
 
 def test_promote_still_uses_the_floor_for_old_format_rows(monkeypatch, tmp_path):
@@ -332,3 +336,126 @@ def test_review_and_promote_ask_the_same_question():
     assert "decide(" in body, "promote が共有の判定手続きを使っていない"
     assert "validate_registration_metrics_floor" not in body, \
         "promote が旧 gate を直接呼んでいる"
+
+
+class _NoRuleDB(_PromoteDB):
+    """A fresh install: no tagger_tag_rule row for any tag."""
+
+    async def execute(self, stmt, params=None):
+        if "FROM tagger_tag_rule" in str(stmt):
+            return _Result([])
+        return await super().execute(stmt, params)
+
+
+def test_an_undeclared_tag_is_blocked_by_default(monkeypatch, tmp_path):
+    """The fleet's rule since 2026-09-03: no domain declaration, no promotion."""
+    promoted, _db, _ = _promote([DEPLOYABLE_ROW], monkeypatch, tmp_path, db_class=_NoRuleDB)
+    assert promoted == []
+
+
+def test_an_undeclared_tag_applies_everywhere_when_asked(monkeypatch, tmp_path):
+    """tagger/learn.py on a README install passes always: a head learned for a tag the
+    person corrected applies to every image unless a rule narrows it."""
+    promoted, db, _ = _promote([DEPLOYABLE_ROW], monkeypatch, tmp_path, db_class=_NoRuleDB,
+                               undeclared_domain="always")
+    assert [p.split()[0] for p in promoted] == ["monochrome"]
+    gates = [p for sql, p in db.transitions if "tagger_governed_upsert_head_policy" in sql]
+    assert all(g["gates"] == [] for g in gates)
+
+
+def test_without_a_patch_checkout_no_file_and_no_git(monkeypatch, tmp_path):
+    """An install's checkout is not written to: the rows are the record."""
+    promoted, _db, _ = _promote([DEPLOYABLE_ROW], monkeypatch, tmp_path, patch_repo="")
+    assert [p.split()[0] for p in promoted] == ["monochrome"]
+    assert not list(tmp_path.rglob("v*.json")), "no file, so nothing for git to commit"
+    src = (Path(auto_review.__file__)).read_text()
+    assert "if new_files:" in src and "if patches is not None:" in src
+
+
+def test_a_failed_commit_does_not_undo_the_promotion(monkeypatch, tmp_path):
+    def _fail(*a, **k):
+        raise auto_review.subprocess.CalledProcessError(1, a[0])
+    monkeypatch.setattr(auto_review.subprocess, "run", _fail)
+    called: list = []
+
+    async def _load_config(db):
+        return {}
+    monkeypatch.setattr(auto_review, "load_config", _load_config)
+    monkeypatch.setattr(auto_review, "validate_registration_metrics_floor",
+                        lambda m, c: called.append(m))
+    async def _stage(db, tag):
+        return "training"
+    async def _acquire(db, name, lease_seconds=30):
+        return object()
+    async def _noop(*a, **k):
+        return None
+    monkeypatch.setattr(auto_review, "_latest_stage", _stage)
+    monkeypatch.setattr(auto_review, "acquire_lease", _acquire)
+    monkeypatch.setattr(auto_review, "record_lifecycle_event", _noop)
+    monkeypatch.setattr(auto_review, "release_lease", _noop)
+    promoted = asyncio.run(auto_review.promote_validated(_PromoteDB([DEPLOYABLE_ROW]),
+                                                         patch_repo=str(tmp_path)))
+    assert [p.split()[0] for p in promoted] == ["monochrome"]
+
+
+class _AnyRuleDB(_PromoteDB):
+    """A tag with a rule gate_tags cannot express (any_tags)."""
+
+    async def execute(self, stmt, params=None):
+        if "FROM tagger_tag_rule" in str(stmt):
+            return _Result([{"name": "in_x_or_y", "all_tags": [], "any_tags": ["x", "y"],
+                             "none_tags": []}])
+        return await super().execute(stmt, params)
+
+
+def test_a_rule_that_cannot_be_expressed_is_not_read_as_everywhere(monkeypatch, tmp_path):
+    """always widens only a tag that has no rule; a rule written with any/none
+    conditions stays blocked (Codex 2026-11-01)."""
+    promoted, _db, _ = _promote([DEPLOYABLE_ROW], monkeypatch, tmp_path, db_class=_AnyRuleDB,
+                                undeclared_domain="always")
+    assert promoted == []
+
+
+def test_the_registration_is_marked_promoted_after_the_policy_and_the_move(monkeypatch, tmp_path):
+    """A stop before the end leaves the registration validated, so the next pass resumes."""
+    promoted, db, _ = _promote([DEPLOYABLE_ROW], monkeypatch, tmp_path)
+    sqls = [sql for sql, _p in db.transitions]
+    mark = next(i for i, q in enumerate(sqls) if "tagger_governed_promote_registration" in q)
+    patch = next(i for i, q in enumerate(sqls) if "tagger_governed_upsert_patch" in q)
+    assert patch < mark and mark == max(i for i, q in enumerate(sqls) if "tagger_governed" in q)
+    assert promoted, "promoted"
+
+
+class _PolicyFailsDB(_PromoteDB):
+    async def rollback(self):
+        return None
+
+    async def execute(self, stmt, params=None):
+        if "tagger_governed_upsert_head_policy" in str(stmt):
+            raise RuntimeError("FK: artifact not present")
+        return await super().execute(stmt, params)
+
+
+def _with_policy(row):
+    """A measurement a policy can be derived from (an operating point with a threshold)."""
+    m = dict(row["metrics"])
+    m["B_veto_ceiling"] = {"feat1024": {"nested": {"max_f1": {"P": 0.9, "R": 0.9, "FPR": 0.01,
+                                                             "thr": 0.35}}}}
+    return dict(row, metrics=m, artifact_sha256="a" * 64)
+
+
+def test_a_failed_policy_leaves_the_registration_for_the_next_pass(monkeypatch, tmp_path):
+    promoted, db, _ = _promote([_with_policy(DEPLOYABLE_ROW)], monkeypatch, tmp_path,
+                               db_class=_PolicyFailsDB)
+    assert promoted == []
+    assert not any("tagger_governed_promote_registration" in q for q, _p in db.transitions)
+
+
+def test_a_lifecycle_conflict_leaves_the_registration_for_the_next_pass(monkeypatch, tmp_path):
+    from api.tagger_core.transitions import TransitionError
+
+    async def _busy(db, name, lease_seconds=30):
+        raise TransitionError("held by another agent")
+    promoted, db, _ = _promote([DEPLOYABLE_ROW], monkeypatch, tmp_path, acquire=_busy)
+    assert promoted == []
+    assert not any("tagger_governed_promote_registration" in q for q, _p in db.transitions)
