@@ -6,6 +6,13 @@ export const en = {
   common: {
     dropToAdd: 'Drop to add',
     sourceCode: 'Source code (AGPL-3.0) ↗',
+    notify: {
+      region: 'Notifications',
+      postsAdded: (n: number, pool: string) => `${n} ${n === 1 ? 'post' : 'posts'} added to ${pool}`,
+      postsAddedLoose: (n: number) => `${n} ${n === 1 ? 'post' : 'posts'} added`,
+      open: 'Open',
+      dismiss: 'Dismiss',
+    },
   },
   login: {
     title: 'Sign in — kura',

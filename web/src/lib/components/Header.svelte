@@ -28,6 +28,7 @@
   import { gridScope, clientGridSettings } from '#lib/gridSettings.ts';
   import { BUILD_INFO } from '#lib/build_info.ts';
   import { currentUser } from '#lib/stores.ts';
+  import { repaintOnResume } from '#lib/repaintOnResume.ts';
 
   // On a phone the section links share their row with the order control and the
   // count, and scroll sideways when they do not fit: keep the current one in view.
@@ -303,7 +304,7 @@
   {/if}
 {/snippet}
 
-<header class:tag-list-open={tagListOpen}>
+<header class:tag-list-open={tagListOpen} use:repaintOnResume>
   <div class="header-main">
     <a class="logo" href="/" aria-label={m.header.home}><span class="logo-mark"><Icon name="archive" /></span><span class="logo-name">kura</span></a>
     <nav class="primary-nav" aria-label={m.header.mainNav} use:revealCurrent={`${page.url.pathname}|${activeSection}|${poolMode}`}>

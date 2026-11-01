@@ -3,6 +3,7 @@
   import { droppedFiles, type ImportFile } from '#lib/collector/importFiles.ts';
   import { planDropImport, duplicateUpload, POSTS_ADDED_EVENT } from '#lib/dropImport.ts';
   import { t } from '#lib/i18n/index.ts';
+  import { ownPosts } from '#lib/activityFeed.ts';
   const m = t();
   let { onbusy }: { onbusy: (busy: boolean) => void } = $props();
   type Item = ImportFile & { state: 'pending'|'uploading'|'added'|'duplicate'|'failed'; reason?: string };
@@ -49,7 +50,7 @@
         if (stop) break;
         if (item.state!=='pending' && item.state!=='failed') continue;
         item.state='uploading';item.reason=undefined;
-        try { const result=await uploadPost(item.file);lastId=result.id;item.state='added';addedNow++; }
+        try { const result=await uploadPost(item.file);lastId=result.id;ownPosts([result.id]);item.state='added';addedNow++; }
         catch(e) {
           if (duplicateUpload(e)) { item.state='duplicate';continue; }
           item.state='failed';item.reason=(e as Error).message || m.home.drop.importFailed;
@@ -87,7 +88,7 @@
   </section>
 {/if}
 <style>
-  .import-panel { position:fixed;right:16px;bottom:16px;z-index:1000;width:min(360px,calc(100vw - 32px));box-sizing:border-box;padding:14px;background:var(--surface,#20252b);color:var(--text,#eee);border:1px solid var(--border,#46505a);border-radius:10px;box-shadow:0 6px 28px #0007;font-size:13px;max-height:70vh;overflow:auto; }
+  .import-panel { pointer-events:auto;width:100%;box-sizing:border-box;padding:14px;background:var(--surface,#20252b);color:var(--text,#eee);border:1px solid var(--border,#46505a);border-radius:10px;box-shadow:0 6px 28px #0007;font-size:13px;flex-shrink:0; }
   .heading,.counts,.actions { display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap; }.heading strong { font-size:14px; }.counts { justify-content:flex-start;color:var(--muted,#aaa);margin:8px 0; }.counts b { color:var(--text,#eee);font-variant-numeric:tabular-nums; }
   progress { width:100%;height:5px;margin:10px 0 2px;accent-color:var(--accent,#8cc4ff); }.filename { overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--muted,#aaa);font-size:12px; }.error { color:#ffb4b4; }p { overflow-wrap:anywhere; }.actions { justify-content:flex-start;margin-top:8px; }.actions:empty { display:none; }button,a { font:inherit; }button { cursor:pointer;padding:6px 10px;border:1px solid var(--border,#46505a);border-radius:5px;background:var(--bg,#181d22);color:inherit; }.quiet { background:transparent;border:0;padding:3px; }.details { margin-top:6px; }small { display:block;font-size:11px;color:var(--muted,#aaa);margin-top:8px; }ul { padding-left:16px;margin:8px 0; }li { margin:8px 0;overflow-wrap:anywhere; }li span { display:block;color:#ffb4b4; }
 </style>

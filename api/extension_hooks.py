@@ -135,6 +135,29 @@ async def status_cards(db) -> list[dict]:
     return cards
 
 
+_LEVELS = {"info", "error"}
+
+
+async def activity(db, since, now) -> list[dict]:
+    """Events installed extensions report for (since, now], for the web's notifications.
+
+    An extension contributes by defining `activity(db, since, now)` returning dicts with
+    `key` (stable, so a repeated window is not shown twice), `level` (info|error), `text`
+    and optionally `href`; core shows them without knowing what they are about.
+    """
+    events: list[dict] = []
+    for name in installed():
+        hook = getattr(load(name), 'activity', None)
+        if hook is None:
+            continue
+        for event in await hook(db, since, now):
+            if event.get('level') not in _LEVELS or not event.get('key') or not event.get('text'):
+                raise RuntimeError(f'{name}: an activity event needs key, text and level info|error')
+            events.append({'href': None, **event, 'kind': 'extension', 'extension': name,
+                           'key': f"{name}:{event['key']}"})
+    return events
+
+
 def annotated_domain(annotations: dict[str, dict]) -> str | None:
     """The domain an extension named for a pool, if one did."""
     return next((data['domain'] for data in annotations.values() if data.get('domain')), None)

@@ -1,7 +1,13 @@
 /** Bounded recovery for interrupted thumbnails, with explicit terminal state. */
 import type { Action } from 'svelte/action';
 
-const STALL_MS = 15_000;
+// How long an attempt may make no progress before it is retried, per attempt. The first
+// is short: on 2026-10-31 thumbnails in view stalled 15–19 s on the owner's desktop
+// Chrome, and every time the retry went through at once (the stall is somewhere between
+// the browser and the web server, not in kura-api), so the long first wait WAS the delay
+// the owner saw. Later attempts wait longer so a genuinely slow link is not hammered.
+const STALL_MS = [3_000, 8_000, 15_000];
+const stallFor = (attempt: number) => STALL_MS[Math.min(attempt, STALL_MS.length - 1)];
 const MAX_RETRIES = 2;
 export const THUMBNAIL_STATE_EVENT = 'kura:thumbnail-state';
 export const THUMBNAIL_RETRY_EVENT = 'kura:thumbnail-retry';
@@ -52,7 +58,7 @@ export const thumbnailLoader: Action<HTMLImageElement, string> = (node, initialS
     node.src = url.href;
     arm();
   }
-  function arm(delay = STALL_MS) {
+  function arm(delay = stallFor(retries)) {
     clear();
     if (destroyed || !source || !visible || ready()) return;
     if (!navigator.onLine) { publish('offline'); return; }
@@ -91,7 +97,7 @@ export const thumbnailLoader: Action<HTMLImageElement, string> = (node, initialS
     if (ready()) { loaded(); return; }
     if (state === 'failed') return;
     if (state === 'offline' && navigator.onLine) { manual(); return; }
-    arm(node.complete && !node.naturalWidth ? 500 : STALL_MS);
+    arm(node.complete && !node.naturalWidth ? 500 : stallFor(retries));
   });
   return {
     update(nextSource) {

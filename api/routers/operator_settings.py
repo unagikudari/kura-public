@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import os
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -23,6 +23,7 @@ from api.auth import get_current_user
 from api.config import OWNER_USER_ID
 from api.db.models import User
 from api.db.session import get_db
+from api.errors import KuraError
 
 router = APIRouter(prefix="/api", tags=["settings"])
 
@@ -93,7 +94,8 @@ def _user(u: User) -> dict:
 async def operator_settings(db: AsyncSession = Depends(get_db),
                             user: User = Depends(get_current_user)) -> dict:
     if user.rank != "administrator":
-        raise HTTPException(403, "administrators only")
+        raise KuraError(403, "administrators_only", context={"rank": user.rank},
+                        fix="Sign in with an administrator account; this page shows deployment settings.")
     owner = await db.scalar(select(User).where(User.user_id == OWNER_USER_ID))
     admins = (await db.scalars(select(User).where(User.rank == "administrator")
                                .order_by(User.user_id))).all()

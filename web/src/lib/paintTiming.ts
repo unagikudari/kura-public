@@ -76,6 +76,80 @@ function heapMb(): number | undefined {
   return memory ? memory.usedJSHeapSize / 1048576 : undefined;
 }
 
+type Fetch = { url: string; start: number; end: number; proto: string };
+// Thumbnail fetches as they complete, kept here (bounded) rather than read back from the
+// browser's resource buffer, which stops recording once full in a long-lived tab. What the
+// bound drops is remembered as a time, so a measurement reaching into it says so.
+let fetches: Fetch[] = [];
+let lostUntil = -1;
+let observing = false;
+let fetchObserver: PerformanceObserver | null = null;
+
+/** Start collecting image fetches; false when the browser has no resource timing. */
+export function observeFetches(Observer: typeof PerformanceObserver = PerformanceObserver): boolean {
+  try {
+    fetchObserver = new Observer(list => recordFetches(list.getEntries() as PerformanceResourceTiming[]));
+    fetchObserver.observe({ type: 'resource', buffered: true });
+    observing = true;
+  } catch { observing = false; }
+  return observing;
+}
+
+/** Take what the observer holds but has not delivered yet: a fetch that finished just before
+ *  a measurement ends would otherwise look like an image already held. */
+export function flushFetches() {
+  if (fetchObserver) recordFetches(fetchObserver.takeRecords() as PerformanceResourceTiming[]);
+  return { fetches, lostUntil, observing };
+}
+const MAX_FETCHES = 500;
+
+/** Keep the image fetches among these resource entries; past the bound, drop the oldest and
+ *  remember until when the record is incomplete. */
+export function recordFetches(entries: Pick<PerformanceResourceTiming, 'initiatorType' | 'name' | 'startTime' | 'responseEnd' | 'nextHopProtocol'>[]) {
+  for (const e of entries) {
+    if (e.initiatorType === 'img') fetches.push({ url: e.name, start: e.startTime, end: e.responseEnd, proto: e.nextHopProtocol });
+  }
+  if (fetches.length > MAX_FETCHES) {
+    const dropped = fetches.splice(0, fetches.length - MAX_FETCHES / 2);
+    for (const f of dropped) lostUntil = Math.max(lostUntil, f.end);
+  }
+  return { fetches, lostUntil };
+}
+
+export type Transfer = { proto: string; fetched: number; held: number; pending: number; partial?: boolean };
+
+/** How the images in view got there during [start, end]: the protocols of their fetches in
+ *  flight in that span, joined ('h3', 'h2+h3'); how many were fetched, already held (no
+ *  resource entry in the span — a measurement category, as on a warm Back, not proof of
+ *  where the picture came from), or still pending. Only these images count — a prefetch
+ *  of something else does not. proto is 'none' when every image was held, 'unobserved'
+ *  when the browser gives no resource timing, and partial marks a span the bound dropped. */
+export function transferOf(images: { url: string; complete: boolean }[], list: Fetch[], start: number, end: number,
+                           state: { observing: boolean; lostUntil: number }): Transfer {
+  if (!state.observing) return { proto: 'unobserved', fetched: 0, held: 0, pending: 0 };
+  const protos = new Set<string>();
+  let fetched = 0, held = 0, pending = 0;
+  for (const image of images) {
+    const hit = list.filter(f => f.url === image.url && f.start <= end && f.end >= start);
+    if (hit.length) { fetched++; for (const f of hit) protos.add(f.proto || 'unknown'); }
+    else if (image.complete) held++;
+    else pending++;
+  }
+  const proto = protos.size ? [...protos].sort().join('+') : pending ? 'pending' : 'none';
+  return { proto, fetched, held, pending, ...(start <= state.lostUntil ? { partial: true } : {}) };
+}
+
+/** Which ingress served this tab (port), how the images in view came, and, apart, what the
+ *  page itself came over. */
+function transport(start: number, end: number) {
+  flushFetches();
+  const nav = performance.getEntriesByType('navigation')[0] as PerformanceNavigationTiming | undefined;
+  const images = [...document.querySelectorAll('img')].filter(shown)
+    .map(img => ({ url: img.currentSrc || img.src, complete: img.complete && img.naturalWidth > 0 }));
+  return { entry: location.port || '443', ...transferOf(images, fetches, start, end, { observing, lostUntil }),
+           doc_proto: nav?.nextHopProtocol || '' };
+}
+
 function send(payload: Record<string, unknown>) {
   const body = new Blob([JSON.stringify(payload)], { type: 'application/json' });
   if (!navigator.sendBeacon?.('/m/client-timing', body)) {
@@ -101,7 +175,7 @@ export function measure(kind: Kind, start: number, from = '', done?: () => void,
     if (kind === 'scroll' && filled < SCROLL_REPORT_FLOOR_MS) return;
     const tasks = longTasks.filter(t => t.start + t.duration >= start && t.start <= now);
     send({
-      kind, path: location.pathname + location.search, from, build, nav_type: navType,
+      kind, path: location.pathname + location.search, from, build, nav_type: navType, ...transport(start, now),
       first_frame_ms: firstFrame, filled_ms: filled, timed_out: timedOut || undefined,
       visible: state.visible, unfilled: state.unfilled, failed: state.failed,
       longtask_ms: tasks.reduce((n, t) => n + t.duration, 0),
@@ -131,6 +205,8 @@ export function installPaintTiming(version: string) {
       if (longTasks.length > 200) longTasks = longTasks.slice(-100);
     }).observe({ type: 'longtask', buffered: true });
   } catch { /* longtask is Chromium-only; the timings still report without it */ }
+  observeFetches();  // without resource timing, proto reads 'unobserved'
+
   historyIndex = indexOf(history.state) ?? 0;
   currentUrl = here();
   // A full page load — including a Back/Forward that became one (a new build, or a

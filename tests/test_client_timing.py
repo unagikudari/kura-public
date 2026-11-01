@@ -12,7 +12,10 @@ def _client():
     from fastapi.testclient import TestClient
     from api.auth import get_current_user
     from api.routers.client_timing import router
+    from fastapi.responses import JSONResponse
+    from api.errors import KuraError
     app = FastAPI()
+    app.add_exception_handler(KuraError, lambda request, e: JSONResponse(e.body(), status_code=e.status))
     app.include_router(router)
     app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(name="person")
     return TestClient(app)
@@ -22,12 +25,14 @@ def test_a_timing_is_one_bounded_journal_line(caplog):
     caplog.set_level(logging.WARNING, logger="kura.client_timing")
     r = _client().post("/api/client-timing", json={
         "kind": "back", "filled_ms": 1234.56, "first_frame_ms": 16, "visible": 40, "unfilled": 0,
-        "path": "/?q=" + "x" * 1000, "nav_type": "back_forward", "extra": "dropped", "dom_nodes": True,
+        "path": "/?q=" + "x" * 1000, "nav_type": "back_forward", "entry": "8446", "proto": "h2+h3", "doc_proto": "h2", "fetched": 3, "held": 2, "pending": 0, "partial": True, "extra": "dropped", "dom_nodes": True,
         "longtask_ms": -5})
     assert r.status_code == 204
     [record] = [r for r in caplog.records if r.name == "kura.client_timing"]
     line = json.loads(record.getMessage().removeprefix("client-timing "))
     assert line["kind"] == "back" and line["user"] == "person" and line["filled_ms"] == 1234.6
+    assert line["entry"] == "8446" and line["proto"] == "h2+h3" and line["doc_proto"] == "h2" and line["fetched"] == 3
+    assert line["held"] == 2 and line["pending"] == 0 and line["partial"] is True
     assert len(line["path"]) == 300 and "extra" not in line and "dom_nodes" not in line and "longtask_ms" not in line
 
 

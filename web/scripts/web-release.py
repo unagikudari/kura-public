@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
-"""Prepare an immutable web release, warm it, then switch only Kura Serve routes."""
+"""Prepare an immutable web release, warm it, then switch only Kura's ingress: its Serve routes,
+or the upstream of a user-run nginx edge (HTTP/2 + HTTP/3) when the origin is not on Serve."""
 import argparse,fcntl,hashlib,json,os,re,shutil,subprocess,tempfile,time,urllib.error,urllib.request
 from pathlib import Path
 from urllib.parse import urlsplit
 PORTS=(3002,3003)
 PATHS=('/', '/api', '/data/')
+EDGE=Path.home()/'.local/share/kura-edge'
+UPSTREAM=re.compile(r'upstream kura_web \{ server 127\.0\.0\.1:(\d+); \}\n')
 class NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self,*a,**k):return None
 HTTP=urllib.request.build_opener(NoRedirect)
@@ -38,7 +41,63 @@ def routes(config,origin):
 def set_route(origin,path,target):
     command('tailscale','serve','--bg','--yes',f'--https={urlsplit(origin).port or 443}',f'--set-path={path}',target)
 def config():return json.loads(command('tailscale','serve','status','--json'))
-def switch(origin,port,probe):
+def ingress(origin,edge):
+    """'serve' when Tailscale Serve owns the origin, else 'edge' when an nginx edge is set up."""
+    on_serve=bool(config().get('Web',{}).get(urlsplit(origin).netloc))
+    on_edge=(edge/'upstream.conf').is_file()
+    if on_serve and on_edge:raise ValueError('Both Serve and the nginx edge claim this origin; remove one')
+    if not on_serve and not on_edge:raise ValueError('Unknown web ingress')
+    return 'serve' if on_serve else 'edge'
+def edge_port(edge):
+    m=UPSTREAM.fullmatch((edge/'upstream.conf').read_text())
+    if not m or int(m[1]) not in (3000,*PORTS):raise ValueError('Unknown web ingress')
+    return int(m[1])
+def set_edge(edge,port):
+    fd,name=tempfile.mkstemp(prefix='.pending-',dir=edge)
+    try:
+        with os.fdopen(fd,'w') as out:out.write(f'upstream kura_web {{ server 127.0.0.1:{port}; }}\n')
+        os.replace(name,edge/'upstream.conf')
+    finally:
+        if os.path.exists(name):os.unlink(name)
+    nginx=(shutil.which('nginx') or '/usr/sbin/nginx','-p',str(edge),'-c',str(edge/'nginx.conf'))
+    command(*nginx,'-t');command(*nginx,'-s','reload')
+def settled(probe,origin,timeout=5):
+    # nginx -s reload only signals the master; its new workers take over shortly after.
+    deadline=time.monotonic()+timeout
+    while True:
+        try:return probe(origin)
+        except (OSError,ValueError):
+            if time.monotonic()>deadline:raise
+            time.sleep(.2)
+def serving(origin,port):
+    """The origin answers with the release on this loopback port. A reload nginx refuses
+    leaves the old configuration running, so upstream.conf alone does not say this."""
+    version=lambda base:json.loads(response(base+'/_app/version.json')[1])['version']
+    if version(origin)!=version(f'http://127.0.0.1:{port}'):raise ValueError('Edge does not serve the expected release')
+def point_back(origin,edge,port):
+    set_edge(edge,port)
+    try:settled(lambda base:serving(base,port),origin)
+    except BaseException as e:raise RuntimeError('Ingress rollback requires inspection') from e
+def switch_edge(origin,port,probe,edge):
+    before=edge_port(edge)
+    try:
+        set_edge(edge,port)
+        settled(probe,origin)
+    except BaseException:
+        point_back(origin,edge,before)
+        raise
+    return {'/':f'http://127.0.0.1:{before}'}
+def current_port(origin,edge):
+    if ingress(origin,edge)=='edge':
+        # The slot that is not current gets stopped next: it must not be the one live.
+        port=edge_port(edge);serving(origin,port);return port
+    return urlsplit(routes(config(),origin)['/']).port
+def restore(origin,before,edge):
+    if ingress(origin,edge)=='edge':point_back(origin,edge,urlsplit(before['/']).port)
+    else:
+        for path,target in before.items():set_route(origin,path,target)
+def switch(origin,port,probe,edge=EDGE):
+    if ingress(origin,edge)=='edge':return switch_edge(origin,port,probe,edge)
     before=routes(config(),origin)
     try:
         for path in before:set_route(origin,path,f'http://127.0.0.1:{port}'+('' if path=='/' else path))
@@ -113,10 +172,9 @@ def authenticated_probe(port,source,node):
 def live_probe(origin,version):
     if response(origin+'/')[0]!=303 or response(origin+'/api/posts?limit=1')[0]!=401 or response(origin+'/data/nonexistent.jpg')[0]!=401:raise ValueError('Private ingress check failed')
     if json.loads(response(origin+'/_app/version.json')[1])['version']!=version:raise ValueError('Public version differs')
-def activate(source,root,release,manifest,origin):
+def activate(source,root,release,manifest,origin,edge=EDGE):
     state=root/'active.json';old=read(state) if state.exists() else None
-    current=routes(config(),origin)['/']
-    active_port=urlsplit(current).port
+    active_port=current_port(origin,edge)
     if old and old['port']!=active_port:raise ValueError('Receipt and ingress differ')
     port=PORTS[1] if active_port==PORTS[0] else PORTS[0]
     # Do not terminate uploads/streams on a previous generation just to reuse a
@@ -138,14 +196,14 @@ def activate(source,root,release,manifest,origin):
     warm(port,manifest['build_version'])
     authenticated_probe(port,source,manifest['node'])
     command('systemctl','--user','enable',unit)
-    before=switch(origin,port,lambda base:live_probe(base,manifest['build_version']))
+    before=switch(origin,port,lambda base:live_probe(base,manifest['build_version']),edge)
     receipt={'format':'kura-web-release-v1','port':port,'release':str(release),'unit':unit,'commit':manifest['commit'],
              'build_version':manifest['build_version'],'switched_at':time.time(),'previous_routes':before,'previous':old}
     # Do not recursively accumulate historical receipts in the active pointer.
     if receipt['previous']:receipt['previous']={k:v for k,v in receipt['previous'].items() if k not in ('previous','previous_routes')}
     try:atomic(state,receipt)
     except BaseException:
-        for path,target in before.items():set_route(origin,path,target)
+        restore(origin,before,edge)
         raise
     atomic(release/'release.json',{**manifest,'activated':True})
     if old:command('systemctl','--user','disable',old['unit']) # keep in-flight requests alive
@@ -159,7 +217,8 @@ def built_origin(source):
     raise ValueError('build/adapter-node.js declares no origin')
 def main():
     p=argparse.ArgumentParser(description=__doc__);p.add_argument('--source',type=Path,required=True);p.add_argument('--origin',required=True)
-    p.add_argument('--root',type=Path,default=Path.home()/'.local/share/kura-web');p.add_argument('--node',type=Path,default=Path(shutil.which('node') or ''))
+    p.add_argument('--root',type=Path,default=Path.home()/'.local/share/kura-web');p.add_argument('--edge',type=Path,default=EDGE)
+    p.add_argument('--node',type=Path,default=Path(shutil.which('node') or ''))
     a=p.parse_args()
     if not a.node.is_file() or not a.node.is_absolute():raise ValueError('Absolute Node runtime required')
     origin=urlsplit(a.origin)
@@ -170,5 +229,5 @@ def main():
     with (a.root/'deploy.lock').open('a') as lock:
         fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
         release,manifest=prepare(a.source,a.root,a.node)
-        activate(a.source,a.root,release,manifest,a.origin)
+        activate(a.source,a.root,release,manifest,a.origin,a.edge)
 if __name__=='__main__':main()

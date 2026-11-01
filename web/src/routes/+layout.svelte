@@ -6,6 +6,10 @@
   import { UI_LOCALE_CONTEXT, messagesFor, readUiLocale } from '#lib/i18n/index.ts';
   import '../app.css'; // app's single global CSS layer (loaded for every route)
   import DropImport from '#lib/components/DropImport.svelte';
+  import Toasts from '#lib/components/Toasts.svelte';
+  import { notify } from '#lib/notifications.svelte.ts';
+  import { installActivityFeed } from '#lib/activityFeed.ts';
+  import { BASE } from '#lib/api.ts';
   import { reorderActive, currentUser } from '#lib/stores.ts';
   import { afterNavigate, beforeNavigate } from '$app/navigation';
   import { installPaintTiming, onNavigated, onNavigating } from '#lib/paintTiming.ts';
@@ -43,6 +47,9 @@
   // those change no code, so they never become a full reload.
   // Back/Forward and scroll paint timings from this browser (kura: "戻る進の反応が悪い").
   onMount(() => installPaintTiming(BUILD_INFO.version));
+  // Only a signed-in tab has activity to hear about (the login page would poll into 401s).
+  const signedIn = $derived(Boolean(data?.user));
+  $effect(() => { if (signedIn) return installActivityFeed(BASE, m, notify); });
   afterNavigate(({ type }) => onNavigated(type));
   beforeNavigate(({ willUnload, to, shallow, type }) => {
     onNavigating(type);
@@ -138,7 +145,10 @@
   </div>
 {/if}
 
-<DropImport bind:this={importQueue} onbusy={(value)=>uploading=value} />
+<div class="corner">
+  <Toasts />
+  <DropImport bind:this={importQueue} onbusy={(value)=>uploading=value} />
+</div>
 
 <style>
   .drop-overlay {
@@ -163,4 +173,12 @@
   .drop-label { font-size: 1.4rem; font-weight: bold; text-shadow: 0 1px 4px #000; }
 
   /* upload-toast/toast-link/spinner は FlashMessage.svelte (toast variant) へ移設。 */
+  /* Notifications above the import panel, one column in the bottom-right corner. */
+  .corner {
+    position: fixed; z-index: 1000; display: flex; flex-direction: column; gap: 8px; pointer-events: none;
+    right: max(16px, env(safe-area-inset-right)); bottom: max(16px, env(safe-area-inset-bottom));
+    width: min(360px, calc(100vw - 32px));
+    /* Everything in the corner stays reachable: past the screen's height it scrolls. */
+    max-height: calc(100dvh - 32px - env(safe-area-inset-top) - env(safe-area-inset-bottom)); overflow-y: auto; overscroll-behavior: contain;
+  }
 </style>

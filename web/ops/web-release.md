@@ -26,6 +26,21 @@ and the current plus three previous successful generations' own hashed assets
 are available from the new server. Release folders are retained for inspection;
 there is no destructive automatic filesystem cleanup.
 
+## nginx edge instead of Serve
+
+Tailscale Serve terminates TLS with HTTP/2 only. On 2026-10-31 thumbnails behind it
+stalled for 15–20 s at a time on a desktop Chrome, and the same release behind nginx
+with HTTP/3 did not stall. To use nginx for an origin, take the origin off Serve
+(`tailscale serve --https=<port> off`) and run `edge-nginx.conf` from
+`~/.local/share/kura-edge/` as a user service. `--edge` names another directory.
+The controller then rewrites `upstream.conf` there and reloads nginx in place of the
+Serve routes, and restores it when the public checks fail. An origin both on Serve
+and with an edge directory is refused. The certificate comes from
+`tailscale cert --cert-file certs/host.crt --key-file certs/host.key <host>`; renew it
+before it expires, as Serve did on its own. `scripts/check_private_ingress.py` checks the
+edge as well: every proxy_pass goes to the web release, tailnet sources only, no IPv6
+listener.
+
 `~/.local/share/kura-web/active.json` is the committed deployment receipt.
 Private-ingress validation follows its port, and checkout polling compares its
 commit instead of treating an in-place build as a deployed frontend. The old

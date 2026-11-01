@@ -13,18 +13,19 @@ import logging
 import time
 from collections import defaultdict, deque
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, Request
 
 from api.auth import get_current_user
 from api.db.models import User
+from api.errors import KuraError
 
 router = APIRouter(prefix="/api", tags=["client-timing"])
 _log = logging.getLogger("kura.client_timing")
 
 _KINDS = {"back", "forward", "scroll", "load"}
 _NUMBERS = ("first_frame_ms", "filled_ms", "visible", "unfilled", "longtask_ms", "longtask_max_ms",
-            "heap_mb", "dom_nodes", "failed")
-_TEXTS = {"path": 300, "build": 40, "from": 300, "nav_type": 20}
+            "heap_mb", "dom_nodes", "failed", "fetched", "held", "pending")
+_TEXTS = {"path": 300, "build": 40, "from": 300, "nav_type": 20, "entry": 8, "proto": 24, "doc_proto": 12}
 # A browser sends a handful a minute; these bound what a runaway tab (or anyone holding a
 # session) can put in the journal: a small body, and per user a fixed number per minute.
 MAX_BODY = 4096
@@ -49,18 +50,21 @@ async def client_timing(request: Request, user: User = Depends(get_current_user)
     async for chunk in request.stream():
         raw += chunk
         if len(raw) > MAX_BODY:
-            raise HTTPException(413, f"a timing is at most {MAX_BODY} bytes")
+            raise KuraError(413, "timing_too_large", context={"max_bytes": MAX_BODY},
+                            fix="Send one timing per request; web/src/lib/paintTiming.ts sends well under the limit.")
     try:
         body = json.loads(raw)
     except ValueError:
-        raise HTTPException(422, "the body is not JSON")
+        raise KuraError(422, "timing_not_json", fix="Send a JSON object (see web/src/lib/paintTiming.ts).")
     if not isinstance(body, dict):
-        raise HTTPException(422, "the body is not a JSON object")
+        raise KuraError(422, "timing_not_json", fix="Send a JSON object (see web/src/lib/paintTiming.ts).")
     if not _admit(user.name, time.monotonic()):
-        raise HTTPException(429, f"at most {PER_MINUTE} timings a minute")
+        raise KuraError(429, "too_many_timings", context={"per_minute": PER_MINUTE},
+                        fix="Timings are dropped until the minute passes; nothing else is affected.")
     kind = body.get("kind")
     if kind not in _KINDS:
-        raise HTTPException(422, "kind must be one of " + ", ".join(sorted(_KINDS)))
+        raise KuraError(422, "unknown_timing_kind", context={"kinds": sorted(_KINDS)},
+                        fix="Send kind as one of the listed values.")
     line: dict = {"kind": kind, "user": user.name}
     for key in _NUMBERS:
         value = body.get(key)
@@ -70,7 +74,8 @@ async def client_timing(request: Request, user: User = Depends(get_current_user)
         value = body.get(key)
         if isinstance(value, str):
             line[key] = value[:limit]
-    if body.get("timed_out") is True:
-        line["timed_out"] = True
+    for flag in ("timed_out", "partial"):
+        if body.get(flag) is True:
+            line[flag] = True
     # WARNING so it reaches the journal under the API's default log level; it is a record, not an alarm.
     _log.warning("client-timing %s", json.dumps(line, ensure_ascii=False, sort_keys=True))

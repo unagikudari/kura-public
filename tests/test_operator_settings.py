@@ -80,7 +80,10 @@ def _client(user, users):
     from api.auth import get_current_user
     from api.db.session import get_db
     from api.routers.operator_settings import router
+    from fastapi.responses import JSONResponse
+    from api.errors import KuraError
     app = FastAPI()
+    app.add_exception_handler(KuraError, lambda request, e: JSONResponse(e.body(), status_code=e.status))
     app.include_router(router)
     app.dependency_overrides[get_current_user] = lambda: user
     app.dependency_overrides[get_db] = lambda: _Db(users)

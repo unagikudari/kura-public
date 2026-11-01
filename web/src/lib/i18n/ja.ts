@@ -6,6 +6,13 @@ const own: OwnMessages = {
   common: {
     dropToAdd: 'ドロップして追加',
     sourceCode: 'ソースコード (AGPL-3.0) ↗',
+    notify: {
+      region: '通知',
+      postsAdded: (n: number, pool: string) => `${pool} に ${n} 件追加`,
+      postsAddedLoose: (n: number) => `${n} 件追加`,
+      open: '開く',
+      dismiss: '閉じる',
+    },
   },
   login: {
     title: 'サインイン — 蔵',

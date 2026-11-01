@@ -24,6 +24,7 @@
   import type { Post, MicroTag } from '#lib/types.ts';
   import type { PageData } from './$types';
   import { t } from '#lib/i18n/index.ts';
+  import { repaintOnResume } from '#lib/repaintOnResume.ts';
 
   const m = t();
   const pm = m.pages.post;
@@ -40,6 +41,12 @@
   const ctxPoolId = $derived(poolIdFromQuery(data.query));
 
   const LOAD_SIZE = 5;
+  // Pages kept decoded around the focused one. On a touch device (an iPad) WebKit's
+  // budget for decoded images is small: with 13 full pages held, the page in view went
+  // black until the reader turned a page (2026-11-01). Fewer there; the shells keep their
+  // size, so scrolling back does not jump.
+  let mountRadius = $state(6);
+  $effect(() => { if (matchMedia('(pointer: coarse)').matches) mountRadius = 3; });
 
   let query = $state(data.query);
   // グリッドから引き継いだ表示順 — nearby の追加ロードと URL 保全の両方で
@@ -210,33 +217,66 @@
     }
   }
 
+  // Whether each end's sentinel is in range now. An IntersectionObserver reports only
+  // changes: a sentinel that was already in range when a load ended (the reader flicked to
+  // the end during it, or the load failed) never reports again, and on an iPad reading
+  // stopped there with pages still to come. So each load, when it ends, looks again.
+  let fwdInRange = false, backInRange = false;
+  // Bumped when the strip is replaced (navigation sync below): an answer to a request made
+  // for the old strip is dropped instead of being spliced into the new one.
+  let stripEpoch = 0;
+  let fwdRetry: ReturnType<typeof setTimeout> | null = null, backRetry: ReturnType<typeof setTimeout> | null = null;
+  function again(load: () => Promise<void>, inRange: () => boolean, failed: boolean) {
+    if (!inRange()) return null;
+    if (!failed) { void tick().then(() => { if (inRange()) void load(); }); return null; }
+    return setTimeout(() => { if (inRange()) void load(); }, 2000);
+  }
+
   async function loadFwd() {
     if (loadingFwd || postsOffset + posts.length >= postsTotal) return;
     loadingFwd = true;
+    let failed = true;
+    const epoch = stripEpoch;
     try {
       const d = await fetchPosts(query, postsOffset + posts.length, LOAD_SIZE,
                                  fetch, undefined, gridSort || null, gridDir || undefined);
+      if (epoch !== stripEpoch) { failed = false; return; }
       await mutatePostsKeepingFocus(() => {
         posts = [...posts, ...d.results];
-        postsTotal = d.total;
+        // An empty page before the stated total is the end: asking again would loop.
+        postsTotal = d.results.length ? d.total : postsOffset + posts.length;
       });
-    } finally { loadingFwd = false; }
+      failed = false;
+    } finally {
+      loadingFwd = false;
+      if (fwdRetry) clearTimeout(fwdRetry);
+      fwdRetry = again(loadFwd, () => fwdInRange, failed);
+    }
   }
 
   async function loadBack() {
     if (loadingBack || postsOffset <= 0) return;
     loadingBack = true;
+    let failed = true;
+    const epoch = stripEpoch;
     try {
       const prevOff = Math.max(0, postsOffset - LOAD_SIZE);
       const count = postsOffset - prevOff;
       const d = await fetchPosts(query, prevOff, count,
                                  fetch, undefined, gridSort || null, gridDir || undefined);
+      if (epoch !== stripEpoch) { failed = false; return; }
       await mutatePostsKeepingFocus(() => {
         posts = [...d.results, ...posts];
-        postsOffset = prevOff;
+        // Fewer than asked for is the front: asking again would loop.
+        postsOffset = d.results.length < count ? 0 : prevOff;
         postsTotal = d.total;
       });
-    } finally { loadingBack = false; }
+      failed = false;
+    } finally {
+      loadingBack = false;
+      if (backRetry) clearTimeout(backRetry);
+      backRetry = again(loadBack, () => backInRange, failed);
+    }
   }
 
   const pageGeometry = new SvelteMap<string, { width: number; height: number }>();
@@ -378,21 +418,21 @@
   $effect(() => {
     if (!bottomSentinel || !streamEl) return;
     const obs = new IntersectionObserver(
-      (e) => { if (e[0].isIntersecting) loadFwd(); },
+      (e) => { fwdInRange = e.at(-1)!.isIntersecting; if (fwdInRange) loadFwd(); },
       { root: streamEl, rootMargin: '300px' }
     );
     obs.observe(bottomSentinel);
-    return () => obs.disconnect();
+    return () => { obs.disconnect(); fwdInRange = false; if (fwdRetry) clearTimeout(fwdRetry); };
   });
 
   $effect(() => {
     if (!topSentinel || !streamEl) return;
     const obs = new IntersectionObserver(
-      (e) => { if (e[0].isIntersecting) loadBack(); },
+      (e) => { backInRange = e.at(-1)!.isIntersecting; if (backInRange) loadBack(); },
       { root: streamEl, rootMargin: '300px' }
     );
     obs.observe(topSentinel);
-    return () => obs.disconnect();
+    return () => { obs.disconnect(); backInRange = false; if (backRetry) clearTimeout(backRetry); };
   });
 
   // Initial scroll
@@ -413,6 +453,9 @@
   $effect(() => {
     if (data.post.id === lastDataPostId) return;
     lastDataPostId = data.post.id;
+    stripEpoch++;
+    if (fwdRetry) { clearTimeout(fwdRetry); fwdRetry = null; }
+    if (backRetry) { clearTimeout(backRetry); backRetry = null; }
     pageGeometry.clear();
     posts = data.nearby.results;
     postsOffset = Math.max(0, data.idx - 20);
@@ -1031,7 +1074,7 @@
     <div class="manga-identities"><IdentitySummary {post} /></div>
   {/if}
   <!-- vb-frames: 共通 bulk.css の ::after オーバーレイ枠 (青/緑=ants/赤=ants) を opt-in -->
-  <div class="stream vb-frames" class:dim-unfocused={dimUnfocused} class:horizontal={scrollDir === 'h'} class:rtl={scrollDir === 'h' && readDir === 'rtl'} class:bulk-on={$verifyHeaderOn} bind:this={streamEl}>
+  <div class="stream vb-frames" class:dim-unfocused={dimUnfocused} class:horizontal={scrollDir === 'h'} class:rtl={scrollDir === 'h' && readDir === 'rtl'} class:bulk-on={$verifyHeaderOn} bind:this={streamEl} use:repaintOnResume>
     <div bind:this={topSentinel} class="sentinel"></div>
 
     {#each posts as p, pi (p.id)}
@@ -1042,7 +1085,7 @@
       {@const ar = p.canvasWidth && p.canvasHeight ? p.canvasWidth / p.canvasHeight : 4/3}
       {@const geometryKey = `${scrollDir}:${p.id}`}
       {@const geometry = pageGeometry.get(geometryKey)}
-      {@const mounted = Math.abs(pi - stripIdx) <= 6 || (!geometry && (isVideo || !hasDims))}
+      {@const mounted = Math.abs(pi - stripIdx) <= mountRadius || (!geometry && (isVideo || !hasDims))}
       {@const vOn = $verifyHeaderOn && !!$verifyTarget}
       {@const vHas = vOn && hasTarget(p)}
       {@const vAdd = vOn && vAddIds.has(p.id)}

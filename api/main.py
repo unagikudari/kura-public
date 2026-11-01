@@ -27,6 +27,7 @@ from api.routers import (
     auth,
     censor,
     client_timing,
+    activity,
     info,
     mcp_server,
     operator_settings,
@@ -633,6 +634,7 @@ app.include_router(tags.router)
 app.include_router(censor.router)
 app.include_router(info.router)
 app.include_router(client_timing.router)
+app.include_router(activity.router)
 app.include_router(operator_settings.router)
 app.include_router(upload.router)
 from api.collector.router import router as _collector_router

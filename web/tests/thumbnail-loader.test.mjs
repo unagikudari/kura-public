@@ -35,6 +35,15 @@ test('last stalled attempt reaches failure instead of an eternal blank, then man
   assert.equal(image.dataset.thumbnailState,'loaded');assert.ok(states.includes('failed'));
   t.mock.timers.tick(60000);assert.equal(image.requests.length,3);
 });
+test('a first attempt that stalls is retried after 3 s, not 15 s, and later attempts wait longer',t=>{
+  const {image}=fixture(t);
+  t.mock.timers.tick(2999);assert.equal(image.requests.length,0);
+  t.mock.timers.tick(1);assert.equal(image.requests.length,1);assert.equal(image.dataset.thumbnailState,'retrying');
+  t.mock.timers.tick(7999);assert.equal(image.requests.length,1);
+  t.mock.timers.tick(1);assert.equal(image.requests.length,2);
+  t.mock.timers.tick(14999);assert.notEqual(image.dataset.thumbnailState,'failed');
+  t.mock.timers.tick(1);assert.equal(image.dataset.thumbnailState,'failed');
+});
 test('offline time does not consume retries and reconnection restarts without scrolling',t=>{
   const {image,window}=fixture(t);
   navigator.onLine=false;window.dispatchEvent(new Event('offline'));
