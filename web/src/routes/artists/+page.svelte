@@ -1,5 +1,6 @@
 <script lang="ts">
   import Icon from '#lib/components/Icon.svelte';
+  import { poolDisplayName } from '#lib/site.ts';
   import Header from '#lib/components/Header.svelte';
   import SectionTabs from '#lib/components/SectionTabs.svelte';
   import { invalidateAll } from '$app/navigation';
@@ -138,7 +139,7 @@
                 {#if link.poolCover}<a href={`/?q=pool:${link.poolId}`} class="cover"><img src={mediaUrl(link.poolCover)} alt="" loading="lazy" /></a>{/if}
                 <div class="grow"><span class="platform">{link.platform}</span>
                   {#if externalUrl(link.url)}<a class="account-url" href={externalUrl(link.url)!} target="_blank" rel="noopener noreferrer">{link.handle || location(link.url)} ↗</a>{:else}<span>{link.handle || link.url}</span>{/if}
-                  {#if link.poolId}<a class="pool-link" href={`/?q=pool:${link.poolId}`}>{link.poolName || 'Pool'}</a>{/if}
+                  {#if link.poolId}<a class="pool-link" href={`/?q=pool:${link.poolId}`}>{link.poolName ? poolDisplayName(link.poolName) : 'Pool'}</a>{/if}
                 </div>
                 {#if artistIntegration && data.sources && !feeds.some(s => s.linkIds.includes(link.id)) && !artistIntegration.registered?.(link)}
                   <button disabled={busy !== null} onclick={() => act('link:' + link.id, () => artistIntegration!.register(link.url))}>{a.registerPatrol}</button>

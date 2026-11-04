@@ -4,6 +4,8 @@
 		<meta charset="utf-8" />
 		<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
 		<meta name="text-scale" content="scale" />
+		<!-- iOS turns runs of digits (account ids, sizes) into phone links; a stray tap dials (2026-11-02 owner). -->
+		<meta name="format-detection" content="telephone=no" />
 		<title>kura</title>
 		%sveltekit.head%
 	</head>

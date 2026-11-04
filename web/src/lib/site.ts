@@ -4,12 +4,15 @@
 // import.meta.glob は file が無くても build が通る (静的 import は通らない)。
 // UI が site の一覧を持たない、というのがここの主張。
 
+import { splitPoolName, poolDisplayName as displayName, type PoolNameAccountRule, type PoolNameParts } from '#lib/poolName.ts';
+
 const mods = import.meta.glob('/src/lib/site/index.ts', { eager: true }) as Record<
   string,
   {
     platforms?: string[];
     uncensoredCapable?: Set<string>;
     badges?: Record<string, { label: string; color: string }>;
+    poolNameAccounts?: PoolNameAccountRule[];
   }
 >;
 
@@ -32,3 +35,8 @@ export function badgeFor(domain: string | null | undefined):
   if (!domain) return null;
   return siteBadges[domain] ?? null;
 }
+
+/** An account id in a pool name, as the site adapter knows it; none without one. */
+const poolNameAccounts: PoolNameAccountRule[] = site.poolNameAccounts ?? [];
+export const poolNameParts = (name: string): PoolNameParts => splitPoolName(name, poolNameAccounts);
+export const poolDisplayName = (name: string): string => displayName(name, poolNameAccounts);

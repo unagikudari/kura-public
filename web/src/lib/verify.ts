@@ -20,8 +20,13 @@ function persistedBool(key: string, defaultValue = false): Writable<boolean> {
 /** Single viewer editor visibility is independent of manga verification. */
 export const singleTagSidebarOn = persistedBool('kura_single_tag_sidebar', true);
 
-/** タグカテゴリ一覧オーバーレイの表示 (キー: t) */
-export const verifyOverlayOn = persistedBool('kura_verify_overlay');
+/** タグカテゴリ一覧オーバーレイの表示 (キー: t)。既定で表示 (2026-11-02 owner)。
+ *  旧キー kura_verify_overlay は初回表示で '0' が書き込まれ既定を変えても効かないため、キーを改めた。 */
+export const verifyOverlayOn = persistedBool('kura_tag_overlay', true);
+/** The single-image viewer's tag panel, for the header's tag button: whether it shows and how to
+ *  toggle it. Set by the mounted ImageViewer, null when none is mounted. The header button switches
+ *  the panel already on screen instead of opening a second list (2026-11-02 owner). */
+export const viewerTagPanel = writable<{ shown: boolean; toggle: () => void } | null>(null);
 /** タグ一括編集バーの表示 (キー: e) */
 export const verifyHeaderOn = persistedBool('kura_verify_header');
 

@@ -88,7 +88,7 @@ def assert_overlay_flash(page) -> None:
         local_storage={
             **MANGA_LOCALSTORAGE_BASE,
             "kura_verify_header": "1",
-            "kura_verify_overlay": "1",
+            "kura_tag_overlay": "1",
         },
     )
     tags_before, _ = get_post_tags(page, POST_MANGA)

@@ -43,3 +43,19 @@ def test_transparency_is_measured_on_the_pixels_of_every_frame():
         frames.append(f)
     original = _anim("GIF", frames, [50, 60], 0, transparency=1, disposal=2)
     assert motion_signature(original)[3] is True        # frame 2 arrives as RGBA without the key
+
+
+def test_transparency_that_only_a_disposal_carries_is_kept():
+    # Post 444873 (2026-11-01): an opaque first frame, then a frame that draws one corner on a
+    # cleared canvas. libwebp writes the second frame as "dispose the first to background, draw an
+    # opaque sub-rectangle": no frame has alpha data, so the file was written without its alpha
+    # flag and the cleared area read back as opaque black.
+    first = Image.new("RGBA", (64, 64), (200, 30, 30, 255))
+    second = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
+    second.paste((30, 200, 30, 255), (0, 0, 32, 32))
+    original = _anim("PNG", [first, second], [250, 250], 1)
+    assert motion_signature(original) == (2, (250, 250), 1, True)
+    view = Image.open(io.BytesIO(animated_webp_bytes(original)))
+    assert motion_signature(view) == motion_signature(original)
+    view.seek(1)
+    assert view.convert("RGBA").getpixel((48, 48))[3] == 0

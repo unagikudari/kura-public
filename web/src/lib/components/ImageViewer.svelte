@@ -5,7 +5,8 @@
   import { untrack, onMount } from 'svelte';
   import { beforeNavigate, goto } from '$app/navigation';
   import { fetchPosts, getCensorPair, getPairSearch, mediaUrl, patchPost, putPairSearch, putTagPin, regenerateThumbnail, toggleFavorite } from '#lib/api.ts';
-  import { singleTagSidebarOn, verifyTarget, postHasTag } from '#lib/verify.ts';
+  import { poolDisplayName } from '#lib/site.ts';
+  import { singleTagSidebarOn, verifyTarget, postHasTag, viewerTagPanel } from '#lib/verify.ts';
   import CensorRegions from '#lib/components/CensorRegions.svelte';
   import TagChip from '#lib/components/TagChip.svelte';
   import TagSuggestInput from '#lib/components/TagSuggestInput.svelte';
@@ -40,20 +41,34 @@
     dir?: string;
   } = $props();
 
-  // Mobile starts with the image exposed; desktop's saved editing preference
-  // must not open a 304px panel over a phone's first view.
+  // A phone starts with the image exposed; desktop's saved editing preference
+  // must not open a 304px panel over a phone's first view. A tablet starts with the
+  // tags shown, translucent (2026-11-02 owner). Tablet vs phone is the device's
+  // shorter screen side, not the viewport: a phone held in landscape is wider than
+  // 600px too, and rotating must not change which one it is.
   let compactViewer = $state(false);
   let mobileSidebarOpen = $state(false);
+  let sidebarChosen = false;   // the person toggled it: their choice wins over the default
   const sidebarVisible = $derived(compactViewer ? mobileSidebarOpen : $singleTagSidebarOn);
   onMount(() => {
     const media = matchMedia('(max-width: 600px), (pointer: coarse)');
-    const sync = () => { compactViewer = media.matches; };
+    const tablet = () => matchMedia('(pointer: coarse)').matches && Math.min(screen.width, screen.height) > 600;
+    const sync = () => {
+      compactViewer = media.matches;
+      if (!sidebarChosen) mobileSidebarOpen = tablet();
+    };
     sync();
     media.addEventListener('change', sync);
     return () => media.removeEventListener('change', sync);
   });
+  // The header's tag button switches this panel (not a second list of its own).
+  $effect(() => {
+    const shown = sidebarVisible;
+    viewerTagPanel.set({ shown, toggle: () => setSidebar(!shown) });
+  });
+  onMount(() => () => viewerTagPanel.set(null));
   function setSidebar(open: boolean) {
-    if (compactViewer) mobileSidebarOpen = open;
+    if (compactViewer) { sidebarChosen = true; mobileSidebarOpen = open; }
     else singleTagSidebarOn.set(open);
   }
 
@@ -655,8 +670,8 @@
     {#if displayPost}
       <button class="lb-detail" onclick={() => showDetails = !showDetails} aria-expanded={showDetails} aria-label={m.home.viewer.details} title={m.home.viewer.details}><Icon name="info" /></button>
       <button class="lb-detail" disabled={isVideo(displayPost) || isPdf(displayPost) || !(naturalSizes[displayPost.id]?.width || displayPost.canvasWidth)} onclick={() => { zoomed = !zoomed; if (zoomed) showPair = false; }} aria-pressed={zoomed} aria-label={zoomed ? m.home.viewer.fit : m.home.viewer.actualSize} title={zoomed ? m.home.viewer.fit : m.home.viewer.actualSize}><Icon name={zoomed ? 'shrink' : 'expand'} /></button>
-      {#if topOffset === 0 && displayPost}<ViewerTagList post={displayPost} />{/if}
-      <button class="lb-detail" onclick={() => setSidebar(!sidebarVisible)} aria-pressed={sidebarVisible} aria-label={m.home.viewer.tags} title={m.home.viewer.tags}><Icon name="tag" /></button>
+      <!-- One tag button: the header's when a header sits above, else this one; both switch the panel. -->
+      {#if topOffset === 0 && displayPost}<ViewerTagList post={displayPost} shown={sidebarVisible} onToggle={() => setSidebar(!sidebarVisible)} />{/if}
       <a class="lb-detail" href={postUrl(displayPost.id, true)} aria-label={m.home.viewer.manga} title={m.home.viewer.manga}><Icon name="manga" /></a>
     {/if}
     {#if displayPost}
@@ -769,8 +784,8 @@
         {#each displayPost.pools as pool}
           <a class="lb-pool" href={`/?q=pool:${pool.id}`}
             onclick={(e) => e.stopPropagation()}
-            title={m.home.viewer.openPool(pool.names[0] ?? `#${pool.id}`, pool.postCount)}>
-            <span class="lb-pool-k">pool</span>{pool.names[0] ?? `#${pool.id}`}
+            title={m.home.viewer.openPool(pool.names[0] ? poolDisplayName(pool.names[0]) : `#${pool.id}`, pool.postCount)}>
+            <span class="lb-pool-k">pool</span>{pool.names[0] ? poolDisplayName(pool.names[0]) : `#${pool.id}`}
           </a>
         {/each}
       </div>
@@ -1207,6 +1222,11 @@
     --tag-chip-name-opacity: 1;
   }
   .lb-tag-sidebar:focus-within, .lb-tag-sidebar.focused { background: rgba(18, 20, 25, .96); }
+  /* Shown by default, so until touched its background is see-through and does not hide the
+     image (2026-11-02 owner: "これが出ただけで画像がほとんど見れなくなる"); the text keeps its
+     strength, with a shadow, because fading the whole panel made it unreadable (same day). */
+  .lb-tag-sidebar { background: rgba(18, 20, 25, .3); text-shadow: 0 0 4px rgba(0, 0, 0, .95), 0 1px 2px rgba(0, 0, 0, .9); transition: background .15s; }
+  .lb-tag-sidebar:hover, .lb-tag-sidebar:focus-within, .lb-tag-sidebar.focused { background: rgba(18, 20, 25, .96); }
   .lb-tag-sidebar :global(.tc-lightbox) { max-width: 100%; box-sizing: border-box; }
   .lb-tag-sidebar :global(.tc-name) { min-width: 0; overflow-wrap: anywhere; white-space: normal; text-align: left; }
   .lb-tag-sidebar :global(.tc-lock), .lb-tag-sidebar :global(.tc-x) { flex-shrink: 0; }

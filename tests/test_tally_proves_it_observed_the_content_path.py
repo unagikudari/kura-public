@@ -328,52 +328,26 @@ def test_access_log_takes_several_paths_as_well_as_a_glob(mig, tmp_path):
     assert listed["coverage"]["log_files"] == globbed["coverage"]["log_files"]
 
 
-# ── checking the instrument must not move it (2026-09-06) ──────────────────────
+# ── no UA buys silence from the gate (2026-11-04) ──────────────────────────────
 
 
-def test_a_verification_probe_is_not_demand_but_the_same_request_from_a_real_ua_is(mig, tmp_path):
-    """2026-09-06, on the live gate. Verifying the cutover, a pane fired a
-    legacy-named GET with a hand-set Referer and a browser-shaped UA; tally counted
-    it as first-party demand, `cond_first_party_zero` went false, and the day the
-    instrument went in became a day somebody wanted a legacy name. The act of
-    checking the gate moved the gate.
-
-    Three requests, byte-identical but for the UA, so the exclusion is the only
-    thing under test:
-
-    * `kura-verify-probe/<who>` — an operator checking the instrument. Not demand.
-    * `Mozilla/5.0` — somebody's browser. Demand, and the gate closes. Remove the
-      exclusion and the first case becomes this one, which is what makes the leg
-      above a real assertion rather than a tautology.
-    * `Mozilla/5.0 (kura-verify-probe/x)` — the exclusion is a PREFIX, not a
-      substring: naming it mid-UA must not buy anyone silence, or the escape hatch
-      is a hiding place for exactly the traffic this gate exists to see.
+def test_a_self_described_verification_ua_is_still_demand(mig, tmp_path):
+    """A `kura-verify-probe/` UA prefix was once excluded from the tally (1.201.36,
+    #96), withdrawn by its owner, reverted in PR #97 — and that revert sat unmerged
+    for two months while the exclusion stayed in main. Anyone can send any UA;
+    only the canary, which the gate fires itself, is not demand. So a legacy-named
+    first-party GET under that UA counts, and the irreversible start stays closed.
     """
     canary_ua = "kura-fs-salt-tally-canary/123"
-    legacy = _legacy_path(mig, 1000000)
-    ref = "https://example.test/post/1000000"
-
-    def run(ua):
-        log = tmp_path / f"access-{abs(hash(ua))}.log"
-        _write_window(mig, log, 7, NOW, extra=[
-            _line(NOW, _legacy_path(mig, 0), canary_ua),
-            _line(NOW, legacy, ua, ref=ref),
-        ])
-        return mig.tally(str(log), 7, "example.test", None, 30, 10, now=NOW,
-                         canary={"ua": canary_ua, "status": 404},
-                         instrumented_since=INSTRUMENTED)
-
-    probe = run("kura-verify-probe/primary-cc-primary")
-    assert probe["per_day"] == {}, "a verification probe is not in the tally at all"
-    assert probe["first_party_last_days"][-1] == 0
-    assert probe["cond_first_party_zero"] is True
-    assert probe["start"] == "yes"
-
-    real = run("Mozilla/5.0")
-    assert real["per_day"][NOW.isoformat()] == {"total": 1, "bot": 0, "first_party": 1}
-    assert real["cond_first_party_zero"] is False
-    assert real["start"] == "no"
-
-    disguised = run("Mozilla/5.0 (kura-verify-probe/x)")
-    assert disguised["per_day"][NOW.isoformat()]["first_party"] == 1
-    assert disguised["start"] == "no", "the prefix must not be matched as a substring"
+    log = tmp_path / "access.log"
+    _write_window(mig, log, 7, NOW, extra=[
+        _line(NOW, _legacy_path(mig, 0), canary_ua),
+        _line(NOW, _legacy_path(mig, 1000000), "kura-verify-probe/primary-cc-primary",
+              ref="https://example.test/post/1000000"),
+    ])
+    r = mig.tally(str(log), 7, "example.test", None, 30, 10, now=NOW,
+                  canary={"ua": canary_ua, "status": 404},
+                  instrumented_since=INSTRUMENTED)
+    assert r["per_day"][NOW.isoformat()]["first_party"] == 1
+    assert r["cond_first_party_zero"] is False
+    assert r["start"] == "no"

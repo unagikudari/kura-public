@@ -231,6 +231,7 @@ def run():
     page.keyboard.press('Escape');page.locator('dialog.identity-dialog').wait_for(state='detached');assert page.locator('.lb-backdrop').count()==1
     page.get_by_role('button',name='次',exact=True).click();page.wait_for_function("document.querySelector('.lb-tag-sidebar .identity-summary')?.textContent.includes('次の作家')")
     page.evaluate("localStorage.setItem('kura_scroll_dir','h')")
+    page.evaluate("localStorage.setItem('kura_tag_overlay','1')")
     go('/post/1000?q=&idx=0&mode=manga');page.locator('.manga-identities .identity-summary').wait_for()
     page.screenshot(path='/tmp/kura-identity-manga.png')
     page.locator('.manga-identities .identity-summary').click();page.locator('dialog.identity-dialog').wait_for(state='visible');url=page.url

@@ -69,6 +69,14 @@ html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
 @media (max-width: 600px), (pointer: coarse) {
   body { font-size: 14px; }
 }
+/* iOS zooms the page in when a form control under 16px takes focus, and the zoom stays after
+   switching apps — the owner's iPad came back with its sides cut off (2026-11-02). The compact
+   selects in the header are 12px, so on a touch screen every text-entry control is set to 16px
+   (exactly, overriding any size of its own). This removes the zoom's trigger without limiting the
+   person's own pinch-zoom. */
+@media (pointer: coarse) {
+  select, textarea, input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="color"]):not([type="file"]):not([type="submit"]):not([type="button"]):not([type="reset"]):not([type="image"]):not([type="hidden"]) { font-size: 16px !important; }
+}
 
 /* Words for screen readers where the screen shows a symbol. */
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }

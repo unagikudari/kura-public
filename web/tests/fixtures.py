@@ -45,7 +45,7 @@ MANGA_LOCALSTORAGE_BASE = {
     "kura_scroll_dir": "h",    # 横スクロール (round7 系譜と同じ)
     "kura_read_dir": "rtl",
     "kura_verify_header": "0",
-    "kura_verify_overlay": "0",
+    "kura_tag_overlay": "0",
 }
 
 # 固定 viewport (plan Step 2 (b))

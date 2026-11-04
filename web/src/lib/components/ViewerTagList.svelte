@@ -6,7 +6,9 @@
   import { tagLocale, tagDisplayName } from '#lib/tagLocale.ts';
   import { t } from '#lib/i18n/index.ts';
 
-  let { post, open = $bindable(false) }: { post: Post; open?: boolean } = $props();
+  // With onToggle the button switches the tags the view already shows (the manga overlay, the
+  // single-image panel) and opens no list of its own; without it, it opens this list.
+  let { post, open = $bindable(false), shown = false, onToggle }: { post: Post; open?: boolean; shown?: boolean; onToggle?: () => void } = $props();
   const m = t();
   const locale = tagLocale();
   const families = $derived(groupByFamily(post.tags, m));
@@ -47,10 +49,16 @@
 </script>
 
 <div class="viewer-tag-list" bind:this={host}>
+  {#if onToggle}
+  <button type="button" class="tag-trigger" bind:this={trigger} aria-pressed={shown}
+    aria-label={m.home.viewer.tags} title={m.home.viewer.tags}
+    onclick={onToggle}><Icon name="tag" /> <span>{post.tags.length}</span></button>
+  {:else}
   <button type="button" class="tag-trigger" bind:this={trigger} aria-expanded={open}
     aria-haspopup="dialog" aria-label={`${m.tags.viewer.trigger} ${post.tags.length}`} title={m.tags.viewer.trigger}
     onclick={() => { place(); open = !open; }}><Icon name="tag" /> <span>{post.tags.length}</span></button>
-  {#if open}
+  {/if}
+  {#if open && !onToggle}
     <div class="viewer-tag-panel" role="dialog" tabindex="-1" aria-label={m.tags.viewer.dialogLabel} aria-modal="false" style:--panel-top={`${top}px`}>
       <div class="panel-heading"><strong>{m.tags.viewer.heading}</strong><span>#{post.id} · {m.tags.viewer.count(post.tags.length)}</span>
         <button type="button" aria-label={m.tags.viewer.close} onclick={() => close(true)}>×</button></div>
@@ -72,7 +80,7 @@
   button { min-height: var(--control-height); min-width: var(--control-height); border: 1px solid var(--line); border-radius: var(--control-radius); background: var(--background); color: var(--text); font: inherit; padding: 0 var(--control-padding-x); cursor: pointer; }
   .tag-trigger { display: flex; align-items: center; gap: 6px; white-space: nowrap; font-size: var(--control-font); }
   .tag-trigger span { color: var(--muted); font-variant-numeric: tabular-nums; }
-  .tag-trigger[aria-expanded="true"] { border-color: var(--accent); }
+  .tag-trigger[aria-expanded="true"], .tag-trigger[aria-pressed="true"] { border-color: var(--accent); }
   .viewer-tag-panel { position: fixed; top: var(--panel-top); left: 12px; right: 12px; z-index: 20; display: flex; flex-direction: column; max-height: min(45dvh, calc(100dvh - var(--panel-top) - 12px)); box-sizing: border-box; border: 1px solid var(--line); border-radius: var(--control-radius); background: var(--surface-raised, #222b30); color: var(--text); box-shadow: var(--shadow); text-align: left; }
   .panel-heading { display: flex; align-items: center; gap: 12px; padding: 8px 12px; border-bottom: 1px solid var(--line); flex-shrink: 0; font-size: var(--control-font); }
   .panel-heading span { color: var(--muted); }
@@ -83,6 +91,12 @@
   .tag-links { display: flex; flex-wrap: wrap; gap: 6px; }
   a { padding: 6px 8px; border: 1px solid var(--line); border-radius: var(--control-radius); color: var(--text); text-decoration: none; overflow-wrap: anywhere; max-width: 100%; box-sizing: border-box; font-size: var(--control-font); }
   a:hover { color: var(--accent); border-color: var(--accent); }
+  /* The panel lies over the image: a see-through background with full-strength, shadowed text,
+     so the image stays visible and the tags stay readable (2026-11-02 owner, iPad). */
+  .viewer-tag-panel { background: rgba(18, 20, 25, .38); box-shadow: none; border-color: rgba(255, 255, 255, .14); }
+  .panel-heading { border-bottom-color: rgba(255, 255, 255, .12); }
+  .viewer-tag-panel a { background: rgba(0, 0, 0, .18); border-color: rgba(255, 255, 255, .22); text-shadow: 0 0 4px rgba(0, 0, 0, .95), 0 1px 2px rgba(0, 0, 0, .9); }
+  .viewer-tag-panel h3, .panel-heading { text-shadow: 0 0 4px rgba(0, 0, 0, .95); }
   button:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
   @media (max-width: 600px), (pointer: coarse) {
     .viewer-tag-panel { top: auto; bottom: 0; left: 0; right: 0; max-height: 60dvh; padding-bottom: env(safe-area-inset-bottom); border-radius: 12px 12px 0 0; }

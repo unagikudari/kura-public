@@ -1,6 +1,8 @@
 """Synthetic compact pool header contracts; run after npm run build.
 
 CHROMIUM selects an executable; EVIDENCE_DIR saves screenshots/results.
+POOL_ACCOUNT_SUFFIX optionally selects a name suffix recognised by a composed
+site adapter; when supplied, its account link must be visible and reachable.
 Reuses the GET-only mobile grid fixture. Management clicks are captured before
 application handlers: this proves hit-target reachability, not mutation success.
 """
@@ -22,7 +24,9 @@ spec = importlib.util.spec_from_file_location('grid_fixture', Path(__file__).wit
 f = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(f)
 original_response = f.response
-NAMES = {33: '長い日本語の作品名と作者名・複数のシリーズをまとめた写真集' * 8,
+ACCOUNT_SUFFIX = os.environ.get('POOL_ACCOUNT_SUFFIX')
+NAMES = {37: 'A very long pool title that runs on and on ' * 4 + (ACCOUNT_SUFFIX or '(fixture 12345678)'),
+         33: '長い日本語の作品名と作者名・複数のシリーズをまとめた写真集' * 8,
          34: 'VeryLongUnbrokenEnglishPoolTitle' * 16,
          35: '人間確認任務付きの長いプール名' * 8,
          36: '確認済みフォーカスタグ付きプール'}
@@ -36,17 +40,18 @@ def response(url):
                         isPrimary=i == 0, isExternal=True) for i in range(12)]
         return dict(id=pid, name=NAMES[pid], postCount=f.TOTAL, sources=sources,
                     artists=[dict(id=9001, names=['fixture_artist_a'], category='artist', postCount=120),
-                             dict(id=9002, names=['fixture_artist_b'], category='artist', postCount=80)],
+                             dict(id=9002, names=['fixture_artist_b'], category='artist', postCount=80)]
+                            + ([dict(id=9003, names=['fixture_artist_with_a_long_name_c'], category='artist', postCount=40)] if pid == 37 else []),
                     primarySourceUrl=sources[0]['url'], firstPostSource=None,
                     verifyStatus='pending' if pid == 35 else 'verified' if pid == 36 else None,
                     focusTag='fixture_target' if pid in (35,36) else None,
                     taggerSource='fixture-tagger' if pid == 35 else None)
     match = re.fullmatch(r'/api/pool-acquisition/(\d+)',path)
     if match:
-        return dict(poolId=int(match[1]),publication=dict(kind='source',status=None,observedCount=None,expectedCount=None),keyCaptured=False,distributions=[],hasMoreDistributions=False)
+        return dict(poolId=int(match[1]),publication=dict(kind='source',status='complete',observedCount=240,expectedCount=240),keyCaptured=False,distributions=[],hasMoreDistributions=False)
     if path == '/api/pools':
         pools = [dict(id=pid, name=name, postCount=240, thumbnailUrl='/fixture/0.svg',
-                      sourceKinds=[], sources=[]) for pid,name in NAMES.items()]
+                      sourceKinds=[], sources=[]) for pid,name in NAMES.items() if pid != 37]
         return dict(results=pools, total=len(pools), totalBytes=5*1024*1024, offset=0, limit=40, query='')
     if path.endswith('/pair-search-scope'):
         return dict(enabled=False)
@@ -58,47 +63,67 @@ f.response = response
 
 def no_overflow(page):
     assert page.evaluate('document.documentElement.scrollWidth <= innerWidth'), 'page overflow'
-    assert page.locator('details.pool-info').evaluate('(e)=>e.scrollWidth<=e.clientWidth+1'), 'details overflow'
+    # On a phone the bar may be wider than the screen only as a sideways-scrolling row.
+    bar = page.locator('.pool-title-bar')
+    assert bar.evaluate('(e)=>e.scrollWidth<=e.clientWidth+1 || getComputedStyle(e).overflowX==="auto"'), 'pool bar overflow'
+
+
+def reachable(page):
+    # Every link and switch in the bar has a usable width and can be scrolled fully into the bar.
+    bar = page.locator('.pool-title-bar')
+    for selector, least in (('.pool-title-name', 60), ('.pool-title-artists', 30)):
+        assert bar.locator(selector).bounding_box()['width'] >= least, (selector, bar.locator(selector).bounding_box())
+    for item in bar.locator('a, button').all():
+        item.scroll_into_view_if_needed()
+        box, edge = item.bounding_box(), bar.bounding_box()
+        assert box['width'] > 0 and box['x'] >= edge['x'] - 1 and box['x'] + min(box['width'], edge['width']) <= edge['x'] + edge['width'] + 1, (box, edge)
 
 
 def header(page, pid, phone):
-    details = page.locator('details.pool-info')
-    expect(details).to_be_visible()
-    expect(details.locator('.pool-title-name')).to_have_text(NAMES[pid])
-    assert not details.evaluate('(e)=>e.open'), 'must begin collapsed'
-    expect(details.locator('.pool-title-artists')).to_have_text('fixture_artist_a・fixture_artist_b')
-    expect(details.locator('.pool-title-artists')).to_be_visible()
-    summary = details.locator('summary.pool-title-bar')
-    shape = summary.evaluate('''e=>{const r=e.getBoundingClientRect(),s=getComputedStyle(e),n=getComputedStyle(e.querySelector('.pool-title-name'));return {h:r.height,font:s.fontSize,titleFont:n.fontSize,white:n.whiteSpace,overflow:n.textOverflow}}''')
-    control_height=summary.evaluate('e=>parseFloat(getComputedStyle(e).getPropertyValue("--control-height"))')
+    # One bar, no fold (2026-11-02 owner): the name links to the pool's source, the acquisition
+    # status sits in the middle, the artists are links, the pool's switches follow.
+    bar = page.locator('.pool-title-bar')
+    expect(bar).to_be_visible()
+    expect(page.locator('details.pool-info, .pool-details, .pool-title-chevron')).to_have_count(0)
+    name = bar.locator('a.pool-title-name')
+    expect(name).to_have_text(NAMES[pid])
+    expect(name).to_have_attribute('href', re.compile(r'^https://fixture\.invalid/source/0/'))
+    expect(name).to_have_attribute('target', '_blank')
+    expect(bar).to_have_attribute('title', NAMES[pid])
+    expect(bar.locator('.pool-title-artists')).to_have_text('fixture_artist_a・fixture_artist_b')
+    shape = bar.evaluate('''e=>{const r=e.getBoundingClientRect(),s=getComputedStyle(e),n=getComputedStyle(e.querySelector('.pool-title-name'));return {h:r.height,font:s.fontSize,titleFont:n.fontSize,white:n.whiteSpace,overflow:n.textOverflow}}''')
+    control_height=bar.evaluate('e=>parseFloat(getComputedStyle(e).getPropertyValue("--control-height"))')
     assert abs(shape['h']-control_height)<1, shape
     assert shape['white'] == 'nowrap' and shape['overflow'] == 'ellipsis', shape
     if phone:
         assert shape['titleFont'] == '12px', shape
-    no_overflow(page)
-    summary.click()
-    expect(details.locator('.pool-full-name')).to_be_visible()
-    expect(details.locator('.pool-full-name')).to_have_text(NAMES[pid])
-    artist_links=details.locator('.pool-artists a')
+    if (Path(__file__).resolve().parents[1] / 'src/lib/poolIntegrations/Acquisition.svelte').exists():
+        expect(bar.locator('.pool-title-acquisition')).to_contain_text(re.compile(r'取得済み\s*240 / 240 件'))
+    expect(page.locator('body')).not_to_contain_text('取得状況')
+    expect(bar.locator('[class*="verify"]')).to_have_count(0)
+    artist_links=bar.locator('.pool-title-artists a')
     expect(artist_links).to_have_count(2)
-    for i,name in enumerate(('fixture_artist_a','fixture_artist_b')):
-        expect(artist_links.nth(i)).to_have_text(name)
-        expect(artist_links.nth(i)).to_have_attribute('href', '/?q='+name)
-        expect(artist_links.nth(i)).to_be_visible()
+    for i,artist in enumerate(('fixture_artist_a','fixture_artist_b')):
+        expect(artist_links.nth(i)).to_have_text(artist)
+        expect(artist_links.nth(i)).to_have_attribute('href', '/?q='+artist)
+    # The bar is the only place the artist links are: each one can be brought into view, none is clipped away.
+    for i in range(artist_links.count()):
+        artist_links.nth(i).scroll_into_view_if_needed()
+        box=artist_links.nth(i).bounding_box()
+        box_bar=bar.locator('.pool-title-artists').bounding_box()
+        left=max(box['x'],box_bar['x']);right=min(box['x']+box['width'],box_bar['x']+box_bar['width'])
+        assert right-left>=min(box['width'],box_bar['width'])-1, (i,box,box_bar)
     no_overflow(page)
     # Real actionability/click dispatch, intercepted before write handlers.
     for selector in ('.pool-pair-scope', '.pool-tagger-exclude'):
-        button = details.locator(selector)
+        button = bar.locator(selector)
         if phone:
             box = button.bounding_box()
             assert abs(box['height']-control_height)<1 and box['width'] >= 24, box
         button.evaluate('''e=>{e.dataset.fixtureClicks='0';e.addEventListener('click',event=>{e.dataset.fixtureClicks=String(Number(e.dataset.fixtureClicks)+1);event.preventDefault();event.stopImmediatePropagation()}, {capture:true})}''')
         button.click()
         expect(button).to_have_attribute('data-fixture-clicks', '1')
-        assert details.evaluate('(e)=>e.open'), 'management click collapsed details'
-    toggle = details.locator('.pool-sources-toggle')
-    toggle.click()
-    expect(page.locator('.pool-source-row')).to_have_count(12)
+    expect(bar.locator('a.pool-switch[href^="/lab/collector/existing?pool="]')).to_have_count(1)
     no_overflow(page)
     return shape
 
@@ -115,9 +140,9 @@ def exercise(context, base, width, phone, evidence):
     page = context.new_page()
     page.on('pageerror', lambda error: f.ERRORS.append(str(error)))
     page.goto(base + '/?q=pool%3A33', wait_until='networkidle')
-    expect(page.locator('details.pool-info .pool-title-name')).to_have_text(NAMES[33])
+    expect(page.locator('.pool-title-bar .pool-title-name')).to_have_text(NAMES[33])
     if evidence:
-        page.screenshot(path=str(evidence / f'pool-header-{width}-grid-collapsed.png'))
+        page.screenshot(path=str(evidence / f'pool-header-{width}-grid.png'))
     menu_box=page.get_by_role('button',name='メニュー',exact=True).bounding_box()
     assert abs(menu_box['x']+menu_box['width']-(width-8)) < 1, menu_box
     shapes = [header(page, 33, phone)]
@@ -145,19 +170,23 @@ def exercise(context, base, width, phone, evidence):
             expect(page.locator('.lb-id')).to_have_text('#1000')
             assert page.locator('.lb-id').evaluate('(e)=>getComputedStyle(e).fontSize') == '12px'
         if evidence:
-            page.screenshot(path=str(evidence / f'pool-header-{width}-{mode}-expanded.png'))
+            page.screenshot(path=str(evidence / f'pool-header-{width}-{mode}.png'))
     spa_link(page, '/?q=pool%3A35')
-    details = page.locator('details.pool-info')
     expect(page.locator('.pool-focus-tag:visible')).to_contain_text('fixture_target')
     expect(page.locator('.pool-mission')).to_be_visible()
-    assert not details.evaluate('(e)=>e.open')
     no_overflow(page)
     if evidence:
-        page.screenshot(path=str(evidence / f'pool-header-{width}-mission-collapsed.png'))
+        page.screenshot(path=str(evidence / f'pool-header-{width}-mission.png'))
+    # A long name and three artists, optionally with an adapter's account link.
+    spa_link(page, '/?q=pool%3A37')
+    expect(page.locator('.pool-title-bar .pool-title-name')).to_contain_text('A very long pool title')
+    if ACCOUNT_SUFFIX:
+        expect(page.locator('.pool-title-bar .pool-account')).to_be_visible()
+    no_overflow(page)
+    reachable(page)
     spa_link(page, '/?q=pool%3A36')
     expect(page.locator('.pool-focus-tag:visible')).to_contain_text('fixture_target')
     expect(page.locator('.pool-mission')).to_have_count(0)
-    assert not page.locator('details.pool-info').evaluate('(e)=>e.open')
     no_overflow(page)
     spa_link(page, '/?mode=pools')
     expect(page.locator('.total-count')).to_have_text('4')
@@ -207,13 +236,14 @@ def main():
                 results=[]
                 for width in (320,390,844,1280):
                     phone=width!=1280
-                    context=browser.new_context(viewport=dict(width=width,height=390 if width==844 else 900),has_touch=phone,is_mobile=phone,reduced_motion='reduce')
+                    context=browser.new_context(locale='ja-JP',viewport=dict(width=width,height=390 if width==844 else 900),has_touch=phone,is_mobile=phone,reduced_motion='reduce')
                     context.add_cookies([dict(name='kura_session',value=f.session_cookie(),url=base),dict(name='kura_cachefix1',value='1',url=base)])
                     context.add_init_script("localStorage.setItem('kura_open_mode','single');localStorage.setItem('kura_bulk_mode','0');")
                     def route(req):
                         u=urlparse(req.request.url)
                         if u.hostname!='127.0.0.1' or u.port!=port:
                             f.EXTERNAL.append(req.request.url);return req.abort()
+                        if u.path=='/m/client-timing':return req.fulfill(status=204,body='')  # load-timing telemetry, not a write
                         if req.request.method not in ('GET','HEAD'):
                             f.WRITES.append((req.request.method,u.path));return req.fulfill(status=405,json={'error':'writes forbidden'})
                         if u.path.startswith('/fixture/'):

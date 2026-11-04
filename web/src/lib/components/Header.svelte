@@ -1,6 +1,7 @@
 <script lang="ts">
   import { getContext } from 'svelte';
   import ViewerTagList from './ViewerTagList.svelte';
+  import { viewerTagPanel } from '#lib/verify.ts';
   import type { Post } from '#lib/types.ts';
   let tagListOpen = $state(false);
   import Icon from '#lib/components/Icon.svelte';
@@ -56,6 +57,8 @@
     showSearch = true,
     activeSection = '',
     tagPost = null,
+    tagsShown = false,
+    onToggleTags = undefined,
     sortKeys = [] as { key: string; label: string }[],
     sort = null as string | null,
     dir = 'desc' as 'asc' | 'desc',
@@ -87,6 +90,9 @@
     onToggleHideVerify = undefined,
   }: {
     tagPost?: Post | null;
+    /** The view's own tag display (the manga overlay): the tag button switches it instead of opening a list. */
+    tagsShown?: boolean;
+    onToggleTags?: () => void;
     sortKeys?: { key: string; label: string }[];
     sort?: string | null;
     dir?: 'asc' | 'desc';
@@ -573,7 +579,8 @@
     {/if}
 
 
-    {#if tagPost}<ViewerTagList post={tagPost} bind:open={tagListOpen} />{/if}
+    {#if tagPost}<ViewerTagList post={tagPost} bind:open={tagListOpen}
+      shown={onToggleTags ? tagsShown : $viewerTagPanel?.shown} onToggle={onToggleTags ?? $viewerTagPanel?.toggle} />{/if}
     {#if total != null}<span class="total-count" title={`${total.toLocaleString()} ${m.header.itemsUnit(total)}`}><Icon name="images" />{total.toLocaleString()}</span>{/if}
   </div>
   {/if}

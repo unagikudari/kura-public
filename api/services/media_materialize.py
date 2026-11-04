@@ -119,17 +119,34 @@ def animated_webp_bytes(im: Image.Image, cap: int = CAP, q: int = WEBP_Q) -> byt
         if scale != 1.0:
             f = f.resize((max(1, int(w * scale)), max(1, int(h * scale))), Image.LANCZOS)
         frames.append(f)
-    b = io.BytesIO()
-    frames[0].save(
-        b, "WEBP", save_all=True, append_images=frames[1:],
-        duration=durations, loop=im.info.get("loop", 0),
-        quality=q, method=4,
-        # Lets the encoder keep a frame's alpha: without it a binary-alpha animation can be
-        # written with its transparency only in the canvas background and no alpha flag,
-        # and is read back opaque (2026-10-25). No change for opaque animations.
-        allow_mixed=True,
-    )
-    return b.getvalue()
+    def encode(**extra) -> bytes:
+        b = io.BytesIO()
+        frames[0].save(
+            b, "WEBP", save_all=True, append_images=frames[1:],
+            duration=durations, loop=im.info.get("loop", 0),
+            quality=q, method=4,
+            # Lets the encoder keep a frame's alpha: without it a binary-alpha animation can be
+            # written with its transparency only in the canvas background and no alpha flag,
+            # and is read back opaque (2026-10-25). No change for opaque animations.
+            allow_mixed=True,
+            **extra,
+        )
+        return b.getvalue()
+
+    out = encode()
+    if mode == "RGBA" and not _has_alpha_flag(out):
+        # The encoder can still carry the transparency only in a disposal: an opaque first frame
+        # disposed to background, then opaque sub-rectangles. No frame has alpha data, so the
+        # alpha flag is not set and the cleared area reads back opaque (post 444873,
+        # 2026-11-01). With every frame a keyframe, each later frame covers the whole canvas, so
+        # its transparency is in its own pixels instead of only in the previous frame's disposal.
+        out = encode(kmax=1)
+    return out
+
+
+def _has_alpha_flag(webp: bytes) -> bool:
+    """The VP8X header's alpha flag: what decoders read to know the file is transparent."""
+    return webp[12:16] == b"VP8X" and bool(webp[20] & 0x10)
 
 
 def materialize_animation_bytes(data: bytes) -> dict:

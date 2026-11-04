@@ -51,7 +51,7 @@ with tempfile.TemporaryFile() as log:
   cookie=payload+'.'+enc(hmac.new(SECRET.encode(),payload.encode(),hashlib.sha256).digest())
   with sync_playwright() as pw:
    browser=pw.chromium.launch(headless=True, **({'executable_path':os.environ['CHROMIUM']} if os.environ.get('CHROMIUM') else {}))
-   ctx=browser.new_context(viewport={'width':1280,'height':900})
+   ctx=browser.new_context(locale='ja-JP',viewport={'width':1280,'height':900})
    ctx.add_cookies([dict(name='kura_session',value=cookie,url=base),dict(name='kura_cachefix1',value='1',url=base)])
    delayed_pin=[];delayed_save=[]
    hold_pin={'enabled':False}
@@ -60,6 +60,7 @@ with tempfile.TemporaryFile() as log:
     assert u.hostname=='127.0.0.1', 'external request blocked'
     if u.path.startswith('/fixture/'):return req.fulfill(body=SVG,content_type='image/svg+xml')
     if u.path.startswith('/api/'):return req.fulfill(json=response(req.request.url))
+    if u.path=='/m/client-timing':return req.fulfill(status=204,body='')  # telemetry, not a post write
     if u.path.startswith('/m/'):
      body=req.request.post_data_json;WRITES.append((u.path,body));pid=int(u.path.split('/')[3]);p=POSTS[pid]
      if u.path.endswith('/tag-pin'):
@@ -125,11 +126,11 @@ with tempfile.TemporaryFile() as log:
    expect(page.locator('.viewer-identities')).to_have_count(0)
    page.get_by_role('button',name='タグ編集を閉じる').click()
    expect(page.locator('.viewer-identities .identity-summary')).to_have_count(1)
-   page.locator('.lb-top').get_by_role('button',name='タグ',exact=True).click()
+   page.get_by_role('button',name='タグ',exact=True).click()
    ctx.add_cookies([dict(name='kura_identity_display',value=quote(json.dumps({'viewer':False})),url=base)])
    page.reload(wait_until='networkidle');expect(page.locator('.identity-summary')).to_have_count(0)
    page.get_by_role('button',name='タグ編集を閉じる').click();expect(page.locator('.identity-summary')).to_have_count(0)
-   page.locator('.lb-top').get_by_role('button',name='タグ',exact=True).click()
+   page.get_by_role('button',name='タグ',exact=True).click()
    ctx.add_cookies([dict(name='kura_identity_display',value=quote(json.dumps({'viewer':True})),url=base)])
    page.reload(wait_until='networkidle');expect(panel.locator('.identity-summary')).to_have_count(1)
    # All discard decisions are explicit; accepting internal navigation prompts once.
@@ -183,7 +184,7 @@ with tempfile.TemporaryFile() as log:
     expect(panel).to_have_count(0)
     expect(page.locator('.viewer-identities')).not_to_be_visible()
     assert page.evaluate("localStorage.getItem('kura_single_tag_sidebar')")=='1'
-    page.locator('.lb-top').get_by_role('button',name='タグ',exact=True).click();expect(panel).to_be_visible()
+    page.get_by_role('button',name='タグ',exact=True).click();expect(panel).to_be_visible()
     box=panel.bounding_box();assert box and 0<=box['x']<20 and box['x']+box['width']<=width
     scroller=panel.locator('.lb-tag-scroll');assert scroller.evaluate('(e)=>e.scrollHeight>e.clientHeight')
     scroller.evaluate('(e)=>e.scrollTop=e.scrollHeight');assert scroller.evaluate('(e)=>e.scrollTop>0')
@@ -194,8 +195,8 @@ with tempfile.TemporaryFile() as log:
     page.get_by_role('button',name='タグ編集を閉じる').click();expect(panel).to_have_count(0)
     expect(page.locator('.viewer-identities')).not_to_be_visible()
     assert page.evaluate("localStorage.getItem('kura_single_tag_sidebar')")=='1'
-    page.locator('.lb-top').get_by_role('button',name='タグ',exact=True).click();expect(panel).to_have_count(1)
-   page.evaluate("localStorage.setItem('kura_verify_overlay','1'); localStorage.setItem('kura_verify_header','1')")
+    page.get_by_role('button',name='タグ',exact=True).click();expect(panel).to_have_count(1)
+   page.evaluate("localStorage.setItem('kura_tag_overlay','1'); localStorage.setItem('kura_verify_header','1')")
    page.goto(base+'/post/1000?idx=0&mode=manga',wait_until='networkidle')
    expect(page.locator('.lb-tag-sidebar')).to_have_count(0)
    expect(page.locator('.vto.bottom')).to_have_count(1)

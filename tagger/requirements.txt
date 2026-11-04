@@ -1,5 +1,5 @@
 numpy>=2.0
-Pillow>=10.0
+Pillow>=13.0.0  # GHSA-wqgw-9xfh-qf2g, GHSA-xcvg-w56q-r89m (<=12.3.0); api/requirements.txt pins the same floor
 onnxruntime>=1.18
 huggingface_hub>=0.20
 av>=11.0

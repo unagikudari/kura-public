@@ -337,7 +337,7 @@ def run():
     return dict(pass_=newest==after=='#1098',newest=newest,after_old_response=after,pair_zoom_transition=True)
    test('unified_pair_response_order',pair_response_order)
    def retained_tools():
-    page.set_viewport_size({'width':390,'height':844});FIXTURE['rich']=True;go('/login');page.evaluate("localStorage.setItem('kura_verify_overlay','0');localStorage.setItem('kura_verify_target','fixture-artist');localStorage.setItem('kura_show_pair','0')")
+    page.set_viewport_size({'width':390,'height':844});FIXTURE['rich']=True;go('/login');page.evaluate("localStorage.setItem('kura_tag_overlay','0');localStorage.setItem('kura_verify_target','fixture-artist');localStorage.setItem('kura_show_pair','0')")
     go('/post/1000?q=pool:8515&idx=0');page.wait_for_selector('.pool-title-name');page.wait_for_selector('.viewer-target.has')
     page.keyboard.press('t');page.wait_for_selector('.vto');assert 'fixture-artist' in page.locator('.vto').inner_text()
     page.get_by_role('button',name='原寸',exact=True).click();page.wait_for_function("document.querySelector('.lb-img-wrap')?.getBoundingClientRect().width===80")
@@ -355,7 +355,7 @@ def run():
    test('unified_retained_single_tools',retained_tools)
    def input_ownership():
     page.set_viewport_size({'width':390,'height':844});FIXTURE['rich']=True;FIXTURE['large']=True
-    go('/login');page.evaluate("localStorage.setItem('kura_show_pair','0');localStorage.setItem('kura_verify_overlay','0')");go('/?q=old&lb=1000');page.wait_for_selector('.lb-id')
+    go('/login');page.evaluate("localStorage.setItem('kura_show_pair','0');localStorage.setItem('kura_tag_overlay','0')");go('/?q=old&lb=1000');page.wait_for_selector('.lb-id')
     for label,selector in [('詳細','.image-details'),('タグ','.vto')]:
      button=page.get_by_role('button',name=label,exact=True);button.focus();page.keyboard.press('Space');page.wait_for_selector(selector);assert page.locator('.lb-id').inner_text()=='#1000'
      page.keyboard.press('Space');page.wait_for_selector(selector,state='hidden')

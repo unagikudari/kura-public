@@ -9,12 +9,23 @@ import type { Action } from 'svelte/action';
 const STALL_MS = [3_000, 8_000, 15_000];
 const stallFor = (attempt: number) => STALL_MS[Math.min(attempt, STALL_MS.length - 1)];
 const MAX_RETRIES = 2;
+// A stall is most likely the link, not the image: on 2026-11-02 the owner's iPad lost its
+// tailnet path for 15–20 s while Tailscale switched between its LAN and IPv6 addresses,
+// every request in that window went unanswered, and the tiles were left failed after the
+// path came back. So a tile that failed by stalling keeps trying slowly while it is in
+// view, and any thumbnail that loads — a sign the link is back (a cached load can also fire
+// it) — retries the stalled ones at once. A tile that failed with an error (404, a broken
+// image) still stops: retrying cannot fix those bytes.
+const STALLED_RETRY_MS = 30_000;
+const RECOVERY_GAP_MS = 2_000;
+const RECOVERED_EVENT = 'kura:thumbnail-recovered';
 export const THUMBNAIL_STATE_EVENT = 'kura:thumbnail-state';
 export const THUMBNAIL_RETRY_EVENT = 'kura:thumbnail-retry';
 export type ThumbnailState = 'loading' | 'retrying' | 'loaded' | 'failed' | 'offline' | 'removed';
 const visibility = new Map<HTMLImageElement, (visible: boolean) => void>();
 let observer: IntersectionObserver | null = null;
 let sequence = 0;
+let lastRecovery = -Infinity;
 
 function observe(node: HTMLImageElement, callback: (visible: boolean) => void) {
   observer ??= new IntersectionObserver(entries => {
@@ -29,10 +40,21 @@ function observe(node: HTMLImageElement, callback: (visible: boolean) => void) {
   };
 }
 
+/** A thumbnail arrived: the link probably works again. At most one announcement per RECOVERY_GAP_MS, so a
+ *  page of loads does not become a storm of retries. */
+function announceRecovery() {
+  const now = Date.now();
+  // A clock that stepped back (or a test's restarted one) does not hold the gate shut.
+  if (now >= lastRecovery && now - lastRecovery < RECOVERY_GAP_MS) return;
+  lastRecovery = now;
+  window.dispatchEvent(new Event(RECOVERED_EVENT));
+}
+
 export const thumbnailLoader: Action<HTMLImageElement, string> = (node, initialSource) => {
   let source = initialSource;
   let visible = false;
   let retries = 0;
+  let stalled = false;   // the last attempt ended by the stall timer, not by an error event
   let destroyed = false;
   let state: ThumbnailState | undefined;
   let timer: ReturnType<typeof setTimeout> | null = null;
@@ -48,7 +70,7 @@ export const thumbnailLoader: Action<HTMLImageElement, string> = (node, initialS
     clear();
     if (destroyed || (!visible && !force) || !node.isConnected) return;
     if (ready()) { publish('loaded'); return; }
-    if (!source || retries >= MAX_RETRIES) { publish('failed'); return; }
+    if (!source || retries >= MAX_RETRIES) { publish('failed'); slowRetry(); return; }
     if (!navigator.onLine) { publish('offline'); return; }
     retries++;
     publish('retrying');
@@ -58,30 +80,50 @@ export const thumbnailLoader: Action<HTMLImageElement, string> = (node, initialS
     node.src = url.href;
     arm();
   }
-  function arm(delay = stallFor(retries)) {
+  /** The request watchdog fired: this attempt got no answer at all. */
+  function stall() { stalled = true; retry(); }
+  /** Start over now, as a fresh attempt: it becomes eligible for a recovery restart again
+   *  only if it stalls itself, so a fresh request keeps its whole watchdog interval. */
+  function restart() { stalled = false; retries = 0; retry(); }
+  function arm(delay = stallFor(retries), then: () => void = stall) {
     clear();
     if (destroyed || !source || !visible || ready()) return;
     if (!navigator.onLine) { publish('offline'); return; }
     // The last attempt also needs a watchdog: otherwise a final stalled request
     // has neither an error event nor a timer, leaving an eternal blank tile.
-    timer = setTimeout(retry, delay);
+    timer = setTimeout(then, delay);
   }
+  /** A tile that failed by stalling starts over, slowly, while it stays in view. */
+  function slowRetry() {
+    if (!stalled || !source || !visible || destroyed) return;
+    timer = setTimeout(restart, STALLED_RETRY_MS);
+  }
+  const settle = () => { clear(); stalled = false; publish('loaded'); };
   const loaded = () => {
     if (destroyed) return;
     if (!ready()) { failed(); return; }
-    clear(); publish('loaded');
+    settle();
+    announceRecovery();   // only a load event: an image already held when it scrolls in proves nothing
   };
   const failed = () => {
     if (destroyed) return;
+    stalled = false;
     if (!navigator.onLine) { clear(); publish('offline'); return; }
     if (retries >= MAX_RETRIES || !source) { clear(); publish('failed'); }
-    else { publish('retrying'); arm(retries === 0 ? 500 : 1500); }
+    // An error's backoff is not a stall: the retry it schedules is not marked stalled.
+    else { publish('retrying'); arm(retries === 0 ? 500 : 1500, retry); }
   };
   const manual = () => {
     if (!destroyed && (state === 'failed' || state === 'offline')) {
+      stalled = false;
       retries = 0;
       retry(true);
     }
+  };
+  const recovered = () => {
+    if (destroyed || !stalled || !visible || ready()) return;
+    if (state !== 'retrying' && state !== 'failed') return;
+    restart();
   };
   const online = () => { if (visible && state === 'offline') manual(); };
   const offline = () => { if (!ready() && state !== 'failed') { clear(); publish('offline'); } };
@@ -90,19 +132,20 @@ export const thumbnailLoader: Action<HTMLImageElement, string> = (node, initialS
   node.addEventListener(THUMBNAIL_RETRY_EVENT, manual);
   window.addEventListener('online', online);
   window.addEventListener('offline', offline);
+  window.addEventListener(RECOVERED_EVENT, recovered);
   publish(source ? (ready() ? 'loaded' : 'loading') : 'failed');
   const stop = observe(node, value => {
     visible = value;
     if (!visible) { clear(); return; }
-    if (ready()) { loaded(); return; }
-    if (state === 'failed') return;
+    if (ready()) { settle(); return; }
+    if (state === 'failed') { clear(); slowRetry(); return; }
     if (state === 'offline' && navigator.onLine) { manual(); return; }
     arm(node.complete && !node.naturalWidth ? 500 : stallFor(retries));
   });
   return {
     update(nextSource) {
       if (nextSource === source) return;
-      clear(); source = nextSource; retries = 0;
+      clear(); source = nextSource; retries = 0; stalled = false;
       publish(source ? (ready() ? 'loaded' : 'loading') : 'failed');
       arm();
     },
@@ -114,6 +157,7 @@ export const thumbnailLoader: Action<HTMLImageElement, string> = (node, initialS
       node.removeEventListener(THUMBNAIL_RETRY_EVENT, manual);
       window.removeEventListener('online', online);
       window.removeEventListener('offline', offline);
+      window.removeEventListener(RECOVERED_EVENT, recovered);
     }
   };
 };

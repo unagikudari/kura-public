@@ -20,10 +20,9 @@
                Refuses unless KURA_FS_NAME_SALT_LEGACY is set (that is what says
                "the reader moved on").
     tally      Decide whether Phase C may start, from the web server's access log:
-               first-party requests for legacy-named URLs (bots, and requests that
-               exist to check the instrument, excluded) over the last 7 days, plus
-               the bounded fallback (30 days since Phase B and the daily total below
-               a threshold). Prints `start: yes|no|unknown`.
+               first-party requests for legacy-named URLs (bots excluded) over the
+               last 7 days, plus the bounded fallback (30 days since Phase B and
+               the daily total below a threshold). Prints `start: yes|no|unknown`.
 
                It PROVES the log observes the content path before answering: one
                legacy-named GET is fired at the production ingress and must come
@@ -261,26 +260,6 @@ _CANARY_UA = "kura-fs-salt-tally-canary/"
 #: "some line reached the log".
 _CANARY_POST_ID = 0
 
-#: The UA an OPERATOR gives a request that checks the instrument rather than uses
-#: it — the curl in the cutover procedure, a hand-fired legacy GET, anything whose
-#: purpose is "did the switch work". Same treatment as the canary: it is a request
-#: about the instrument, not demand for a legacy name.
-#:
-#: Why this exists (2026-09-06): verifying the cutover, a pane fired a legacy-named
-#: GET with a hand-set Referer and a browser-shaped UA. tally counted it as
-#: first-party demand, so `cond_first_party_zero` went false and the day the
-#: instrument went in became a day the gate says somebody wanted a legacy name.
-#: Checking the gate moved the gate. Keeping that out is a mechanism, not a rule
-#: the next operator has to remember.
-_VERIFY_UA = "kura-verify-probe/"
-
-#: Matched as an exact PREFIX, and deliberately NOT folded into `_BOT_UA`. That
-#: regex answers "is this a machine", which is a different question with different
-#: consequences: a substring/regex exclusion would let any traffic that merely
-#: mentions the string hide real demand, and would tie the exclusion to how the
-#: prober's client happens to spell itself. Bots and operators stay separate.
-_PROBE_UA_PREFIXES = (_CANARY_UA, _VERIFY_UA)
-
 
 def _open_log(p: pathlib.Path):
     """Rotations are part of the window: .1 and .gz are read like the live file."""
@@ -379,7 +358,7 @@ def tally(access_log: str, days: int, origin: str, phase_b_started: dt.date | No
                 continue
             log_first = day if log_first is None else min(log_first, day)
             log_last = day if log_last is None else max(log_last, day)
-            if ua.startswith(_PROBE_UA_PREFIXES):
+            if ua.startswith(_CANARY_UA):
                 continue                     # never count our own probes as demand
             fm = _FILENAME.match(pathlib.PurePosixPath(m.group("path").split("?", 1)[0]).name)
             if not fm:
@@ -475,10 +454,7 @@ def main(argv=None) -> int:
     sub.add_parser("audit")
     g = sub.add_parser("guard", help="the boot guard's verdict over the whole tree (sample 0 = every name)")
     g.add_argument("--sample", type=int, default=0)
-    t = sub.add_parser("tally", description=(
-        "Requests whose UA starts with '" + _VERIFY_UA + "' are excluded from the count "
-        "as checks OF the instrument rather than demand through it. Give that prefix to "
-        "any request you fire to verify the log path: -A '" + _VERIFY_UA + "<who>'."))
+    t = sub.add_parser("tally")
     t.add_argument("--access-log", required=True, nargs="+",
                    help="one or more paths/globs. Rotations (.1, .gz) are part of the "
                         "window; reading only the live file silently shortens it. Both "

@@ -16,6 +16,7 @@
   import BulkTagBar from '#lib/components/BulkTagBar.svelte';
   import PoolTitleBar, { poolIdFromQuery } from '#lib/components/PoolTitleBar.svelte';
   import PoolVerifyBadge from '#lib/components/PoolVerifyBadge.svelte';
+  import { poolDisplayName } from '#lib/site.ts';
   import { readHideVerify, writeHideVerify } from '#lib/hideVerify.ts';
   import { fetchPosts, fetchPools, fetchPost, fetchTagDetail, mediaUrl, patchPost, putTagPin, putTagPinBulk, fetchPostPinStates, toggleFavorite, setPoolCover, reorderPoolPosts, fetchCensorStatus, createVerifyPoolFromPosts, removeTagBulk } from '#lib/api.ts';
   import { applyBulkTag, frameState, toggleAll, toggleCandidate, type BulkApplyResult } from '#lib/bulkTag.ts';
@@ -2116,7 +2117,7 @@
           {@const obs = pool.postCount ?? 0}
           {@const exp = poolExpected(pool)}
           {@const complete = exp == null || exp <= 0 || obs >= exp}
-          <a class="thumb pool-card" title={pool.name} data-history-index={renderStart + i} data-history-id={pool.id} href={`/?q=pool:${pool.id}`} draggable="false">
+          <a class="thumb pool-card" title={poolDisplayName(pool.name)} data-history-index={renderStart + i} data-history-id={pool.id} href={`/?q=pool:${pool.id}`} draggable="false">
             {#if pool.thumbnailUrl}
               <!-- loading=lazy を撤去 (2026-07-20 user 報告 root-cause): 手動仮想スクロール窓が
                  既に近接可視域だけを描画しており、native lazy-load は冗長な二重制御だった。
@@ -2124,7 +2125,7 @@
                  lazy 判定が距離計算を誤り、以後二度と再評価されず読み込みが永久停止する実測
                  バグを踏んだ (loading='eager' へ強制書換えで即解消を確認)。窓自体が
                  十分な絞り込みなので eager で問題ない。 -->
-<img use:thumbnailLoader={mediaUrl(pool.thumbnailUrl)} src={mediaUrl(pool.thumbnailUrl)} alt={pool.name} draggable="false" />
+<img use:thumbnailLoader={mediaUrl(pool.thumbnailUrl)} src={mediaUrl(pool.thumbnailUrl)} alt={poolDisplayName(pool.name)} draggable="false" />
             {:else}
               <div class="pool-no-thumb">No image</div>
             {/if}
@@ -2146,7 +2147,7 @@
             {/each}
             <div class="pool-overlay">
               <!-- The caption identifies the pool; the entire card remains its link. -->
-              <span class="pool-name">{pool.name}</span>
+              <span class="pool-name">{poolDisplayName(pool.name)}</span>
             </div>
           </a>
         {:else}

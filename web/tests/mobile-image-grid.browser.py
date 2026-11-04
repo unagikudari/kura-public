@@ -212,7 +212,7 @@ def exercise(context, base, width, mobile, evidence):
     for index, position in ((i, position) for i in range(3) for position in ('center', 'bottom')):
         open_at(page, page.locator(f'#post-{1000 + index}'), position, mobile)
         if mobile and index == 0 and position == 'center':
-            page.locator('.lb-top').get_by_role('button', name='タグ', exact=True).click()
+            page.get_by_role('button', name='タグ', exact=True).click()
             expect(page.get_by_role('complementary', name='タグ編集')).to_be_visible()
             page.get_by_role('button', name='タグ編集を閉じる').click()
             expect(page.locator('.lb-tag-sidebar')).to_have_count(0)
@@ -307,7 +307,7 @@ def main():
                     {'executable_path': os.environ['CHROMIUM']} if engine == 'chromium' and os.environ.get('CHROMIUM') else {}))
                 results = []
                 for width, mobile in ((390, True), (320, True), (1280, False)):
-                    context = browser.new_context(viewport=dict(width=width, height=844 if mobile else 900),
+                    context = browser.new_context(locale='ja-JP', viewport=dict(width=width, height=844 if mobile else 900),
                                                   has_touch=mobile, is_mobile=mobile, reduced_motion='reduce')
                     context.add_cookies([dict(name='kura_session', value=session_cookie(), url=base),
                                          dict(name='kura_cachefix1', value='1', url=base),
@@ -319,6 +319,9 @@ def main():
                         if url.hostname != '127.0.0.1' or url.port != port:
                             EXTERNAL.append(request.request.url)
                             return request.abort()
+                        if url.path == '/m/client-timing':
+                            # Load-timing telemetry the page reports, not a change to any post.
+                            return request.fulfill(status=204, body='')
                         if request.request.method != 'GET':
                             WRITES.append((request.request.method, url.path))
                             return request.fulfill(status=405, json={'error': 'fixture forbids mutations'})
@@ -333,7 +336,7 @@ def main():
                 # Fresh phones have no column preference. Preserve the explicit
                 # five-column/history regression above and test the real default separately.
                 for width in (390, 320):
-                    context = browser.new_context(viewport=dict(width=width, height=844),
+                    context = browser.new_context(locale='ja-JP', viewport=dict(width=width, height=844),
                                                   has_touch=True, is_mobile=True, reduced_motion='reduce')
                     context.add_cookies([dict(name='kura_session', value=session_cookie(), url=base),
                                          dict(name='kura_cachefix1', value='1', url=base)])
@@ -357,7 +360,7 @@ def main():
                     context.close()
                 # A landscape phone is wider than the narrow-width breakpoint,
                 # but remains a coarse pointer. It must not inherit desktop editing.
-                context = browser.new_context(viewport=dict(width=844, height=390),
+                context = browser.new_context(locale='ja-JP', viewport=dict(width=844, height=390),
                                               has_touch=True, is_mobile=True, reduced_motion='reduce')
                 context.add_cookies([dict(name='kura_session', value=session_cookie(), url=base),
                                      dict(name='kura_cachefix1', value='1', url=base)])
@@ -373,7 +376,7 @@ def main():
                 wait_full_image(page, 1000)
                 if evidence:
                     page.screenshot(path=str(evidence / 'viewer-844x390-landscape-initial-closed.png'))
-                page.locator('.lb-top').get_by_role('button', name='タグ', exact=True).click()
+                page.get_by_role('button', name='タグ', exact=True).click()
                 expect(page.get_by_role('complementary', name='タグ編集')).to_be_visible()
                 page.get_by_role('button', name='タグ編集を閉じる').click()
                 expect(page.locator('.lb-tag-sidebar')).to_have_count(0)
@@ -386,7 +389,7 @@ def main():
                 # ImagePage's SSR starts with an empty loading shell until $effect.
                 # Record the actual no-JS state without claiming a rendered sidebar.
                 for width, height, mobile in ((390, 844, True), (844, 390, True), (1280, 900, False)):
-                    context = browser.new_context(viewport=dict(width=width, height=height),
+                    context = browser.new_context(locale='ja-JP', viewport=dict(width=width, height=height),
                                                   has_touch=mobile, is_mobile=mobile,
                                                   java_script_enabled=False, reduced_motion='reduce')
                     context.add_cookies([dict(name='kura_session', value=session_cookie(), url=base),

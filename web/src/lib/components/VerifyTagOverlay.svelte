@@ -127,7 +127,7 @@
 
 <svelte:window onpointerdowncapture={onWindowPointerdown} />
 
-<div class="vto" class:bottom bind:this={rootEl} aria-label={m.tags.overlay.label}>
+<div class="vto" class:bottom class:engaged={!!(armed || flash || busy)} bind:this={rootEl} aria-label={m.tags.overlay.label}>
   {#if bottom && flash}
     <!-- 直近削除のフラッシュ + undo (単発)。パネル先頭に固定表示 —
          表示シェルは FlashMessage (overlay variant)、文言はここのドメイン知識。 -->
@@ -209,6 +209,11 @@
     display: flex; flex-direction: column; gap: 2px;
     align-content: flex-start;
   }
+  /* 既定で表示するので、触れていない間は少し薄く — 画像を隠さない (2026-11-02 owner
+     「これが出ただけで画像がほとんど見れなくなる」)。0.35 では文字が読めなかった (同日 owner) ので
+     0.85: 背景はもともと 0.18 で、文字は text-shadow で読める。触れる・削除待機・フラッシュ中は濃く。 */
+  .vto.bottom { opacity: 0.85; transition: opacity 0.15s; }
+  .vto.bottom:hover, .vto.bottom:focus-within, .vto.bottom.engaged { opacity: 1; }
   .vto.bottom .vto-group { margin-bottom: 0; display: flex; align-items: baseline; gap: 8px; max-width: 100%; }
   .vto.bottom .vto-group .vto-list { display: flex; flex-wrap: wrap; gap: 2px 6px; align-items: baseline; }
   .vto.bottom .vto-label { margin-bottom: 0; flex-shrink: 0; }

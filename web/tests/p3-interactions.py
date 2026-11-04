@@ -146,7 +146,7 @@ def assert_bulk(page) -> None:
         local_storage={
             **MANGA_LOCALSTORAGE_BASE,
             "kura_verify_header": "1",
-            "kura_verify_overlay": "0",
+            "kura_tag_overlay": "0",
             "kura_verify_target": VERIFY_TARGET_TAG,
         },
     )
@@ -478,7 +478,7 @@ def assert_post_manga(page) -> None:
         local_storage={
             **MANGA_LOCALSTORAGE_BASE,
             "kura_verify_header": "1",
-            "kura_verify_overlay": "1",
+            "kura_tag_overlay": "1",
             "kura_verify_target": VERIFY_TARGET_TAG,
         },
     )

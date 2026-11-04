@@ -16,6 +16,7 @@
   import VerifyTagOverlay from '#lib/components/VerifyTagOverlay.svelte';
   import BulkTagBar from '#lib/components/BulkTagBar.svelte';
   import PoolTitleBar, { poolIdFromQuery } from '#lib/components/PoolTitleBar.svelte';
+  import { poolDisplayName } from '#lib/site.ts';
   import { verifyOverlayOn, verifyHeaderOn, verifyTarget, postHasTag } from '#lib/verify.ts';
   import { applyBulkTag, frameState, patchTagVersionAware, toggleAll, toggleCandidate, type BulkApplyResult, type BulkProgress } from '#lib/bulkTag.ts';
   import '#lib/styles/bulk.css';
@@ -982,6 +983,8 @@
     dir={gridDir === 'asc' ? 'asc' : 'desc'}
     openMode={openMode}
     tagPost={post}
+    tagsShown={$verifyOverlayOn}
+    onToggleTags={() => verifyOverlayOn.update(v => !v)}
     mangaActive={true}
     onEnterSingle={() => goto(`/post/${post.id}?q=${encodeURIComponent(query)}&idx=${idx}` + (gridSort ? `&sort=${encodeURIComponent(gridSort)}&dir=${gridDir || 'desc'}` : ''))}
     onSelectCols={(c) => { try { saveClientGridSettings(gridScope(query), { cols: c }); } catch {} goto(`/?q=${encodeURIComponent(query)}`); }}
@@ -1070,7 +1073,9 @@
   {/if}
 
   <div class="stream-wrap">
-  {#if !$verifyHeaderOn && !$verifyOverlayOn}
+  <!-- The identity box (artist) belongs to the tags being shown: it used to stand in while the tag
+       overlay was off, which made "off" still show tags (2026-11-02 owner). -->
+  {#if !$verifyHeaderOn && $verifyOverlayOn}
     <div class="manga-identities"><IdentitySummary {post} /></div>
   {/if}
   <!-- vb-frames: 共通 bulk.css の ::after オーバーレイ枠 (青/緑=ants/赤=ants) を opt-in -->
@@ -1169,8 +1174,8 @@
             {#each p.pools as pool}
               <a class="ov-pool" href={`/?q=pool:${pool.id}`}
                 onclick={(e) => e.stopPropagation()}
-                title={pm.openPool(pool.names[0] ?? `#${pool.id}`, pool.postCount)}>
-                <span class="ov-pool-k">pool</span>{pool.names[0] ?? `#${pool.id}`}
+                title={pm.openPool(pool.names[0] ? poolDisplayName(pool.names[0]) : `#${pool.id}`, pool.postCount)}>
+                <span class="ov-pool-k">pool</span>{pool.names[0] ? poolDisplayName(pool.names[0]) : `#${pool.id}`}
               </a>
             {/each}
           </div>
