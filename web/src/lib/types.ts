@@ -108,6 +108,7 @@ export interface PoolSource {
 }
 
 export interface PoolSummary {
+  hidden?: boolean;
   /** Existing artist tags aggregated across pool members, canonical tag IDs. */
   artists?: (MicroTag & { postCount: number })[];
   id: number;

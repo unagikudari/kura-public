@@ -289,6 +289,54 @@ def test_http_adapter_feature_gate_upload_and_safe_mode(database, tmp_path, monk
     run(database, scenario)
 
 
+def test_media_returns_connection_before_starting_transfer(database, tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from fastapi import FastAPI
+    import httpx
+    from api.auth import get_current_user
+    from api.collector import router as adapter
+    from api.db.session import get_db
+
+    monkeypatch.setenv("KURA_COLLECTOR_NEXT", "1")
+    monkeypatch.setenv("KURA_COLLECTOR_NEXT_ROOT", str(tmp_path / "files"))
+    monkeypatch.setenv("KURA_DB_ROLE", "canonical")
+    _, payload = image(tmp_path / "fixture")
+
+    async def scenario(sessions):
+        monkeypatch.setattr(adapter, "async_session", sessions)
+        app = FastAPI()
+        app.include_router(adapter.router)
+
+        async def db_dependency():
+            async with sessions() as db:
+                request_sessions.append(db)
+                yield db
+
+        app.dependency_overrides[get_db] = db_dependency
+        app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(user_id=1)
+        request_sessions = []
+
+        async def observe(scope, receive, send):
+            async def inspect(message):
+                if scope["method"] == "GET" and message["type"] == "http.response.start":
+                    assert not request_sessions[-1].in_transaction()
+                await send(message)
+            await app(scope, receive, inspect)
+
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=observe), base_url="http://test") as client:
+            upload = await client.post("/api/collector-next/upload", files={"file": ("a.png", payload)},
+                                       data={"request_key": str(uuid4())})
+            assert upload.status_code == 200
+            asset = upload.json()["asset_id"]
+            response = await client.get(f"/api/collector-next/media/{asset}/original",
+                                        headers={"Range": "bytes=0-31"})
+            assert response.status_code == 206 and response.content == payload[:32]
+            preview = await client.get(f"/api/collector-next/media/{asset}/thumbnail")
+            assert preview.status_code == 200 and preview.headers["content-type"] == "image/webp"
+
+    run(database, scenario)
+
+
 def test_deep_cursor_reads_only_returned_rows(database):
     async def scenario(sessions):
         async with sessions.begin() as db:
@@ -1603,3 +1651,44 @@ def test_a_package_restored_into_the_library_it_came_from_is_its_own_again(datab
     run(database, same_library)
     _restore_into(database, tmp_path, saved['bytes'], 1, 'home')
     assert {p[3] for p in _producers(database)} == {''}
+
+
+@pytest.mark.parametrize('count', [0, 1, 100, 101, 201])
+def test_http_collection_pages_are_complete_bounded_and_owner_scoped(database, monkeypatch, count):
+    from types import SimpleNamespace
+    from fastapi import FastAPI
+    import httpx
+    from api.collector import router as adapter
+    from api.auth import get_current_user
+    from api.db.session import get_db
+    monkeypatch.setenv('KURA_COLLECTOR_NEXT', '1')
+    monkeypatch.setenv('KURA_DB_ROLE', 'canonical')
+    async def scenario(sessions):
+        async with sessions() as db:
+            expected = [(await service.create_collection(db, 1, f'Work {i}'))['id'] for i in range(count)]
+            await service.create_collection(db, 2, 'Other owner')
+            await db.commit()
+        app = FastAPI(); app.include_router(adapter.router)
+        async def db_dependency():
+            async with sessions() as db:
+                yield db
+        app.dependency_overrides[get_db] = db_dependency
+        app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(user_id=1)
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://test') as client:
+            url = '/api/collector-next/collections'
+            legacy = (await client.get(url)).json()
+            assert isinstance(legacy, list) and len(legacy) == min(count, 100)
+            ids, after = [], None
+            while True:
+                response = await client.get(url, params={'page': 'true', **({'after': after} if after else {})})
+                assert response.status_code == 200
+                page = response.json()
+                assert len(page['items']) <= 100
+                ids.extend(row['id'] for row in page['items'])
+                after = page['next_cursor']
+                if after is None:
+                    break
+            assert ids == expected[::-1]
+            for params in ({'after': 0}, {'after': -1}, {'limit': 0}, {'limit': 101}):
+                assert (await client.get(url, params={'page': 'true', **params})).status_code == 422
+    run(database, scenario)

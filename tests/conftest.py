@@ -89,8 +89,7 @@ def pytest_configure(config):
 def pytest_collection_modifyitems(config, items):
     """`torch` マーカーのテストは、`-m` で明示されない限り **deselect** する。
 
-    skip ではない。skip は緑に見えて「走らなかった」を隠す (tests/test_mega_key_pending_db.py
-    の言い方)。deselect は集計に `N deselected` として残るので、走らなかったことが見える。
+    skip ではない。skip は緑に見えて「走らなかった」を隠す。deselect は集計に `N deselected` として残るので、走らなかったことが見える。
     走らせるのは scripts/run_torch_tests.sh (`-m torch`、torch の無い環境では **失敗**)。
     素の pytest でこの 2 本が落ちて赤くなる状態が 1.185.2〜1.187.0 の間あった — 落ちる
     テストは無視され、無視されるテストは gate にならない。
@@ -103,3 +102,5 @@ def pytest_collection_modifyitems(config, items):
     if drop:
         config.hook.pytest_deselected(items=drop)
         items[:] = keep
+
+

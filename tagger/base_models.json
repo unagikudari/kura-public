@@ -1,0 +1,30 @@
+{
+ "_doc": "Pinned upstream base models for the release (wd14-profile general tags). `active` names the base new releases are built on; switching it is a governed lifecycle step (docs/notes/tagger-base-switch-plan.md), never a hand edit to production. Files are pinned by sha256 of their bytes. `preprocessing` is the input contract the base is deployed and evaluated with: resize-totensor-unnormalized (today's release pipeline, which every logit patch was trained on) or wd-v3 (white alpha composite, white square pad, resize, normalise with the model's mean/std, RGB->BGR, as the WD v3 taggers are published).",
+ "active": "wd-swinv2-tagger-v3",
+ "models": {
+  "wd-swinv2-tagger-v3": {
+   "repo": "SmilingWolf/wd-swinv2-tagger-v3",
+   "revision": "627aef95638667ddcaa3ac8ae625e88ea5b02f51",
+   "runtime": "timm",
+   "license": "apache-2.0",
+   "files": {
+    "model.safetensors": "39fe04000d5907a0a7616df54af744d43fbd70b5fba7abc3135d3675734c03ef",
+    "selected_tags.csv": "298633d94d0031d2081c0893f29c82eab7f0df00b08483ba8f29d1e979441217",
+    "config.json": "ddcdd28facc40ee8d0ef4b16ee3e7c70e4d7b156aff7b0f2ccc180e617eda795"
+   },
+   "preprocessing": "resize-totensor-unnormalized"
+  },
+  "wd-eva02-large-tagger-v3": {
+   "repo": "SmilingWolf/wd-eva02-large-tagger-v3",
+   "revision": "b25b82a03f7282e41aa2f257a52c7583b710bd1c",
+   "runtime": "timm",
+   "license": "apache-2.0",
+   "files": {
+    "model.safetensors": "74f05b0aad869d9f91fbc597bc8d157d98abdead573d5c23509a195dbb8a7ef5",
+    "selected_tags.csv": "298633d94d0031d2081c0893f29c82eab7f0df00b08483ba8f29d1e979441217",
+    "config.json": "1db05aefb1a245533818e33bea22852300ac647a64636854095d1a313cd2e9dc"
+   },
+   "preprocessing": "wd-v3"
+  }
+ }
+}

@@ -17,6 +17,10 @@ _ROOT = Path(__file__).resolve().parent.parent
 EXTENSION_ID = re.compile(r'[a-z][a-z0-9_]{0,31}')
 
 
+class ExtensionIntegrityError(RuntimeError):
+    """The installed source overlay differs from its recorded composition."""
+
+
 @lru_cache(maxsize=1)
 def installed() -> dict[str, dict]:
     state_path = _ROOT / '.kura-extensions.json'
@@ -24,18 +28,18 @@ def installed() -> dict[str, dict]:
         return {}
     state = json.loads(state_path.read_text())
     if state.get('schema') != 1:
-        raise RuntimeError('unsupported extension installation state')
+        raise ExtensionIntegrityError('unsupported extension installation state')
     result = {}
     for ext in state['extensions']:
         name = ext['id']
         if not EXTENSION_ID.fullmatch(name) or name in result:
-            raise RuntimeError('invalid extension installation state')
+            raise ExtensionIntegrityError('invalid extension installation state')
         for relative, expected in ext['files'].items():
             target = _ROOT / relative
             if target.is_symlink() or not target.is_file() or not target.resolve().is_relative_to(_ROOT):
-                raise RuntimeError(f'invalid installed extension file: {relative}')
+                raise ExtensionIntegrityError(f'invalid installed extension file: {relative}')
             if hashlib.sha256(target.read_bytes()).hexdigest() != expected:
-                raise RuntimeError(f'extension file changed; compose from its source repository: {relative}')
+                raise ExtensionIntegrityError(f'extension file changed; compose from its source repository: {relative}')
         result[name] = ext
     return result
 
@@ -70,7 +74,7 @@ def assert_composed_as_pinned() -> None:
         return
     want = {name: pin['commit'] for name, pin in json.loads(pins_path.read_text())['extensions'].items()}
     if have != want:
-        raise RuntimeError(f'installed extensions {have} are not the pinned set {want}; compose')
+        raise ExtensionIntegrityError(f'installed extensions {have} are not the pinned set {want}; compose')
 
 
 def require(name: str):

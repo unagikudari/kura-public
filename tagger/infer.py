@@ -293,7 +293,7 @@ WD14_FIXED_GATES: dict[str, tuple[str, ...]] = {
 }
 
 
-def load_wd14_fixed():
+def load_wd14_fixed(*, report_node_state=True):
     """Safely pull + verify the tagger registry's active release (plan:kura-tagger-
     registry rev2 Step 4-5, fact 58082f48) via tagger/release_client.py's fail-closed
     pull -- write-.partial -> fsync -> sha256 -> load+selftest -> atomic rename, with
@@ -346,20 +346,23 @@ def load_wd14_fixed():
 
     # Report to tagger_node_state (plan Step 5/8: fleet drift becomes a SELECT,
     # not an ssh audit). Best-effort -- reporting failure must not degrade tagging.
-    try:
-        import socket  # noqa: PLC0415
-        import requests  # noqa: PLC0415
-        report = requests.post(f"{KURA_URL}/api/tagger/node-state",
-                      headers=headers,
-                      json={"host": socket.gethostname(), "release_id": verified.release_id,
-                            "verified": True,
-                            "detail": f"n_out={ckpt['n_out']} fallback={verified.fallback}"},
-                      timeout=10)
-        report.raise_for_status()
-    except Exception as e:  # noqa: BLE001
-        print(f"[kura-tagger] wd14-fixed: node-state report failed ({e})", flush=True)
+    if report_node_state:
+        try:
+            import socket  # noqa: PLC0415
+            import requests  # noqa: PLC0415
+            report = requests.post(f"{KURA_URL}/api/tagger/node-state",
+                          headers=headers,
+                          json={"host": socket.gethostname(), "release_id": verified.release_id,
+                                "verified": True,
+                                "detail": f"n_out={ckpt['n_out']} fallback={verified.fallback}"},
+                          timeout=10)
+            report.raise_for_status()
+        except Exception as e:  # noqa: BLE001
+            print(f"[kura-tagger] wd14-fixed: node-state report failed ({e})", flush=True)
 
     return {"model": model, "tags": tags, "img_size": ckpt.get("img_size", 448),
+            "preprocessing": ckpt.get("preprocessing"), "mean": ckpt.get("mean") or None,
+            "std": ckpt.get("std") or None,
             "patched": dict(ckpt.get("patched", {})),
             # Veto heads bundled INTO the release (build_release.py) — the
             # fleet-wide distribution channel. Falls back to {} for a pre-veto
@@ -436,7 +439,7 @@ def load_veto_heads() -> dict:
     return heads
 
 
-def reap_domain(fixed: dict | None, veto_heads: dict | None = None, character_heads: dict | None = None) -> list[str]:
+def reap_domain(fixed: dict | None, veto_heads: dict | None = None, content_heads: dict | None = None) -> list[str]:
     """The correction-authoritative gate tags this worker is entitled to REAP:
     the release's patched rows (corrected wd14-fixed logits) ∪ its gated-veto
     heads. The improved tagger decides present/absent for EXACTLY these tags, so
@@ -455,9 +458,9 @@ def reap_domain(fixed: dict | None, veto_heads: dict | None = None, character_he
         tags |= set(fixed.get("patched") or {})
         tags |= set(fixed.get("veto_heads") or {})
     tags |= set(veto_heads or {})
-    tags |= {tag for tag in (character_heads or {}) if not tag.startswith("__")
-             and character_heads[tag] is not None
-             and (character_heads.get(f"__policy__{tag}") or {}).get("apply_mode") == "replace"}
+    tags |= {tag for tag in (content_heads or {}) if not tag.startswith("__")
+             and content_heads[tag] is not None
+             and (content_heads.get(f"__policy__{tag}") or {}).get("apply_mode") == "replace"}
     return sorted(tags)
 
 
@@ -496,26 +499,38 @@ def _onnx_providers() -> tuple[list[str], list[dict]]:
         )
     return ["CPUExecutionProvider"], [{}]
 
-def load_character_heads(*, api_url=None, headers=None) -> dict:
+def load_policy_heads(*, api_url=None, headers=None, policies=None) -> dict:
     # Same policy/artifact loader and inference implementation as fleet workers.
     from .nodec_autotag_worker import load_head_policies, load_content_heads, _fetch_artifact
     from .pixai_chars import require_character_heads
     api_url = api_origin(api_url)
     # Policy and artifact reads are public; use the caller credentials when provided.
     headers = headers if headers is not None else {}
-    policies = [policy for policy in load_head_policies(api_url=api_url, headers=headers)
-                if policy.get("category") == "character"]
+    if policies is None:
+        policies = load_head_policies(api_url=api_url, headers=headers, require_complete=True)
     heads = load_content_heads(policies, artifact_fetcher=lambda sha: _fetch_artifact(sha, api_url=api_url, headers=headers))
+    from .content_head_policy import require_loaded
+    require_loaded(heads, policies)
     require_character_heads(heads)
+    heads["__report_policies__"] = policies
     return heads
 
 
-def load_all_models(*, api_url=None, headers=None) -> dict:
+def load_all_models(*, api_url=None, headers=None, character_threshold=None,
+                    trial_head_policies=None) -> dict:
     """Download (if missing) and load all three ONNX sessions + tag defs."""
     pixai_onnx, pixai_tags = ensure_pixai()
     ml_onnx, ml_classes = ensure_mldanbooru()
-    wd14_onnx, wd14_tags = ensure_wd14()
+    # CL owns character inference when bound to this release; the old WD14 ONNX
+    # session is only a fallback for legacy releases. Do not allocate an unused model.
+    wd14_onnx, wd14_tags = ensure_wd14() if character_threshold is None else (None, None)
     providers, provider_options = _onnx_providers()
+    from .onnx_memory import bounded_cpu_options
+    def session(path):
+        # Bound only the CPU profile measured under its existing 6 GiB limit.
+        options = bounded_cpu_options(rt) if providers == ["CPUExecutionProvider"] else None
+        return rt.InferenceSession(str(path), sess_options=options,
+                                   providers=providers, provider_options=provider_options)
     print(f"[kura-tagger] onnx providers: {providers} options: {provider_options}", flush=True)
     smegma_model = load_smegma_tagger()
     print(f"[kura-tagger] smegma tagger: {'loaded' if smegma_model else 'unavailable (skipped)'}", flush=True)
@@ -527,15 +542,22 @@ def load_all_models(*, api_url=None, headers=None) -> dict:
     print(f"[kura-tagger] grey_owl content-heads: "
           f"{[t for t, m in greyowl_heads.items() if m is not None]} loaded, "
           f"{[t for t, m in greyowl_heads.items() if m is None]} unavailable (skipped)", flush=True)
-    wd14_fixed = load_wd14_fixed()
+    wd14_fixed = (load_wd14_fixed() if trial_head_policies is None
+                  else load_wd14_fixed(report_node_state=False))
     veto_heads = load_veto_heads()
+    # Qualification entry: production activation needs an admitted release policy.
+    from . import cl2_chars
+    characters = (cl2_chars.load(threshold=character_threshold, bounded_cpu_memory=True, intra_op_threads=2)
+                  if character_threshold is not None else None)
     return {
-        "pixai_sess": rt.InferenceSession(str(pixai_onnx), providers=providers, provider_options=provider_options),
+        "cl2_characters": characters,
+        "pixai_sess": session(pixai_onnx),
         "pixai_tags": _load_tag_csv(pixai_tags),
-        "ml_sess": rt.InferenceSession(str(ml_onnx), providers=providers, provider_options=provider_options),
+        "ml_sess": session(ml_onnx),
         "ml_classes": json.loads(ml_classes.read_text(encoding="utf-8")),
-        "wd14_sess": rt.InferenceSession(str(wd14_onnx), providers=providers, provider_options=provider_options),
-        "wd14_tags": _load_tag_csv(wd14_tags),
+        "wd14_sess": (session(wd14_onnx)
+                      if wd14_onnx is not None else None),
+        "wd14_tags": _load_tag_csv(wd14_tags) if wd14_tags is not None else [],
         "smegma_model": smegma_model,
         "chastity_cage_model": chastity_cage_model,
         "chastity_belt_model": chastity_belt_model,
@@ -543,8 +565,17 @@ def load_all_models(*, api_url=None, headers=None) -> dict:
         # Not yet consumed by tag_image() -- see load_wd14_fixed() docstring.
         "wd14_fixed": wd14_fixed,
         "veto_heads": veto_heads,
-        "character_heads": load_character_heads(api_url=api_url, headers=headers),
+        "content_heads": load_policy_heads(
+            api_url=api_url, headers=headers,
+            **({"policies": trial_head_policies} if trial_head_policies is not None else {}),
+        ),
     }
+
+
+def primary_provider(models):
+    providers = {session.get_providers()[0] for key in ('pixai_sess', 'ml_sess', 'wd14_sess')
+                 if (session := models.get(key)) is not None}
+    return next(iter(providers)) if len(providers) == 1 else 'CPUExecutionProvider'
 
 
 def _sha256_short(path: Path) -> str:
@@ -571,8 +602,12 @@ def model_source_id(models: dict | None = None) -> str:
     parts = [
         f"pixai={_sha256_short(PIXAI_DIR / 'model.onnx')}",
         f"mldanbooru={_sha256_short(MLDANBOORU_DIR / MLDANBOORU_FILE)}",
-        f"wd14={_sha256_short(WD14_DIR / 'model.onnx')}",
+
     ]
+    if models is None or models.get('wd14_sess') is not None:
+        parts.append(f"wd14={_sha256_short(WD14_DIR / 'model.onnx')}")
+    else:
+        parts.append('wd14=not-used')
     if SMEGMA_TAGGER_CKPT.exists():
         parts.append(f"smegma={_sha256_short(SMEGMA_TAGGER_CKPT)}")
     if CHASTITY_CAGE_CKPT.exists():
@@ -598,8 +633,10 @@ def model_source_id(models: dict | None = None) -> str:
         parts.append(f"quarantine={','.join(sorted(QUARANTINE_TAGS))}")
     from .pixai_chars import CHARACTER_POLICY
     parts.append(CHARACTER_POLICY)
-    from .pixai_chars import character_head_source
-    if policy_source := character_head_source((models or {}).get("character_heads")):
+    if (models or {}).get("cl2_characters") is not None:
+        parts.append(models["cl2_characters"]["source"])
+    from .content_head_policy import source as content_head_source
+    if policy_source := content_head_source((models or {}).get("content_heads")):
         parts.append(policy_source)
     return ";".join(parts)
 
@@ -669,22 +706,11 @@ def _run_smegma_tagger(image_bytes: bytes, model) -> tuple[str, float, float]:
 
 def _run_content_head(image_bytes: bytes, model) -> float:
     """content-head の P(タグが本物) を返す (chastity_cage / chastity_belt 共通)。
-    前処理は model 属性 (img_size/mean/std) から導出 — v1 convnext (384+ImageNet
-    norm) / v2 wd-swinv2 (448+0.5/0.5) のどちらの checkpoint でも学習時特徴抽出と
-    一致する。"""
+    明示された前処理契約を優先し、metadataなしは従来の推論を維持する。"""
     import torch
-    from torchvision import transforms
-    from .content_head_model import IMG_SIZE
+    from .content_preprocessing import for_model, transform
 
-    size = getattr(model, "img_size", IMG_SIZE)
-    mean = list(getattr(model, "mean", (0.485, 0.456, 0.406)))
-    std = list(getattr(model, "std", (0.229, 0.224, 0.225)))
-    tf = transforms.Compose([
-        transforms.Resize((size, size)),
-        transforms.ToTensor(),
-        transforms.Normalize(mean=mean, std=std),
-    ])
-    x = tf(Image.open(io.BytesIO(image_bytes)).convert("RGB")).unsqueeze(0)
+    x = transform(for_model(model))(Image.open(io.BytesIO(image_bytes))).unsqueeze(0)
     with torch.no_grad():
         return float(torch.sigmoid(model(x))[0].item())
 
@@ -703,9 +729,13 @@ def _run_wd14_fixed(image_bytes: bytes, fixed: dict, want_pooled: bool = False):
     from torchvision import transforms  # noqa: PLC0415
 
     size = fixed["img_size"]
-    img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
-    x = transforms.Compose([transforms.Resize((size, size)),
-                            transforms.ToTensor()])(img).unsqueeze(0)
+    img = Image.open(io.BytesIO(image_bytes))
+    if fixed.get("preprocessing") in (None, "resize-totensor-unnormalized"):
+        x = transforms.Compose([transforms.Resize((size, size)),
+                                transforms.ToTensor()])(img.convert("RGB")).unsqueeze(0)
+    else:
+        from .base_preprocess import transform_for  # noqa: PLC0415
+        x = transform_for(fixed["preprocessing"], size, fixed.get("mean"), fixed.get("std"))(img).unsqueeze(0)
     model = fixed["model"]
     pooled = None
     with torch.no_grad():
@@ -836,9 +866,14 @@ def tag_image(
     pixai_gen_names = {n for n, _ in pixai_result["general"]}
     # Keep the existing base-model selection policy; merge identities before
     # corrections so a negative patch/veto cannot be bypassed by a late append.
-    char_tags = pixai_result["character"]
-    if not char_tags:
-        char_tags = _run_wd14_chars(image_bytes, models["wd14_sess"], models["wd14_tags"])
+    if models.get("cl2_characters") is not None:
+        from . import cl2_chars
+        # A valid empty result is final; no legacy fallback or late resurrection.
+        char_tags = cl2_chars.char_tags(models["cl2_characters"], Image.open(io.BytesIO(image_bytes)))
+    else:
+        char_tags = pixai_result["character"]
+        if not char_tags:
+            char_tags = _run_wd14_chars(image_bytes, models["wd14_sess"], models["wd14_tags"])
     character_names = {tag["name"] for key in ("pixai_tags", "wd14_tags")
                        for tag in models.get(key, []) if tag["category"] == 4}
     character_names.update(tag["name"] for tag in (models.get("wd14_fixed") or {}).get("tags", [])
@@ -982,14 +1017,26 @@ def tag_image(
                 notes["chastity_belt_review"] = {"prob": round(cb_prob, 4)}
         # else: 確信 real → そのまま保持
 
-    character_heads = models.get("character_heads") or {}
-    if character_heads:
+    content_heads = models.get("content_heads") or {}
+    if content_heads:
         from .nodec_autotag_worker import apply_content_heads
         from .pixai_chars import require_character_heads
-        require_character_heads(character_heads)
-        character_names.update(tag for tag in character_heads if not tag.startswith("__"))
-        apply_content_heads(list(all_scores), Image.open(io.BytesIO(image_bytes)), character_heads,
-                            scores=all_scores)
+        from .content_head_policy import executed_heads, require_loaded
+        require_character_heads(content_heads)
+        require_loaded(content_heads)
+        character_names.update(tag for tag in content_heads if not tag.startswith("__")
+                               and (content_heads.get(f"__policy__{tag}") or {}).get("category") == "character")
+        evaluated = set()
+        observed_scores = {} if notes is not None else None
+        with Image.open(io.BytesIO(image_bytes)) as image:
+            apply_content_heads(list(all_scores), image, content_heads,
+                                scores=all_scores, required=True, evaluated_tags=evaluated,
+                                evaluated_scores=observed_scores)
+        if notes is not None:
+            notes['executed_content_heads'] = executed_heads(content_heads, evaluated)
+            notes['executed_content_head_scores'] = observed_scores
+            notes['content_head_reap'] = sorted(tag for tag in evaluated
+                if content_heads[f'__policy__{tag}']['apply_mode'] == 'replace')
 
     # Raw per-tag scores after the full ensemble (base + release repairs + specialist heads +
     # gates/mutex), BEFORE thresholding — for benchmark scoring (plan kura-event-sourced-rebuild P6).

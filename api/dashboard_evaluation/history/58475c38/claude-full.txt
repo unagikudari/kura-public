@@ -1,0 +1,36 @@
+# Kura overview review at 58475c38: 3 pass, 7 partial, 0 fail
+
+The request is in the right place and the entry point is clear, but the page still doesn't say that nothing is running, or why smegma needs 341 fresh labels. I read the inline source and the four screenshots (1280 and 390, top and table). I did not see any opened 比較グラフ, the 390 request row in the table, the image-review destination, keyboard behaviour or any iframe, so those are unverified.
+
+## Confirmed against your brief
+
+- **Request first:** あなたへの確認依頼 sits above 本番と改善処理 at both widths, and the "この341枚を確認" button is above the fold at 390.
+- **Counts:** the smegma row shows 341枚 / 全341枚, and the list shows 5/5セット.
+- **No score leak on this page:** the candidate row shows "比較はまだ表示しません" and has no graph row.
+- **Controls and graphs:** filter, search, sort and count are present, and graphs are collapsed behind `<details>`.
+
+## Criteria
+
+| # | Criterion | Grade | Evidence | Priority |
+|---|---|---|---|---|
+| 1 | situation | **partial** | Action needed and the 4 stopped tags are clear. Nothing says "nothing is running": both smegma lines end in "現在の稼働は未確認", even for the terminal "実験完了". The read-only 5-minute observer is not shown. Status is all prose, with no badge or progress. | High |
+| 2 | consistency | **partial** | Candidate and production are kept separate ("未公開", "release 15", hold list). "実験完了" next to "現在の稼働は未確認" describes one state two ways. "smegma の改善" (2:30) and "自動学習の最終報告 smegma" (1:15) have no stated relationship. horse_penis shows "不一致0枚" with nothing saying those labels were made with predictions visible. | High |
+| 3 | duplication | **partial** | The same 341 link appears twice with different wording ("この341枚を確認" and "未判定の341枚へ"). "Not quality, not publication" is said four times: two top notes, the bottom note and "品質未承認". There are three refresh buttons. | Medium |
+| 4 | completeness | **partial** | The request card has target, owner and entry. It lacks the reason (159 frozen + 182 extension, all needing new labels), what happens next, and a timestamp; "最終取得" sits only at the bottom of the list. Hold reason and release condition are in details, with no owner. | High |
+| 5 | brevity | **partial** | The first view at 1280 holds the request, runtime and table start. Internal terms are still on the default view: "nodeb + p52 (CPU 8 each)", "評価履歴を登録済み", "固定モデル". At 1280 "判定数を更新" is nearly as prominent as the primary action. | Medium |
+| 6 | actionability | **partial** | Who, what and where are clear. "What is enough" is not: "残して構いません" and "未判定が残る間は…確定しません" together leave the completion condition undefined. Only the negative outcome is stated. | Medium |
+| 7 | exploration | **pass** | Four filters, tag search, four sorts, a visible/total count, a conditional "表示をリセット" and an empty state. Sorting has stable tie-breaks. | — |
+| 8 | graphics | **partial** | In code the bar uses 枚 only, gives "未比較" its own grey segment rather than zero, and has a text legend with counts. Not future quality is stated: "学習の進捗・全画像の精度・公開の合否ではありません". The opened graph is unverified. The one status you care about, 0/341, has no graphic. | High |
+| 9 | freshness | **pass** | Stale reports are downgraded to "最後の報告…（過去）" with a "観測" time. Fetch failure says "「作業なし」とは判断できません" and marks old data. Caveat: the downgrade is over-applied to terminal states (see 1 and 2). | Low |
+| 10 | accessibility | **pass** | Targets are 44px, controls are native and labelled, explicit table roles survive the mobile `display:block`, and `data-label` prefixes show at 390. Colour is never the only carrier. Minor: the fixed header takes about 245 of 900px at 390, and the second stacked link is oddly indented. Keyboard is unverified. | Low |
+
+## One next improvement
+
+Put a progress line on the request card and fold the two top notes into it:
+
+> **smegma 新候補 · 判定済み 0 / 341** `[▱▱▱▱▱▱▱▱]` 　[この341枚を確認]
+> 以前の判定は引き継ぎません。分からない画像は残して構いません。
+
+- **Why this one:** it gives the graphical status you asked for and explains why smegma appears three times with 160 already judged elsewhere. It also cuts the top text from three sentences to one line.
+- **Size:** it needs only `total` and `remaining`, which the card already has, and it closes parts of criteria 3, 4, 6 and 8 in one change.
+- **Deferred:** rewording terminal phases ("実験完了 · 稼働なし") is the runner-up and addresses criteria 1 and 2. Everything else can wait.

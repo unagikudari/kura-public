@@ -86,10 +86,11 @@ class Item:
     """One thing to send: a file, or a page inside an archive (`member`). `rel` is its key in
     the record: the file's path under the folder, or the archive's path / the member's name.
     A page carries its size and CRC as the archive's directory gives them."""
-    __slots__ = ("rel", "path", "member", "size", "crc")
+    __slots__ = ("rel", "path", "member", "size", "crc", "waiting")
 
     def __init__(self, rel: str, path: Path, member: str | None = None, size: int = 0, crc: int | None = None):
         self.rel, self.path, self.member, self.size, self.crc = rel, path, member, size, crc
+        self.waiting = False
 
     @property
     def name(self) -> str:
@@ -129,11 +130,13 @@ def archive_members(archive: zipfile.ZipFile) -> list[zipfile.ZipInfo]:
     return sorted(out, key=key)
 
 
-def plan(folder: Path, sent=None, settle: float = 0.0, archives: bool = False) -> tuple[list[Item], int, int]:
+def plan(folder: Path, sent=None, settle: float = 0.0, archives: bool = False,
+         include_waiting: bool = False) -> tuple[list[Item], int, int]:
     """Everything to send under `folder`, folders and files in natural order (with `archives`,
     a .zip or .cbz stands for its pages, in their order); how many other files were passed
-    over; and how many are still changing (modified less than `settle` seconds ago: not looked
-    into yet). `sent(item, stat)` says an item needs no look at all (already in kura,
+    over; and how many are still changing. With `include_waiting`, retain their positions
+    as waiting items so a pool cannot overtake them; only the signature is read, never
+    archive contents. `sent(item, stat)` says an item needs no look at all (already in kura,
     unchanged), so a watched folder is not read again on every pass."""
     items: list[Item] = []
     skipped = unsettled = 0
@@ -183,6 +186,20 @@ def plan(folder: Path, sent=None, settle: float = 0.0, archives: bool = False) -
                     continue
                 if settle and now - st.st_mtime < settle:
                     unsettled += 1
+                    if include_waiting:
+                        with open(p, "rb") as f:
+                            head = f.read(12)
+                        # A partial copy may not have its signature yet. Known media
+                        # names still reserve their place; sidecars and other ordinary
+                        # non-media files must not become pool members.
+                        archive = archives and (is_zip(head) or p.suffix.lower() in {".zip", ".cbz"})
+                        if media_type(head) or archive or p.suffix.lower() in {
+                            ".png", ".jpg", ".jpeg", ".gif", ".webp", ".mp4", ".webm", ".avif", ".mov"
+                        }:
+                            it.waiting = True
+                            if archive:
+                                it.member = ""  # reserve the archive's own pool, without expanding it
+                            items.append(it)
                     continue
                 with open(p, "rb") as f:
                     head = f.read(12)
@@ -1002,9 +1019,13 @@ def send(api: Api, args, folder: Path, record: Path, todo: list[Item], counts: d
                     looked = [p.path] + (sidecar_paths(p.path) if args.sidecars else [])
                     changing = any(time.time() - q.stat().st_mtime < settle for q in looked)
                 except OSError:             # gone since the pass looked
+                    if pool:
+                        held.add(pool)
                     continue
                 if changing:
                     counts["waiting"] = counts.get("waiting", 0) + 1
+                    if pool:
+                        held.add(pool)
                     continue
             row: dict = {"path": rel}
             cats: dict = {}
@@ -1132,9 +1153,17 @@ def watch(args, folder: Path, identity: dict, record: Path) -> int:
                 return refused_still(args, item, st, refused.get(item.rel))
             return item.rel in table and table[item.rel] == file_state(args, item, st)
         files, _, waiting = plan(folder, sent=lambda it, st: unchanged(it, st, done) or unchanged(it, st, refused),
-                                 settle=args.settle, archives=args.archives)
+                                 settle=args.settle, archives=args.archives, include_waiting=True)
         todo = []
+        held: set[str] = set()
         for p in files:
+            pool = pool_name(args, folder, p)
+            if p.waiting:
+                if pool:
+                    held.add(pool)
+                continue
+            if pool and pool in held:
+                continue
             try:
                 st = p.path.stat()
             except OSError:

@@ -1,37 +1,52 @@
-"""promote_verified only writes a curated row when independent human evidence
-backs it (kura#64). The evidence rule is a pure function; fix its boundaries here."""
-from tagger.heads import promote_verified as P
-from tagger.heads import verified_ledger as L
+"""Regression coverage for heads training evidence and exclusions."""
+from datetime import datetime, timedelta, timezone
+
+import pytest
+
+from tagger.heads import promote_verified as promote
+from tagger.heads.verified_ledger import is_proven
+
+MACHINE = datetime(2026, 1, 1, tzinfo=timezone.utc)
+HUMAN = MACHINE + timedelta(minutes=1)
 
 
-def test_present_and_human_edited_is_positive_pool_review():
-    assert P.classify(present=True, human_edited_post=True, human_removed_tag=False) \
-        == ("human_pool_review", "positive")
+def record(**changes):
+    columns = dict(eligible=True, tags=[], status="ok", gt=None, aid=9,
+                   kind="human", actor="reviewer", at=HUMAN, added=True,
+                   removed=False, rid=None, uid=None, name=None, rt=None,
+                   decision=None, media_ok=False)
+    columns.update(changes)
+    return tuple(columns.values())
 
 
-def test_absent_and_human_removed_is_negative_removed():
-    assert P.classify(present=False, human_edited_post=True, human_removed_tag=True) \
-        == ("human_removed", "negative")
+@pytest.mark.parametrize("added,removed,label", [(True, False, "positive"), (False, True, "negative")])
+def test_requires_tag_specific_audit(added, removed, label):
+    evidence, reasons = promote.decide_evidence(record(added=added, removed=removed), MACHINE)
+    assert not reasons
+    assert evidence["label"] == label
+    assert evidence["actor"] == "reviewer"
+    assert is_proven(dict(schema=3, concept="fixture", post_id=4, **evidence))
+    assert not is_proven(dict(schema=2, concept="fixture", post_id=4, **evidence))
 
 
-def test_present_but_no_human_touch_is_skipped():
-    # a head applied it and the tag is still there, but no human ever looked:
-    # unproven, so NOT written.
-    assert P.classify(present=True, human_edited_post=False, human_removed_tag=False) is None
+@pytest.mark.parametrize("changes,reason", [
+    (dict(eligible=False, tags=["loli"]), "youth_tag"),
+    (dict(eligible=False, tags=["tagger-training-exclude"]), "training_opt_out"),
+    (dict(gt="negative"), "canonical_gt_conflict"),
+    (dict(at=MACHINE), "tag_specific_evidence_missing"),
+    (dict(added=False), "tag_specific_evidence_missing"),
+    (dict(kind="script"), "tag_specific_evidence_missing"),
+    (dict(rid=8, rt=HUMAN, decision="uncertain"), "review_evidence_unverified"),
+])
+def test_refuses_unproven_or_ineligible_input(changes, reason):
+    assert promote.decide_evidence(record(**changes), MACHINE) == (None, (reason,))
 
 
-def test_absent_without_a_human_removal_is_skipped():
-    # the tag is gone, but not by a recorded human hand (could be another head):
-    # not evidence of a human negative.
-    assert P.classify(present=False, human_edited_post=True, human_removed_tag=False) is None
-
-
-def test_every_decision_produces_a_curated_row():
-    # whatever classify returns, the row it implies must pass is_curated — the
-    # writer cannot emit something the loader would refuse.
-    for present, edited, removed in [(True, True, False), (False, True, True)]:
-        source, label = P.classify(present=present, human_edited_post=edited,
-                                    human_removed_tag=removed)
-        row = L.make_row(concept="phimosis", post_id=1, label=label, source=source,
-                         actor="owner", at="2026-09-05T00:00:00", pool=9)
-        assert L.is_curated(row) is True
+def test_explicit_review_records_actual_actor_and_event():
+    evidence, reasons = promote.decide_evidence(
+        record(rid=8, uid=17, name="other reviewer", rt=HUMAN, decision="present", media_ok=True), MACHINE)
+    assert not reasons
+    assert evidence["source"] == "human_review_event"
+    assert evidence["actor_id"] == 17
+    assert evidence["evidence_id"] == 8
+    assert "'training_support','historical_label_recheck'" in promote.EVIDENCE

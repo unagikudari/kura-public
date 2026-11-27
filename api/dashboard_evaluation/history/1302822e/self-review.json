@@ -1,0 +1,86 @@
+{
+  "reviewer": "Codex（実装者）",
+  "reviewed_revision": "1302822e38aee9e974fd94ff46b846e70ca9348b",
+  "method": "実装者による1302822eの実390px概要画像と既存4幅・liveブラウザー操作証跡の照合。独立レビューではない。今回すべての操作を新たに再試験した評価ではない。",
+  "criteria": [
+    {
+      "id": "situation",
+      "verdict": "pass",
+      "assessment": "pass",
+      "evidence": "本番release・完了した未公開実験・341枚の人への確認依頼を実390px画像で別々に確認した。実験完了は全体の稼働停止や品質合格を意味しない。",
+      "nextfix": "ノード件数の単位と親画面外の状況を確認する。"
+    },
+    {
+      "id": "consistency",
+      "verdict": "partial",
+      "assessment": "partial",
+      "evidence": "迷う画像を飛ばせる説明に対し、未判定がある限り確認依頼は残る。判別不能と未着手の区別・完了ackがない。",
+      "nextfix": "未判定を許容する説明と依頼が残る条件を整合させる。資源観測を品質保証と分ける。"
+    },
+    {
+      "id": "duplication",
+      "verdict": "partial",
+      "assessment": "partial",
+      "evidence": "依頼カードと一覧の同じ341枚へのCTAが重複している。",
+      "nextfix": "依頼カードと同じ表行のリンク・注意書きの重複を整理する。"
+    },
+    {
+      "id": "completeness",
+      "verdict": "partial",
+      "assessment": "partial",
+      "evidence": "依頼カードと本番summaryの取得時刻がその場に表示されず、観測時刻との関係が分かりにくい。",
+      "nextfix": "依頼・本番状況の取得時刻と次の担当を示す。"
+    },
+    {
+      "id": "brevity",
+      "verdict": "partial",
+      "assessment": "partial",
+      "evidence": "390pxでは固定ヘッダー・ナビと説明文の占有が大きい。探索用の表と操作欄は意図的な常時表示。",
+      "nextfix": "表の探索機能を保ち、用語と常時表示の注意書きを短くする。"
+    },
+    {
+      "id": "actionability",
+      "verdict": "partial",
+      "assessment": "partial",
+      "evidence": "341枚への入口は具体的。飛ばした判別不能画像を記録して完了を伝える仕組みはなく、最後まで見れば完了とは約束できない。",
+      "nextfix": "判別不能と未着手を区別できる完了条件を設計する。コピーだけで完了を約束しない。"
+    },
+    {
+      "id": "exploration",
+      "verdict": "pass",
+      "assessment": "pass",
+      "evidence": "既存の4幅・liveブラウザー証跡で検索・filter・resetを確認し、タグ名順と依頼優先順を実際に異なる先頭行で検査している。",
+      "nextfix": "実際の異なるソート順と不一致リンクを操作で確認する。"
+    },
+    {
+      "id": "graphics",
+      "verdict": "partial",
+      "assessment": "partial",
+      "evidence": "0件の進捗トラックは細く見える。閉じていた比較グラフの描画を今回全面確認したわけではない。",
+      "nextfix": "0件時のトラックと比較内訳・未比較の意味を確認する。開いたグラフは未検証。"
+    },
+    {
+      "id": "freshness",
+      "verdict": "partial",
+      "assessment": "partial",
+      "evidence": "過去の学習・実験観測の扱いは区別されるが、summaryの取得時刻と観測時刻を読み分ける情報が足りない。",
+      "nextfix": "観測時刻と取得時刻を区別して表示する。完了報告は現在の稼働と混同しない。"
+    },
+    {
+      "id": "accessibility",
+      "verdict": "partial",
+      "assessment": "partial",
+      "evidence": "実390px表示と既存4幅の操作証跡はある。キーボードと支援技術の全面的な適合確認は未実施。",
+      "nextfix": "モバイルの固定領域・折り返し・キーボード・フォーカスを実操作で確認する。"
+    }
+  ],
+  "limitations": [
+    "対象はlive web source 1302822eの概要親画面。capture時のlive APIはf8db2a7e。モデル品質・公開・hold解除の承認ではない。",
+    "レビュー依頼は概要全体を対象としたが、legacy iframe内部・画像確認先・開いた比較グラフは未検証。全画面全操作の合格ではない。",
+    "原文はclaude-full.txt / gemini-full.txtに保存。採点は原回答のまま。実装者の訂正・留保はreview-notes.jsonに分離。",
+    "プロンプトの「table/filter/sort/graphs behind details」は誤記。表・検索・filter・sortは意図的に常時表示し、比較グラフ等を折り畳む設計。",
+    "Geminiのタグ名順の指摘は既存の異なる順序を検査するブラウザーテストと一致しない。元のpartial判定は書き換えない。",
+    "Claudeの「最後まで一度見終えたら完了」はそのまま採用しない。永続的な判別不能記録や完了ackがないため、飛ばした画像が解決済みとは保証できない。",
+    "自己評価はroot実装者が実390px画像と既存の操作証跡を確認した結果。新たな独立レビューや全操作再試験の合格ではない。"
+  ]
+}

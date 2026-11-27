@@ -1,0 +1,85 @@
+{
+  "reviewer": "Gemini 4 Hydrogen・独立レビュー",
+  "reviewer_kind": "independent",
+  "reviewed_revision": "1f058d0f3276ad8623003358ba52d288720006a1",
+  "observed_api_revision": "db4f1e8b2427401e1c3341be307ca85d89fbd91c",
+  "method": "本番iframe本文と構成情報。画像・実クリック・読み上げは未検証。初回採取の不足に基づく指摘は撤回。",
+  "evaluated_at": "2026-11-16",
+  "criteria": [
+    {
+      "id": "situation",
+      "verdict": "unverified",
+      "assessment": "partial",
+      "evidence": "部分的：分類は分かるが、本番付与の可否と担当工程の実行状態が直読できない。",
+      "nextfix": "タグの自動付与可否と確認時刻を初期画面に出す。smegmaの遮断を画面だけで答えられるか確認する。"
+    },
+    {
+      "id": "consistency",
+      "verdict": "unverified",
+      "assessment": "partial",
+      "evidence": "部分的：訂正件数・保留・配備設定の関係を説明なしでは理解できない。",
+      "nextfix": "概要とタグ表に共通スナップショット時刻を表示し、操作が必要か任意かを分ける。"
+    },
+    {
+      "id": "duplication",
+      "verdict": "fail",
+      "assessment": "fail",
+      "evidence": "定型文が各行で反復され、固有情報が埋もれる。",
+      "nextfix": "全行共通の説明・リンクを圧縮し、各タグ固有の差を先に表示する。"
+    },
+    {
+      "id": "completeness",
+      "verdict": "unverified",
+      "assessment": "partial",
+      "evidence": "部分的：訂正増分、停止条件、次工程、観測の古さの原因が不足。",
+      "nextfix": "停止理由・解除条件・実行ジョブ・訂正を取り込んだ標本を結ぶ。欠落は推測で埋めない。"
+    },
+    {
+      "id": "brevity",
+      "verdict": "fail",
+      "assessment": "fail",
+      "evidence": "実験の長文と絞り込みが先に並び、行にも説明が多い。",
+      "nextfix": "最初の画面を人の判断・進行中の仕事・本番の安全状態にし、分類カードを下げる。"
+    },
+    {
+      "id": "actionability",
+      "verdict": "unverified",
+      "assessment": "partial",
+      "evidence": "部分的：利用者向けの件数は具体的だが、システム側の解除条件と次工程が抽象的。",
+      "nextfix": "人の判断が必要な画像群に直接進める。再試験は既存の品質条件を維持し二重投入を防ぐ。"
+    },
+    {
+      "id": "exploration",
+      "verdict": "unverified",
+      "assessment": "partial",
+      "evidence": "部分的：探索軸はあるが、評価の数値・標本数・訂正増分を一覧比較できない。",
+      "nextfix": "必要な判断・進行中・停止中・最近の変化で絞り込み、実測値で比較できるようにする。"
+    },
+    {
+      "id": "graphics",
+      "verdict": "fail",
+      "assessment": "fail",
+      "evidence": "訂正から反映への循環や評価の変化を示す図がない。",
+      "nextfix": "タグごとの実工程図と、同じ評価画像での旧新headのFP/FN比較を表示する。"
+    },
+    {
+      "id": "freshness",
+      "verdict": "unverified",
+      "assessment": "partial",
+      "evidence": "部分的：不確実性を隠さないが、各行の訂正・学習・評価時刻が不足。",
+      "nextfix": "処理の最終前進時刻と生存確認を分ける。完了記録を心拍切れだけで不明に戻さない。"
+    },
+    {
+      "id": "accessibility",
+      "verdict": "unverified",
+      "assessment": "unverified",
+      "evidence": "画像も実クリックも確認していない。",
+      "nextfix": "クリック・キーボード操作と初見のタスク達成を実測する。スクリーンショットだけで合格にしない。"
+    }
+  ],
+  "limitations": [
+    "初見利用者のタスク達成を実測した評価ではない。",
+    "モデルの品質や本番適用を承認するものではない。"
+  ],
+  "supersedes": "2026-11-15の全項目合格は撤回。原文はhistory/20261115-withdrawnに保存。"
+}

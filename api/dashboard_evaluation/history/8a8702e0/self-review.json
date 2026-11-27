@@ -1,0 +1,84 @@
+{
+  "reviewer": "Codex（実装者）",
+  "reviewed_revision": "8a8702e0417a8105395d32d5c5ea9420b57d10cc",
+  "method": "実装者による390/1280実画面とブラウザー検査・独立指摘の照合。独立レビューではない。",
+  "criteria": [
+    {
+      "id": "situation",
+      "verdict": "pass",
+      "assessment": "pass",
+      "evidence": "依頼が最上部でリンクと判定数が見える。",
+      "nextfix": "完了条件を短くする"
+    },
+    {
+      "id": "consistency",
+      "verdict": "partial",
+      "assessment": "partial",
+      "evidence": "資源検証を採点と呼び、別処理の履歴と混同する。",
+      "nextfix": "資源検証のphaseを分ける"
+    },
+    {
+      "id": "duplication",
+      "verdict": "partial",
+      "assessment": "partial",
+      "evidence": "更新ボタン3つと同じ依頼へのリンクが重複。",
+      "nextfix": "更新操作を整理"
+    },
+    {
+      "id": "completeness",
+      "verdict": "partial",
+      "assessment": "partial",
+      "evidence": "0/341が既存160判定と別セットだと分からない。",
+      "nextfix": "セット単位の集計と担当を明示"
+    },
+    {
+      "id": "brevity",
+      "verdict": "partial",
+      "assessment": "partial",
+      "evidence": "内部語と古い履歴の初期表示が残る。",
+      "nextfix": "古い履歴は詳細へ"
+    },
+    {
+      "id": "actionability",
+      "verdict": "partial",
+      "assessment": "partial",
+      "evidence": "入口は明確だが迷う画像と未判定保留の関係が弱い。",
+      "nextfix": "未判定を否定扱いせず不足を分ける"
+    },
+    {
+      "id": "exploration",
+      "verdict": "pass",
+      "assessment": "pass",
+      "evidence": "タグ名順と依頼順は既存ブラウザーで別々に検査。",
+      "nextfix": "同タグのセット識別を改善"
+    },
+    {
+      "id": "graphics",
+      "verdict": "partial",
+      "assessment": "partial",
+      "evidence": "判定バーはあるが実験の単位と折り返しが弱い。",
+      "nextfix": "実験phaseと進捗対象を明記"
+    },
+    {
+      "id": "freshness",
+      "verdict": "pass",
+      "assessment": "pass",
+      "evidence": "終了報告は過去の完了、稼働と品質とは区別。",
+      "nextfix": "取得時刻の位置を改善"
+    },
+    {
+      "id": "accessibility",
+      "verdict": "partial",
+      "assessment": "partial",
+      "evidence": "44px操作とスマホ表示は確認。支援技術の全面試験は未実施。",
+      "nextfix": "キーボードと読み上げを検証"
+    }
+  ],
+  "limitations": [
+    "レビュー対象は8a8702e0の概要親画面。今回の修正・埋め込み画面・モデル品質の合格ではない。",
+    "原文は独立reviewerの実回答。要約・照合注記は実装者が作成。",
+    "Claude提案の「過去の判定は引き継ぎません」は採用しない。旧160枚は学習に使われ、新341枚は別画像の確認セット。",
+    "Geminiのタグ名順の不具合指摘は括弧の読み違い。既存ブラウザーcontrolで依頼先頭とタグ順を区別して検証。",
+    "Geminiの5分周期は別の証跡observer。画面の判定数は30秒ごとのGETで現在DBを読む。"
+  ]
+}

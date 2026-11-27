@@ -9,12 +9,17 @@ _statements=SCHEMA.read_text().split('-- statement-break')
 REPLICA_DDL=';\n'.join(s.strip().rstrip(';') for s in (_statements[0],_statements[3],_statements[4]))+';'
 
 
-async def totals(db,safe=False):
+async def totals(db,safe=False, *, apply_visibility=False):
+    if apply_visibility:
+        from api.services.pool_visibility import post_visible_sql
+        condition = " AND (" + post_visible_sql("l.post_id") + ")"
+    else:
+        condition = ""
     result=(await db.execute(text("""SELECT count(*) AS count,coalesce(sum(l.file_size),0) AS bytes
       FROM public.post_listing l WHERE NOT EXISTS (
         SELECT 1 FROM public.post_tag pt JOIN public.tag_name n ON n.tag_id=pt.tag_id
         WHERE pt.post_id=l.post_id AND n.name='advertisement')"""+
-        (" AND l.safety='safe'" if safe else '')))).one()
+        (" AND l.safety='safe'" if safe else '')+condition))).one()
     return int(result.count),int(result.bytes)
 
 

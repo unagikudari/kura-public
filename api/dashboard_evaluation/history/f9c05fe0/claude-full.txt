@@ -1,0 +1,38 @@
+# Kura tagger overview (main f9c05fe0 / source 779e4cf6): adversarial evaluation
+
+**Verdict: 1 pass, 8 partial, 1 fail. This is not a full approval, and not a quality approval of the candidate.** The new first fold works on desktop: the request names the tag and has a direct 159-image link above the fold at 1280. It is weaker on a phone, and duplication got worse in the request area.
+
+I checked the four screenshots, the pasted text and the three component sources. I did not exercise any interaction, so the following are unverified:
+- opened graph drawers
+- link destinations (`/?q=…`)
+- error and stale states
+- keyboard traversal
+- the embedded iframe
+- the scope of the parent's `詳細集計を再読み込み` button
+
+## Criteria
+
+| # | Criterion | Verdict | Evidence | One improvement (priority) |
+|---|---|---|---|---|
+| 1 | situation | **partial** | At 1280 the running job (`2208/5000`), the stopped items (4 holds) and the needed action (159 images) are all in the first fold. At 390 the action button sits at about y=795 of a 900px capture, under roughly 400px of runtime status, so on a real phone viewport (about 650–750px) it is likely below the fold. `自動学習…現在の稼働は未確認` does not say whether that is normal or a problem. | Put the request banner above `本番と改善処理` (High) |
+| 2 | consistency | **partial** | Production (`release 15`) and candidate (`未公開`) are clearly separated. Three things are not: (a) under the header `未判定`, `159/159枚` and `0/8枚` read like done/total, the opposite of the intended meaning. (b) Two smegma processes (`smegma の改善` and `自動学習の最終報告 smegma`) sit side by side with no stated relationship. (c) The `固定確認セット` row shows `160枚比較 · 不一致9枚`; if those 160 are the internal training labels, the name plus a disagreement count invites an accuracy reading that the footnote only partly defuses. | Show `未判定 159枚（全159枚）` instead of a fraction (Med) |
+| 3 | duplication | **fail** | The same 159-image set appears in the banner (`この159枚を確認`) and in row 1 (`セット全159枚を見る`), with different labels and different URLs for what is currently identical content. The 8-image receipt is stated in a summary line and again in a row. There are three refresh buttons (`詳細集計を再読み込み`, `状況を更新`, `更新`) with no visible scope. The "not published" caveat appears three times. `確認` carries about eight meanings; `学習用の確認 · 任意の確認` followed by `…を確認（任意）` says it three times in one row. | Drop the request row's own link and the `受領済み` summary line, so banner = action and table = reference (High) |
+| 4 | completeness | **partial** | The request has target, state, owner (`あなた`) and next step, but no reason for these 159 and no creation time. Rows have no last-updated or received time. The holds show one generic reason for all four tags, with no start date and no owner; three of them (bar_censor, condom_on_penis, mosaic_censoring) have no next step at all. | Add per-tag `停止日 · 次の処理（なし/改善中）` inside the `停止の理由` drawer (Med) |
+| 5 | brevity | **partial** | The desktop first fold is lean and has no empty drawers. Internal terms are still in the default view: `nodeb + p52 (CPU 8 each)`, `工程` (it is scoring images, so the unit should be 枚), `固定モデル`, `固定確認セット`, `境界`. The subtitle under `概要` just repeats the section headings and costs two lines at 390. | Move the host/CPU string into a detail and change `工程` to `枚` (Low) |
+| 6 | actionability | **partial** | The primary action is specific and direct, and `保留で構いません` lowers the barrier. Missing: what counts as done (all 159? do held images count?), whether the 5000-image machine scoring must also finish before aggregation, and any pointer to the tag's judging criterion. The three other holds have no entry point. | Add one clause to the note: `159枚の判定（保留含む）が揃うと集計します` (High) |
+| 7 | exploration | **pass** | Filter, tag search, sort, `5/5セット` count and a conditional reset are all present (controls visible in the screenshots, logic and reset in source). Caveats: not interacted with, state is not kept in the URL, and there is no `受領済み` filter. | Add `受領済み` to the filter (Low) |
+| 8 | graphics | **partial** | From source the graph is sound: counts only, no rates, `未比較` as its own grey segment, legend with numbers, suppressed (`比較はまだ表示しません`) kept distinct from `未測定`, and no drawers for either. Problems: the open state was not captured. The two "agree" colours (#278265 and #648e80) are close. For horse_penis the bar would be 88% grey. Each closed drawer adds about 50px to a row for information mostly already in the cell. | Show the bar over compared images only, with `未比較 N枚` as text (Med) |
+| 9 | freshness | **partial** | Strong: `（過去）・現在の稼働は未確認`, a 120s liveness gate, a stale alert, "cannot conclude no work" on fetch failure, and `この端末の時刻`. Weak: times are absolute only, so the 44-minute-old learning report needs mental arithmetic. `最終取得` is at the very bottom, far from the request. The generic hold text can hide whether a per-tag reason was ever recorded. Stale and error rendering are source-only. | Add relative age next to each `観測` time, e.g. `（44分前）` (Med) |
+| 10 | accessibility | **partial** | 44px targets, underlined links, text status labels, labelled controls and preserved table roles in the 390 layout. Problems: at 390 the sticky nav and header take about 245px (27%) and clip a row title in the scrolled capture. Refresh gives no visible or announced feedback (`aria-busy` only). Keyboard and screen-reader behaviour not exercised. | Make the page header non-sticky below 700px (Med) |
+
+## Holding up under attack
+
+- The new request summary: tag named, direct link, and the 159-image row has no comparison numbers or scores that could bias the judge.
+- Hold names are inline.
+- The machine-scoring label and the bottom caveat (`不一致は人の誤りとは限りません…`) avoid claiming quality or that human labels are wrong.
+
+## The one next small improvement
+
+**Lift the `あなたの確認待ち` banner to the top of the overview, above `本番と改善処理`, with the completion condition in its note.**
+
+The human task is what this page exists to surface, and at 390 it is currently the last thing in the first screen. The banner is a few lines of markup inside `.summary`; it can be rendered first as its own small block sharing the same queue fetch, with the table staying where it is. If that slot then also drops row 1's duplicate link, it removes the worst part of the duplication fail.

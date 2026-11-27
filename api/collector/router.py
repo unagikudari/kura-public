@@ -99,8 +99,12 @@ async def restore_exchange(request: Request, user=Depends(get_current_user), db=
 
 
 @router.get("/collections")
-async def collections(user=Depends(get_current_user), db=Depends(get_db)):
-    return await service.collections(db, user.user_id)
+async def collections(page: bool = False, after: int | None = Query(None, gt=0),
+                      limit: int = Query(100, ge=1, le=100),
+                      user=Depends(get_current_user), db=Depends(get_db)):
+    result = await service.collection_page(db, user.user_id, after, limit)
+    # Keep the original array response for callers that have not opted into paging.
+    return result if page else result['items']
 
 
 @router.post("/collections", status_code=201)
@@ -378,6 +382,8 @@ async def content(asset: int, kind: str, request: Request, user=Depends(get_curr
     path = content_path(root(), row["sha256"], kind == "thumbnail")
     if not path.is_file():
         raise HTTPException(409, "保存先を確認してください。原本またはプレビューを読み出せません")
+    # FileResponse can outlive the read by minutes when a client downloads slowly.
+    await db.rollback()
     return FileResponse(path, media_type="image/webp" if kind == "thumbnail" else row["media_type"],
                         filename=row["original_name"] if kind == "original" else None,
                         headers={"Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff"})

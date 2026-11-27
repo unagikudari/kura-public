@@ -12,12 +12,12 @@ def exercise(context,base,width,evidence):
     page.on('pageerror',lambda e:errors.append(str(e)))
     def route(req):
         nonlocal restored
-        path=req.request.url.split('/m/collector-next/')[1]
+        path=urlparse(req.request.url).path.split('/m/collector-next/')[1]
         if req.request.method=='POST':
             assert path=='exchange/restore'
             writes.append(req.request.post_data_buffer);held.append(req);return
         if path=='status':value={'safe_mode':False}
-        elif path=='collections':value=[{'id':7,'title':'復元した作品'}] if restored else []
+        elif path=='collections':value={'items':[{'id':7,'title':'復元した作品'}] if restored else [],'next_cursor':None}
         else:value={'items':[],'next_cursor':None}
         req.fulfill(json=value)
     page.route('**/m/collector-next/**',route)
@@ -70,7 +70,7 @@ def main():
                 browser=pw.chromium.launch(headless=True,executable_path=os.environ['CHROMIUM'])
                 results=[]
                 for width in (320,390,844,1280):
-                    context=browser.new_context(viewport={'width':width,'height':900},has_touch=width!=1280,is_mobile=width!=1280,reduced_motion='reduce')
+                    context=browser.new_context(viewport={'width':width,'height':900},locale='ja-JP',has_touch=width!=1280,is_mobile=width!=1280,reduced_motion='reduce')
                     context.add_cookies([{'name':'kura_session','value':cookie,'url':base}])
                     def fence(route):
                         parsed=urlparse(route.request.url)

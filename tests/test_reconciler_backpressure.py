@@ -20,3 +20,33 @@ def test_this_ticks_dispatches_count_toward_the_ceiling():
 def test_unreadable_backlog_fails_open():
     # None means the broker could not be read: do NOT block (pre-#62 behaviour).
     assert _saturated(backlog=None, dispatched_this_tick=99, backlog_max=1) is False
+
+
+def test_gt_timer_and_learner_cannot_reconcile_at_the_same_time(tmp_path, monkeypatch):
+    import asyncio
+
+    from tagger import reconciler
+
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+
+    async def scenario():
+        started, resume = asyncio.Event(), asyncio.Event()
+
+        async def reconcile():
+            started.set()
+            await resume.wait()
+            return {"dispatched": ["example"], "failed": []}
+
+        monkeypatch.setattr(reconciler, "run_reconcile", reconcile)
+        learner = asyncio.create_task(reconciler.reconcile_once())
+        try:
+            await asyncio.wait_for(started.wait(), 1)
+            assert await reconciler.reconcile_once() == {
+                "busy": True, "dispatched": [], "failed": [],
+            }
+        finally:
+            resume.set()
+            assert await learner == {"dispatched": ["example"], "failed": []}
+        assert await reconciler.reconcile_once() == {"dispatched": ["example"], "failed": []}
+
+    asyncio.run(scenario())

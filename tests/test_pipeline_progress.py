@@ -116,6 +116,8 @@ def test_dashboard_keeps_snapshot_only_tags_when_not_current(monkeypatch, tmp_pa
 
     # No tag exists in any database result. Only the historical snapshot knows it.
     class EmptyResult:
+        def scalars(self): return self
+        def __iter__(self): return iter(())
         def mappings(self): return self
         def all(self): return []
         def first(self): return None

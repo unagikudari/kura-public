@@ -12,6 +12,7 @@
   import type { Snippet } from 'svelte';
   import TagSuggestInput from '#lib/components/TagSuggestInput.svelte';
   import type { BulkApplyResult, BulkProgress } from '#lib/bulkTag.ts';
+  import { BULK_TAG_HISTORY_MAX } from '#lib/tagHistory.ts';
   import { catColor } from '#lib/categoryColor.ts';
   import '#lib/styles/bulk.css';
   import { t } from '#lib/i18n/index.ts';
@@ -39,6 +40,7 @@
     onClear,
     onApply,
     onLockSelected,
+    onAssertAbsent,
     onUndoLock,
     focusTags = [],
     focusCategory = null,
@@ -48,6 +50,8 @@
     onToggleLockOnApply,
     pinFilter = null,
     onPinFilter,
+    recentTags = [],
+    onPickRecent,
     lead,
   }: {
     variant?: 'grid' | 'manga';
@@ -72,6 +76,8 @@
     onApply?: () => void;
     /** ロード済みの青 (付与済み・未選択) を一括施錠 (present pin + 正例GT)。赤選択は対象外。 */
     onLockSelected?: () => void;
+    /** ロード済みの未付与 (追加候補でないもの) を「無い」と確定 (absent pin + 負例GT)。付与済みは対象外。 */
+    onAssertAbsent?: () => void;
     onUndoLock?: () => void;
     /** 同時フォーカス中のタグ (先頭がアクティブとは限らない — target がアクティブ)。 */
     focusTags?: string[];
@@ -86,10 +92,14 @@
     /** pin 状態絞り込み (クエリ手打ち回避、user 2026-08-02)。渡された時のみ表示。 */
     pinFilter?: 'all' | 'locked' | 'unjudged' | 'removed' | null;
     onPinFilter?: (mode: 'all' | 'locked' | 'unjudged' | 'removed') => void;
+    /** 最近使った target タグ (新しい順)。target / フォーカス中のものは出さない。 */
+    recentTags?: string[];
+    onPickRecent?: (name: string) => void;
     lead?: Snippet;
   } = $props();
 
   const totalSelected = $derived(addCount + removeCount);
+  const shownRecent = $derived(recentTags.filter(t => t !== target && !focusTags.includes(t)).slice(0, BULK_TAG_HISTORY_MAX));
 
   // ── target タグ検索オートコンプリート (両ページ共通挙動: 220ms debounce, 8 件)。
   // input+dropdown+keyboard nav は TagSuggestInput へ移設 (P3) — commit 意味論
@@ -125,6 +135,14 @@
         onPick={(sug) => select(sug.names[0])}
         onEnterNoPick={(raw) => { const t = raw.trim(); if (t) select(t); }}
       />
+      {#if onPickRecent && shownRecent.length}
+        <span class="recentrow" role="group" aria-label={m.home.bulk.recentTags}>
+          {#each shownRecent as rt (rt)}
+            <button class="chip recent" onclick={() => { input = rt; onPickRecent?.(rt); }}
+              title={m.home.bulk.recentTitle}>{rt}</button>
+          {/each}
+        </span>
+      {/if}
     {/if}
 
     {#if plain || target}
@@ -187,6 +205,12 @@
           🔒
         </button>
       {/if}
+      {#if onAssertAbsent}
+        <button class="apply lock" onclick={onAssertAbsent} disabled={applying}
+          title={m.home.bulk.assertAbsentTitle} aria-label={m.home.bulk.assertAbsent}>
+          🚫
+        </button>
+      {/if}
     {/if}
 
     {#if result}
@@ -195,6 +219,7 @@
         {#if result.removed > 0}&nbsp;−{result.removed}<span class="sr-only"> {m.home.bulk.resultRemoved}</span>{/if}
         {#if result.locked > 0}&nbsp;🔒{result.locked}<span class="sr-only"> {m.home.bulk.resultLocked}</span>{/if}
         {#if result.locked < 0}&nbsp;🔓{-result.locked}<span class="sr-only"> {m.home.bulk.resultUnlocked}</span>{/if}
+        {#if (result.absent ?? 0) > 0}&nbsp;🚫{result.absent}<span class="sr-only"> {m.home.bulk.resultAbsent}</span>{/if}
         {#if result.fail > 0}<span class="fail"> ✗{result.fail}<span class="sr-only"> {m.home.bulk.resultFailed}</span></span>{/if}
       </span>
       {#if onUndoLock}
@@ -246,6 +271,9 @@
   .sel:hover { color: #bbb; background: #2a2a2a; }
   .clear:disabled { color: #444; border-color: #333; cursor: default; background: #1c1c1c; }
   .sel.undo { color: #d0a94e; border-color: #6a5a2a; }
+  .recentrow { display: inline-flex; flex-wrap: wrap; gap: var(--control-gap); align-items: center; }
+  .chip.recent { background: #1c1c1c; border: 1px dashed #555; color: #999; cursor: pointer; }
+  .chip.recent:hover { color: #ddd; border-color: #888; }
   .focusrow { display: inline-flex; gap: var(--control-gap); align-items: center; }
   .chip.focus { display: inline-flex; align-items: center; gap: 2px; padding: 0; opacity: 0.55; }
   .chip.focus.active { opacity: 1; outline: 1px solid #d0a94e; }

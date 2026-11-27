@@ -11,7 +11,7 @@ def setup_post(monkeypatch, hits=()):
     monkeypatch.setattr(w, 'PIXAI_CHARS', {'chars': {0: 'alice'}})
     monkeypatch.setattr(w, 'fetch_image', lambda *a: object())
     monkeypatch.setattr(w, 'infer', lambda *a, **kw: (['1girl', *kw.get('characters', [])], None, {}))
-    monkeypatch.setattr(w, 'apply_content_heads', lambda tags, *a: tags)
+    monkeypatch.setattr(w, 'apply_content_heads', lambda tags, *a, **kw: tags)
     monkeypatch.setattr(w, 'apply_skin_model', lambda tags, *a: tags)
     monkeypatch.setattr(pixai_chars, 'char_tags', lambda *a: list(hits))
     completion = Mock(return_value={})
@@ -52,6 +52,7 @@ def test_invalid_image_still_uses_normal_failure_path(monkeypatch):
 
 def test_batch_aborts_after_component_failure(monkeypatch):
     setup_post(monkeypatch)
+    monkeypatch.setattr(w, '_CHARACTER_RELEASE_POLICY', dict(release_id=14,threshold=None))
     monkeypatch.setattr(w, 'claim', lambda *a: [{'id': 1}, {'id': 2}])
     fn = Mock(side_effect=pixai_chars.RequiredCharacterComponentError('broken'))
     monkeypatch.setattr(w, 'process_item', fn)
@@ -63,13 +64,16 @@ def test_batch_aborts_after_component_failure(monkeypatch):
 
 
 def setup_main(monkeypatch, argv):
+    from tagger import character_policy
+    monkeypatch.setattr(character_policy, 'fetch', lambda *a: dict(release_id=14,threshold=None,release_digest=None))
+    monkeypatch.setattr(w, '_CHARACTER_RELEASE_POLICY', None)
     monkeypatch.setattr(w, "API", "https://worker.example.invalid")
     monkeypatch.setattr(w, 'PIXAI_CHARS', None)
     monkeypatch.setattr(w.sys, 'argv', argv)
     monkeypatch.setattr(w, 'auth_header', lambda: ({}, None))
     for name in ['_resolve_device', 'refresh_content_heads', 'refresh_pixai_chars']:
         monkeypatch.setattr(w, name, lambda: None)
-    monkeypatch.setattr(w, 'refresh_model', lambda state: None)
+    monkeypatch.setattr(w, 'refresh_model', lambda state: setattr(state,'release_id',14))
     monkeypatch.setattr(w, 'load_skin_model', lambda: (None, None))
     http = Mock(side_effect=AssertionError('must not claim posts'))
     monkeypatch.setattr(w.requests, 'post', http)
@@ -105,12 +109,15 @@ def test_invalid_predictions_are_component_errors(monkeypatch, scores):
 
 def test_full_worker_aborts_batch_without_completion(monkeypatch):
     loop = pytest.importorskip("tagger.loop")  # needs the optional inference runtime
+    from tagger import character_policy
+    monkeypatch.setattr(character_policy, "fetch", lambda *a: dict(release_id=14,threshold=None,release_digest=None))
     monkeypatch.setattr(loop, 'KURA_URL', 'https://worker.example.invalid')
     monkeypatch.setattr(loop, 'KURA_USER', 'test')
     monkeypatch.setattr(loop, 'KURA_TOKEN', 'test')
     monkeypatch.setattr(loop, '_on_ac_power', lambda: True)
-    monkeypatch.setattr(loop, 'load_all_models', lambda **kw: {'wd14_sess': SimpleNamespace(get_providers=lambda: ['CPUExecutionProvider'])})
+    monkeypatch.setattr(loop, 'load_all_models', lambda **kw: {'wd14_fixed':{'release_id':14}, 'wd14_sess': SimpleNamespace(get_providers=lambda: ['CPUExecutionProvider'])})
     monkeypatch.setattr(loop, 'model_source_id', lambda *a: 'test')
+    monkeypatch.setattr(loop, '_head_configuration_matches', lambda *a, **kw: True)
     monkeypatch.setattr(loop, 'claim', lambda *a: [{'id': 1}, {'id': 2}])
     process = Mock(side_effect=pixai_chars.RequiredCharacterComponentError('fallback failed'))
     monkeypatch.setattr(loop, 'process_one', process)

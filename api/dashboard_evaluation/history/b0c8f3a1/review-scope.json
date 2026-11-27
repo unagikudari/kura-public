@@ -1,0 +1,13 @@
+{
+  "reviewed_revision": "b0c8f3a196057594666bf1944a9cc36fe29acbcf",
+  "files": {
+    "api/routers/pools.py": "4f2651e9588406f9138d2e223c9b6fa9be1ed17b4dcf64b49d9fa83b48d02f22",
+    "api/tagger_core/dashboard_visual.py": "532b8f41878b2c74d62cb682f29fed068d1db8221bc60abada6e2ad4911ed224",
+    "api/tagger_core/dashboard_actions.py": "2046687f877aec2e62a7c2a93ddfba0ac8e734e7310b38dd23d9308465a8fba8",
+    "api/tagger_core/dashboard_experiment.py": "b8aae36ddf924d6288872131dcaacb61e70903dadc52f2aa6ec8932fd1ed007b",
+    "web/src/routes/tagger-dashboard/+page.svelte": "fe7141d93ec1da19a85c84170b5b34d19613e9059c70b580be2252931a009180",
+    "web/src/lib/components/EvaluationPane.svelte": "0af8624536665f918c829eb2fc0de2eb3575128bd512099f7037337e47e7bb39",
+    "web/src/lib/components/ReviewActions.svelte": "dbf427f64304733b8409bf93a53aa54e908760ff07031e574af827d3cbf5a592",
+    "web/src/lib/components/ReviewComparison.svelte": "cecc8669cea56fe807ecfd3543246940322d949ceccb1cf7e769826e43e2f44b"
+  }
+}

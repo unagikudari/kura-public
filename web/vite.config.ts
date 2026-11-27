@@ -4,10 +4,10 @@ import adapter from '@sveltejs/adapter-node';
 import { sveltekit } from '@sveltejs/kit/vite';
 import { defineConfig } from 'vite';
 
-// adapter-node 6 no longer reads ORIGIN when the server starts: the origin is fixed
-// when the app is built. Take it from the environment, else from web/.env.server
-// (ops/install/make_env.py writes it before the README's build step). Changing the
-// origin therefore means building again.
+// The origin is fixed when the app is built (paths.origin): adapter-node 6.0.2+ reads ORIGIN
+// at start only when the build has none, and otherwise logs that it is ignored. Take it from
+// the environment, else from web/.env.server (ops/install/make_env.py writes it before the
+// README's build step). Changing the origin therefore means building again.
 function origin(): string | undefined {
 	if (process.env.ORIGIN) return process.env.ORIGIN;
 	const file = new URL('./.env.server', import.meta.url);

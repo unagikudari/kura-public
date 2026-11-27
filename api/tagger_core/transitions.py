@@ -117,7 +117,7 @@ async def release_lease(db: AsyncSession, lease: Lease) -> bool:
 
 async def record_lifecycle_event(
     db: AsyncSession, *, tag: str, from_stage: str | None, to_stage: str,
-    reason: str, lease: Lease,
+    reason: str, lease: Lease, commit: bool = True,
 ) -> int:
     """Append one row to tagger_lifecycle_event via the governed function.
 
@@ -141,28 +141,35 @@ async def record_lifecycle_event(
              "reason": reason, "token": lease.fencing_token},
         )).one()
     except Exception as e:
-        await db.rollback()
+        if commit:
+            await db.rollback()
         raise TransitionError(f"record_lifecycle_event({tag}, {from_stage}->{to_stage}): {e}") from e
-    await db.commit()
+    if commit:
+        await db.commit()
     return row.id
 
 
 async def upsert_heartbeat(
     db: AsyncSession, *, worker_id: str, host: str, profile: str, generation: int,
     release_id: int | None, provider: str, model_sha256: str | None,
+    execution_receipt: dict | None = None,
 ) -> None:
     """Worker self-report. No lease — each worker owns only its own
     worker_id-keyed row, there is no cross-worker exclusivity to protect
     here (unlike lifecycle-event/reconciler-control, which are shared
     singleton/per-tag state)."""
     try:
+        receipt_ref = None
+        if execution_receipt is not None:
+            from api.services.execution_receipts import remember
+            receipt_ref = await remember(db, execution_receipt, host=host, profile=profile, release_id=release_id)
         await db.execute(
             text(
                 "SELECT tagger_upsert_heartbeat(:wid, :host, :profile, :gen, "
-                ":rel, :provider, :sha)"
+                + (":rel, :provider, :sha, :receipt)" if receipt_ref else ":rel, :provider, :sha)")
             ),
             {"wid": worker_id, "host": host, "profile": profile, "gen": generation,
-             "rel": release_id, "provider": provider, "sha": model_sha256},
+             "rel": release_id, "provider": provider, "sha": model_sha256, "receipt": receipt_ref},
         )
     except Exception as e:
         await db.rollback()

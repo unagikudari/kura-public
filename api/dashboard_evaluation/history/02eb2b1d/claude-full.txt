@@ -1,0 +1,33 @@
+**Verdict: not approvable. 1 pass / 8 partial / 1 fail.** The new runtime summary and compact table are real gains, but the one thing only a human can do (the 159 images) is still a 12px status label on a row that looks the same as the optional ones.
+
+Basis: four screenshots (1280 and 390, top and table) plus the three sources. I did not operate the page and did not open the image-check iframe, so the items below were not seen rendered.
+- **Source only:** expanded graphs, filter/sort behaviour, error and stale states, and the three footnotes.
+- **Not checked at all:** keyboard focus.
+
+No claim here about model quality or label correctness.
+
+| Criterion | Verdict | Evidence | One improvement | Priority |
+|---|---|---|---|---|
+| situation | partial | Running (`108/5000`), stopped (`4タグ`) and needs-action (159) are all present, but in three places at equal weight. At 390 the first screen ends before the request row. `確認依頼 1セット` names no tag, count or link. | Make the summary line name the request and link to it (see below). | **High** |
+| consistency | partial | Production (`本番の選択 release 15`) and candidate (`未公開`) are correctly separated. But the subtitle says `稼働中のモデル` while the body only shows a selection. The candidate row sits under `固定モデルとの比較` and says `未測定`, although predictions exist and are deliberately withheld. | For `candidate_evaluation`, show `判定前は非表示` instead of `未測定`. | High |
+| duplication | partial | Three refresh buttons (`再読み込み` / `状況を更新` / `更新`). Boundary receipt is stated three times (summary, row status, link). "Fixed model / not linked to training" is said four times across note, header and two footnotes. The 未判定 count appears twice per row. | Merge the three footnotes into one line and drop the note that repeats the column header. | Medium |
+| completeness | **fail** | Owner appears nowhere on screen; `あなたへの依頼` exists only as an `aria-label`. What happens after the 159 are judged is absent. There is no per-row timestamp for when a set was requested or received. The four held tags have no names, per-tag reason or owner until an unmarked disclosure is opened. | Add `担当: あなた · 完了後: <next step>` to the request row's status line. | High |
+| brevity | partial | First screen at 1280 is reasonable. Internal terms remain in the default view: `固定確認セット`, `判定境界`, `予測ありの確認`, `nodeb + p52 (CPU 8 each)`, `工程`, `評価履歴を登録済み`. Five identical `比較グラフ・全画像` rows add about 50px each. | Move the host/CPU string into a details element. | Low |
+| actionability | partial | The entry point `この159枚を確認` exists and works as a link. Missing: the completion condition, what it unlocks, and any entry or owner for lifting the holds (`解除には修正版の品質確認が必要` leads nowhere). All four action links share the same bold orange style, so the request and optional ones look alike. | Apply `.primary` only when `requested(q)`; make optional links normal weight. | High |
+| exploration | pass (source; not operated) | Tag search, four status filters, four sorts, a count and a conditional reset are all present with a stable tiebreak. Weak points: the filtered count has no denominator and there is no purpose filter. | Show `{visible.length}/{queues.length}セット`. | Low |
+| graphics | partial (rendering unverified) | `比較グラフ・全画像` opens to `比較スコアは未用意です` on 2 of 5 rows, so the label promises a graph that is not there. The agreement bar puts `未比較` in the same bar as agree/disagree, mixing progress with agreement. `108/5000 工程` uses the wrong unit if these are images being scored. Good: unmeasured is not drawn as 0, and the legend carries text and counts. | Label the summary `全画像` when there is no comparison. | Medium |
+| freshness | partial | Strongest area: the 24-minute-old learning report is marked `（過去）・現在の稼働は未確認`, and progress is hidden when not live. Gaps: the snapshot's `observed_at` is validated but never shown; the table's fetch time is at the bottom; there are no relative ages. The basis of the 159 sample (unseen, unlabelled, a sample rather than a population) is not stated. | Add `未見画像からの抽出 · 正解なし` to the candidate row's status line. | Medium |
+| accessibility | partial | 44px targets, explicit table roles kept through the mobile block layout, `data-label` prefixes, underlined links, and request status carried by text rather than colour. But `対象と理由` renders as plain white text with no marker (`display:inline-flex` on the summary removes it), so the hold reasons are effectively undiscoverable. The progress bar is a thin sliver that reads as empty at 2%. | Add a `▸` marker to the runtime summary, as the table already does. | Medium |
+
+Smaller points worth knowing:
+- **`未判定` reads backwards.** `263/300枚` is remaining/total and is easily read as progress done, while `0/8枚` means finished.
+- **Five smegma items, no stated relation.** The page has two runtime lines and three table rows for smegma, and nothing says whether the 159 request gates the running experiment.
+- **Heading mismatch.** The visible `画像の確認と受領結果` and the `aria-label` `あなたへの依頼と受領状況` describe the section differently.
+
+## The one next small improvement
+
+Turn the summary sentence into the task itself. In the `.summary` paragraph, replace `確認依頼 {requests.length}セット。…` with one line per request that carries the link:
+
+`あなたの確認待ち: smegma 新候補の評価 159枚 → [この159枚を確認]　分からない画像は保留で構いません。`
+
+This is a loop over `requests` using the existing `q.unjudged_url`, with no API change. It puts the tag, count and entry point on the first screen at both widths (the summary sits at about y=640 at 390). Don't add an "完了すると…" clause until the pipeline's actual next step is confirmed, and keep the predicted-positive/negative split out of it.

@@ -19,6 +19,7 @@ from api.auth import get_current_user
 from api.db.models import User
 from api.db.session import get_db
 from api.errors import KuraError
+from api.services.pool_visibility import post_visible_sql
 
 router = APIRouter(prefix="/api", tags=["activity"])
 
@@ -27,11 +28,17 @@ WINDOW = timedelta(minutes=15)
 # More than this in one answer is continued on the next (`more`, `after_id`): nothing is skipped.
 MAX_POSTS = 2000
 
-_POSTS = text("""
+_POSTS = text(f"""
     SELECT p.id, p.creation_time,
-           coalesce(p.primary_pool_id, (SELECT min(pp.pool_id) FROM pool_post pp WHERE pp.post_id = p.id)) AS pool_id
+           coalesce(primary_pool.id, (
+               SELECT min(pp.pool_id)
+                 FROM pool_post pp JOIN pool pl ON pl.id = pp.pool_id
+                WHERE pp.post_id = p.id AND pl.hidden IS FALSE
+           )) AS pool_id
       FROM post p
+      LEFT JOIN pool primary_pool ON primary_pool.id = p.primary_pool_id AND primary_pool.hidden IS FALSE
      WHERE (p.creation_time, p.id) > (:since, :after_id) AND p.creation_time <= :now
+       AND {post_visible_sql("p.id")}
      ORDER BY p.creation_time, p.id
      LIMIT :limit
 """)

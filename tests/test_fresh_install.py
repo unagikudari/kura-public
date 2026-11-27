@@ -32,7 +32,10 @@ def cluster(request):
     dsn = os.environ.get("KURA_FRESH_INSTALL_TEST_DSN")
     if not dsn:
         if os.environ.get("GITHUB_ACTIONS"):
-            pytest.fail("Fresh-install CI must configure its dedicated PostgreSQL service")
+            if os.environ.get("KURA_FRESH_INSTALL_TEST_LOCAL") != "1":
+                pytest.fail("Fresh-install CI must explicitly select its isolated PostgreSQL fixture")
+            if not Path("/usr/lib/postgresql/18/bin/initdb").is_file():
+                pytest.fail("Fresh-install CI requires PostgreSQL 18 binaries; missing is not a pass")
         dsn = request.getfixturevalue("postgres")
     url = make_url(dsn).set(drivername="postgresql")
     with psycopg2.connect(url.render_as_string(hide_password=False)) as admin:
@@ -82,11 +85,31 @@ def _install(cluster, tmp_path):
     return name, env_file, settings
 
 
-def test_a_stranger_installs_starts_and_signs_in(cluster, tmp_path):
+_NO_INFERENCE_BOOT = """
+import sys
+from importlib.abc import MetaPathFinder
+
+class NoInference(MetaPathFinder):
+    def find_spec(self, name, path=None, target=None):
+        if name.split('.')[0] in {'tagger', 'torch', 'timm', 'onnxruntime'}:
+            raise AssertionError(f'optional inference import in disabled core: {name}')
+
+sys.meta_path.insert(0, NoInference())
+import uvicorn
+uvicorn.run("api.main:app", host="127.0.0.1", port=int(sys.argv[1]))
+"""
+
+
+@pytest.mark.parametrize("tagging_enabled", [True, False], ids=["default", "tagging-disabled"])
+def test_a_stranger_installs_starts_and_signs_in(cluster, tmp_path, tagging_enabled):
     name, env_file, settings = _install(cluster, tmp_path)
     port = _free_port()
     api_env = {"PATH": os.environ["PATH"], "HOME": str(tmp_path), **settings}
-    api = subprocess.Popen([sys.executable, "-m", "uvicorn", "api.main:app", "--host", "127.0.0.1", "--port", str(port)],
+    command = [sys.executable, "-m", "uvicorn", "api.main:app", "--host", "127.0.0.1", "--port", str(port)]
+    if not tagging_enabled:
+        api_env.update(KURA_TAGGING_ENABLED="0", CUDA_VISIBLE_DEVICES="")
+        command = [sys.executable, "-c", _NO_INFERENCE_BOOT, str(port)]
+    api = subprocess.Popen(command,
                            cwd=ROOT, env=api_env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     base = f"http://127.0.0.1:{port}"
     try:
@@ -120,8 +143,26 @@ def test_a_stranger_installs_starts_and_signs_in(cluster, tmp_path):
         assert posted["http"] == 200
         listing = urllib.request.Request(base + "/api/posts?limit=40", headers={"Authorization": "Token " + auth})
         assert [p["id"] for p in json.load(urllib.request.urlopen(listing, timeout=10))["results"]] == [posted["id"]]
+        if not tagging_enabled:
+            headers = {"Authorization": "Token " + auth, "Content-Type": "application/json"}
+            for path in ("/api/tagger-dashboard/summary", "/api/tagger-dashboard"):
+                with pytest.raises(urllib.error.HTTPError) as error:
+                    urllib.request.urlopen(urllib.request.Request(base + path, headers=headers), timeout=10)
+                assert error.value.code == 404
+            post_url = base + f"/api/post/{posted['id']}"
+            before = json.load(urllib.request.urlopen(urllib.request.Request(post_url, headers=headers), timeout=10))
+            update = urllib.request.Request(post_url, method="PUT", headers=headers, data=json.dumps({
+                "version": before["version"], "tags": ["manual-smoke"],
+                "source": "https://example.invalid/source",
+            }).encode())
+            saved = json.load(urllib.request.urlopen(update, timeout=10))
+            assert saved["source"] == "https://example.invalid/source"
+            search = urllib.request.Request(base + "/api/posts?query=manual-smoke", headers=headers)
+            result = json.load(urllib.request.urlopen(search, timeout=10))
+            assert [post["id"] for post in result["results"]] == [posted["id"]]
         moving = _post_image(base, auth, animated=True)                  # #149: kept as an animation
         assert moving["http"] == 200 and moving["type"] == "animation"
+        _watch_import_keeps_database_pool_order(base, auth, key_file, settings, tmp_path)
         # A second first-admin is refused: later keys go through change_key.
         again = subprocess.run([sys.executable, str(ROOT / "scripts/create_admin.py"), "--environment", str(env_file),
                                 "create", "--name", "other", "--email", "o@example.invalid",
@@ -345,3 +386,60 @@ def test_two_servers_on_one_port_but_different_addresses_are_told_apart_before_w
     finally:
         _stop(a)
         _stop(b)
+
+
+def _watch_import_keeps_database_pool_order(base, auth, key_file, settings, tmp_path):
+    """CLI -> real upload API -> isolated PostgreSQL -> ordinary pool reader (#164)."""
+    import signal
+    from PIL import Image
+    folder = tmp_path / 'ordered-book'
+    folder.mkdir()
+    for n, color in enumerate(('red', 'green', 'blue'), 1):
+        path = folder / f'p{n}.png'
+        Image.new('RGB', (16, 16), color).save(path)
+        if n != 2:
+            os.utime(path, (time.time() - 120, time.time() - 120))
+    record = tmp_path / 'ordered-import.jsonl'
+    log = tmp_path / 'ordered-import.log'
+    with log.open('w+') as output:
+        proc = subprocess.Popen([
+            sys.executable, str(ROOT / 'scripts/kura_import.py'), str(folder),
+            '--url', base, '--email', 'admin@example.invalid', '--key-file', str(key_file),
+            '--record', str(record), '--pool', 'Ordered book', '--watch', '1', '--settle', '60',
+        ], cwd=ROOT, env={**os.environ, 'KURA_API_KEY': ''}, stdout=output, stderr=output)
+        def rows():
+            if not record.exists():
+                return []
+            return [json.loads(line) for line in record.read_text().splitlines()[1:] if line]
+        def wait_for(count):
+            end = time.monotonic() + 25
+            while time.monotonic() < end:
+                if len(rows()) >= count:
+                    return
+                assert proc.poll() is None, log.read_text()
+                time.sleep(.1)
+            pytest.fail(log.read_text())
+        try:
+            wait_for(1)
+            time.sleep(1.2)
+            assert [r['path'] for r in rows()] == ['p1.png']
+            os.utime(folder / 'p2.png', (time.time() - 120, time.time() - 120))
+            wait_for(3)
+            sent = rows()
+            assert [r['path'] for r in sent] == ['p1.png', 'p2.png', 'p3.png']
+            ids = [r['id'] for r in sent]
+            url = make_url(settings['DATABASE_URL']).set(drivername='postgresql+psycopg2')
+            engine = create_engine(url)
+            try:
+                with engine.connect() as db:
+                    pool_id = db.execute(text('SELECT pool_id FROM pool_post WHERE post_id=:id'), {'id': ids[0]}).scalar_one()
+                    actual = db.execute(text('SELECT post_id,ord FROM pool_post WHERE pool_id=:id ORDER BY ord'), {'id': pool_id}).all()
+                assert [r[0] for r in actual] == ids
+                assert len({r[1] for r in actual}) == 3
+            finally:
+                engine.dispose()
+            req = urllib.request.Request(base + f'/api/pools/{pool_id}', headers={'Authorization': 'Token ' + auth})
+            assert json.load(urllib.request.urlopen(req, timeout=10))['posts'] == ids
+        finally:
+            proc.send_signal(signal.SIGTERM)
+            proc.wait(timeout=20)

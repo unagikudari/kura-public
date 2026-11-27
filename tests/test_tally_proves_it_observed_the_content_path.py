@@ -96,7 +96,7 @@ def test_the_canary_makes_a_clean_log_answer_yes(mig, tmp_path):
     assert out["reason"] is None
 
 
-def test_the_canary_is_never_counted_as_demand(mig, tmp_path):
+def test_only_the_current_canary_is_excluded_from_demand(mig, tmp_path):
     """The probe asks for a legacy name by construction. Counting it would make
     the gate raise its own floor every time it ran."""
     log = tmp_path / "access.log"
@@ -107,7 +107,7 @@ def test_the_canary_is_never_counted_as_demand(mig, tmp_path):
     ])
     out = mig.tally(str(log), 7, "example.test", None, 30, 10, now=NOW,
                     canary={"ua": ua, "status": 404}, instrumented_since=INSTRUMENTED)
-    assert out["per_day"] == {}, "canary probes must not appear as legacy demand"
+    assert out["per_day"][NOW.isoformat()]['total'] == 1, "older probe names are not proof of this run"
     assert out["start"] == "yes"
 
 
@@ -351,3 +351,32 @@ def test_a_self_described_verification_ua_is_still_demand(mig, tmp_path):
     assert r["per_day"][NOW.isoformat()]["first_party"] == 1
     assert r["cond_first_party_zero"] is False
     assert r["start"] == "no"
+
+
+@pytest.mark.parametrize('ua', ['kura-fs-salt-tally-canary/fake', 'kura-fs-salt-tally-canary/123', 'prefix-kura-fs-salt-tally-canary/123-suffix'])
+def test_claiming_to_be_a_canary_does_not_hide_real_demand(mig, tmp_path, ua):
+    log = tmp_path / 'access.log'
+    nonce = 'kura-fs-salt-tally-canary/123'
+    _write_window(mig, log, 7, NOW, extra=[
+        _line(NOW, _legacy_path(mig, 0), nonce),
+        _line(NOW, _legacy_path(mig, 4242), ua, ref='https://example.test/post/4242'),
+    ])
+    out = mig.tally(str(log), 7, 'example.test', None, 30, 10, now=NOW,
+                    canary={'ua': nonce, 'status': 404}, instrumented_since=INSTRUMENTED)
+    assert out['coverage']['canary_seen'] is True
+    assert out['first_party_last_days'][-1] == 1
+    assert out['start'] == 'no'
+
+
+@pytest.mark.parametrize('mismatch', ['path', 'ua', 'method', 'day'])
+def test_canary_coverage_requires_the_exact_current_probe(mig, tmp_path, mismatch):
+    log = tmp_path / 'access.log';nonce = 'kura-fs-salt-tally-canary/123'
+    path = _legacy_path(mig, 9 if mismatch == 'path' else 0)
+    ua = nonce + ('-extra' if mismatch == 'ua' else '')
+    line = _line(NOW - dt.timedelta(days=int(mismatch == 'day')), path, ua)
+    if mismatch == 'method':line = line.replace('"GET ', '"HEAD ')
+    _write_window(mig, log, 7, NOW, extra=[line])
+    out = mig.tally(str(log), 7, 'example.test', None, 30, 10, now=NOW,
+                    canary={'ua': nonce, 'status': 404}, instrumented_since=INSTRUMENTED)
+    assert out['coverage']['canary_seen'] is False
+    assert out['start'] == 'unknown'

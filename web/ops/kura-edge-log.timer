@@ -1,0 +1,10 @@
+[Unit]
+Description=Rotate the kura-edge access log daily and report request timing
+
+[Timer]
+OnCalendar=*-*-* 04:10
+Persistent=true
+RandomizedDelaySec=5min
+
+[Install]
+WantedBy=timers.target

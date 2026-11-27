@@ -1,0 +1,81 @@
+{
+  "reviewer": "Claude",
+  "reviewed_revision": "f9c05fe01a94fe5c48a790e517980e63fe110900",
+  "method": "Claude CLI: 実画面4枚・可視本文・ソース。操作なし。2026-11-17。",
+  "criteria": [
+    {
+      "id": "situation",
+      "verdict": "partial",
+      "assessment": "partial",
+      "evidence": "デスクトップでは依頼が初画面に入るが、390幅では機械の情報の下に埋まる。",
+      "nextfix": "確認依頼を機械の状況より前に置く"
+    },
+    {
+      "id": "consistency",
+      "verdict": "partial",
+      "assessment": "partial",
+      "evidence": "未判定159/159は完了率に見え、候補と自動学習の関係も不明。",
+      "nextfix": "未判定枚数とセット総数を別の表記にする"
+    },
+    {
+      "id": "duplication",
+      "verdict": "fail",
+      "assessment": "fail",
+      "evidence": "依頼と表のリンク、受領結果、更新ボタン、展開した比較の説明が重複する。",
+      "nextfix": "受領の二重表示と展開内の重複を除く"
+    },
+    {
+      "id": "completeness",
+      "verdict": "partial",
+      "assessment": "partial",
+      "evidence": "対象・担当・次の処理はあるが依頼時刻と停止対象ごとの次の処理がない。",
+      "nextfix": "停止ごとの開始と次の処理を示す"
+    },
+    {
+      "id": "brevity",
+      "verdict": "partial",
+      "assessment": "partial",
+      "evidence": "工程やホスト名などの内部用語が残り、概要の副題がスマホで場所を取る。",
+      "nextfix": "処理の単位を明確にし内部情報を詳細へ"
+    },
+    {
+      "id": "actionability",
+      "verdict": "partial",
+      "assessment": "partial",
+      "evidence": "直接リンクは具体的だが保留と集計の関係、159枚と5000枚の関係が不明。",
+      "nextfix": "保留を正解として数えず、集計可能な範囲と次の処理を説明"
+    },
+    {
+      "id": "exploration",
+      "verdict": "pass",
+      "assessment": "pass",
+      "evidence": "フィルター・検索・並び替え・件数・解除がある。レビュアーの操作は未実施。",
+      "nextfix": "受領済みフィルターを追加"
+    },
+    {
+      "id": "graphics",
+      "verdict": "partial",
+      "assessment": "partial",
+      "evidence": "比較の内訳は適切だが展開後は未撮影、色が近くグラフ行が縦長。",
+      "nextfix": "展開した状態を検証し重複を減らす"
+    },
+    {
+      "id": "freshness",
+      "verdict": "partial",
+      "assessment": "partial",
+      "evidence": "過去報告の区別はあるが相対時刻と依頼近くの鮮度が不足。",
+      "nextfix": "観測の経過時間を示す"
+    },
+    {
+      "id": "accessibility",
+      "verdict": "partial",
+      "assessment": "partial",
+      "evidence": "44px操作領域はあるがスマホ上部が大きくキーボード未確認。",
+      "nextfix": "初画面の人間の依頼を優先しキーボードも確認"
+    }
+  ],
+  "limitations": [
+    "f9c05fe0/779e4cf6の概要の親画面のみ。今回の修正・埋め込み画面・モデル品質の合格ではない。",
+    "原文から実装者が要約。レビュー原文も保存。"
+  ]
+}

@@ -1,12 +1,12 @@
 <script lang="ts">
   import { uploadPost } from '#lib/api.ts';
   import { droppedFiles, type ImportFile } from '#lib/collector/importFiles.ts';
-  import { planDropImport, duplicateUpload, POSTS_ADDED_EVENT } from '#lib/dropImport.ts';
+  import { planDropImport, duplicateUpload, existingPost, POSTS_ADDED_EVENT } from '#lib/dropImport.ts';
   import { t } from '#lib/i18n/index.ts';
   import { ownPosts } from '#lib/activityFeed.ts';
   const m = t();
   let { onbusy }: { onbusy: (busy: boolean) => void } = $props();
-  type Item = ImportFile & { state: 'pending'|'uploading'|'added'|'duplicate'|'failed'; reason?: string };
+  type Item = ImportFile & { state: 'pending'|'uploading'|'added'|'duplicate'|'failed'; reason?: string; existing?: { id: number; safety?: string } | null };
   let items = $state<Item[]>([]);
   let busy = $state(false);
   let enumerating = $state(false);
@@ -16,7 +16,8 @@
   let expanded = $state(false);
   let lastId = $state<number|null>(null);
   const added = $derived(items.filter(i=>i.state==='added').length);
-  const duplicates = $derived(items.filter(i=>i.state==='duplicate').length);
+  const duplicateItems = $derived(items.filter(i=>i.state==='duplicate'));
+  const duplicates = $derived(duplicateItems.length);
   const failed = $derived(items.filter(i=>i.state==='failed'));
   const remaining = $derived(items.filter(i=>i.state==='pending').length);
   const current = $derived(items.find(i=>i.state==='uploading'));
@@ -52,7 +53,7 @@
         item.state='uploading';item.reason=undefined;
         try { const result=await uploadPost(item.file);lastId=result.id;ownPosts([result.id]);item.state='added';addedNow++; }
         catch(e) {
-          if (duplicateUpload(e)) { item.state='duplicate';continue; }
+          if (duplicateUpload(e)) { item.state='duplicate';item.existing=existingPost(e);continue; }
           item.state='failed';item.reason=(e as Error).message || m.home.drop.importFailed;
           const status=(e as {status?:number}).status;
           // Network/unknown outcomes stop the batch. Only an explicit click can
@@ -83,6 +84,7 @@
     {#if current}<div class="filename" title={current.relativePath ?? current.file.name}>{current.relativePath ?? current.file.name}</div>{/if}
     {#if error}<p class="error" role="alert">{error}</p>{/if}
     {#if failed.length}<button class="quiet details" aria-expanded={expanded} onclick={()=>expanded=!expanded}>{m.home.drop.failedFiles} {expanded ? '▴' : '▾'}</button>{#if expanded}<ul>{#each failed.slice(0,20) as item}<li><b>{item.relativePath ?? item.file.name}</b><span>{item.reason}</span></li>{/each}</ul>{#if failed.length>20}<small>{m.home.drop.first20}</small>{/if}{/if}{/if}
+    {#if duplicateItems.length}<p class="note">{m.home.drop.duplicateNote}</p><ul>{#each duplicateItems.slice(0,20) as item}<li><b>{item.relativePath ?? item.file.name}</b>{#if item.existing}<a href={`/post/${item.existing.id}`} target="_blank" rel="noopener">{m.home.drop.openExisting} #{item.existing.id}</a>{#if item.existing.safety && item.existing.safety!=='safe'}<span>{m.home.drop.existingHidden}</span>{/if}{/if}</li>{/each}</ul>{#if duplicateItems.length>20}<small>{m.home.drop.first20}</small>{/if}{/if}
     <div class="actions">{#if !busy && unsettled}<button onclick={run}>{remaining ? m.home.drop.continueRest : m.home.drop.retryFailed}</button>{/if}{#if lastId}<a href={`/post/${lastId}`}>{m.home.drop.openAdded}</a>{/if}</div>
     {#if unsettled || busy}<small>{m.home.drop.keepTabOpen}</small>{/if}
   </section>
@@ -90,5 +92,6 @@
 <style>
   .import-panel { pointer-events:auto;width:100%;box-sizing:border-box;padding:14px;background:var(--surface,#20252b);color:var(--text,#eee);border:1px solid var(--border,#46505a);border-radius:10px;box-shadow:0 6px 28px #0007;font-size:13px;flex-shrink:0; }
   .heading,.counts,.actions { display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap; }.heading strong { font-size:14px; }.counts { justify-content:flex-start;color:var(--muted,#aaa);margin:8px 0; }.counts b { color:var(--text,#eee);font-variant-numeric:tabular-nums; }
+  li a { margin-left:8px;color:var(--accent,#8cc4ff);white-space:nowrap; }.note { margin:8px 0 2px;color:var(--muted,#aaa); }
   progress { width:100%;height:5px;margin:10px 0 2px;accent-color:var(--accent,#8cc4ff); }.filename { overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--muted,#aaa);font-size:12px; }.error { color:#ffb4b4; }p { overflow-wrap:anywhere; }.actions { justify-content:flex-start;margin-top:8px; }.actions:empty { display:none; }button,a { font:inherit; }button { cursor:pointer;padding:6px 10px;border:1px solid var(--border,#46505a);border-radius:5px;background:var(--bg,#181d22);color:inherit; }.quiet { background:transparent;border:0;padding:3px; }.details { margin-top:6px; }small { display:block;font-size:11px;color:var(--muted,#aaa);margin-top:8px; }ul { padding-left:16px;margin:8px 0; }li { margin:8px 0;overflow-wrap:anywhere; }li span { display:block;color:#ffb4b4; }
 </style>

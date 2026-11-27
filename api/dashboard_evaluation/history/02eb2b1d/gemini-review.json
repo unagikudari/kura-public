@@ -1,0 +1,81 @@
+{
+  "reviewer": "Gemini",
+  "reviewed_revision": "02eb2b1de0cbe1319d2481c3e70c7709f9e6685e",
+  "method": "Gemini CLI: 可視本文・コードのみ。画像閲覧・操作なし。2026-11-17。",
+  "criteria": [
+    {
+      "id": "situation",
+      "verdict": "partial",
+      "assessment": "partial",
+      "evidence": "本番選択・停止・実験・確認依頼はあるが停止対象の名前は折り畳み内で、改善と自動学習の関係も不明。",
+      "nextfix": "少数の停止タグ名は初期表示する"
+    },
+    {
+      "id": "consistency",
+      "verdict": "partial",
+      "assessment": "partial",
+      "evidence": "機械採点と人の評価の違いが曖昧で、意図的な比較非表示が未測定と表示される。",
+      "nextfix": "機械採点・人手判定・比較非表示を別の表記にする"
+    },
+    {
+      "id": "duplication",
+      "verdict": "fail",
+      "assessment": "fail",
+      "evidence": "3つの更新ボタンと繰り返される注記・展開内の見出し・リンクが重複。",
+      "nextfix": "注記と重複リンクを整理する"
+    },
+    {
+      "id": "completeness",
+      "verdict": "partial",
+      "assessment": "partial",
+      "evidence": "対象と数はあるが担当・次の処理・抽出理由が同じ場所にない。",
+      "nextfix": "人の判定後の手順を確認依頼に添える"
+    },
+    {
+      "id": "brevity",
+      "verdict": "partial",
+      "assessment": "partial",
+      "evidence": "5セット全てが初期表示され、スコアなしの行にも空のグラフ欄がある。",
+      "nextfix": "比較がある場合だけグラフ欄を出す"
+    },
+    {
+      "id": "actionability",
+      "verdict": "partial",
+      "assessment": "partial",
+      "evidence": "直接リンクはあるが何が揃えば次へ進むか不明。",
+      "nextfix": "判定結果を受け取った後の処理を示す"
+    },
+    {
+      "id": "exploration",
+      "verdict": "pass",
+      "assessment": "pass",
+      "evidence": "検索・状況別フィルター・4ソート・件数・解除・空状態がソースに揃う。",
+      "nextfix": "絞り込み件数と総数を併記する"
+    },
+    {
+      "id": "graphics",
+      "verdict": "partial",
+      "assessment": "partial",
+      "evidence": "未測定を0扱いせず凡例もあるが空のグラフ欄がある。画面の描画は未検証。",
+      "nextfix": "実データのないグラフ入口を除く"
+    },
+    {
+      "id": "freshness",
+      "verdict": "pass",
+      "assessment": "pass",
+      "evidence": "ソースは120秒の鮮度と失敗で進捗を隠し、過去の報告を現在稼働と区別する。",
+      "nextfix": "絶対時刻に経過時間を添える"
+    },
+    {
+      "id": "accessibility",
+      "verdict": "unverified",
+      "assessment": "unverified",
+      "evidence": "テキスト・ソースのみ。タップ・フォーカス・スマホの実描画は未検証。",
+      "nextfix": "実画面とキーボード操作を別途確認する"
+    }
+  ],
+  "limitations": [
+    "02eb2b1dの概要の親画面だけの評価。埋め込み画面・モデル品質・今回の修正の合格ではない。",
+    "根拠と改善案は原文から実装者が要約。原文は同ディレクトリに保存。"
+  ]
+}

@@ -4,7 +4,8 @@ PixAI / ml-danbooru が過検知するタグを、画像 content から P(本物
 検証する枠組み (plan kura-chastity-cage-overdetection-hotfix A2/A4 の一般化)。
 checkpoint は backbone+head をバンドル — 推論時に timm pretrained / HF hub download
 へ依存しない。meta.backbone で backbone を判別し、前処理 (img_size/mean/std) は
-model 属性から導出する — 学習時特徴抽出と同一であることを型で保証する。
+新artifactの明示契約から読む。metadataなしは従来の推論既定値を維持する。
+旧学習cacheとの一致をbackbone名だけで保証することはできない。
 
 対応 backbone:
 - convnext_tiny (384 + ImageNet norm) — cage v1 (legacy)
@@ -12,6 +13,8 @@ model 属性から導出する — 学習時特徴抽出と同一であること
   (architecture/model_args) をここに固定で再現し、runtime は hub に接続しない。
 """
 from __future__ import annotations
+
+from .content_preprocessing import spec, validate
 
 import torch
 import torch.nn as nn
@@ -72,11 +75,34 @@ def _shared_backbone(name: str) -> nn.Module | None:
     return None if m is None else m.backbone
 
 
+def _set_preprocessing(model, explicit):
+    value = explicit if explicit is not None else spec(model.img_size, model.mean, model.std)
+    if value['size'] != [model.img_size, model.img_size]:
+        raise ValueError('preprocessing size does not match backbone input size')
+    model.preprocessing = validate(value)
+    model.preprocessing_legacy = explicit is None
+
+
 def load(checkpoint_path) -> ContentHeadModel:
     ckpt = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
     meta = ckpt.get("meta") or {}
     name = meta.get("backbone", BACKBONE)
     sd = ckpt["model"]
+    # Absence alone means legacy. A present but malformed contract must fail.
+    explicit_preprocessing = validate(meta["preprocessing"]) if "preprocessing" in meta else None
+
+    if "feature_identity" in meta:
+        from .feature_contract import state_hash
+        from .content_preprocessing import fingerprint
+        identity = meta["feature_identity"]
+        if (not isinstance(identity, dict) or identity.get("schema") != "kura-feature-contract/1"
+            or identity.get("classifier_reset") is not True
+            or explicit_preprocessing is None
+            or identity.get("preprocessing") != explicit_preprocessing
+            or identity.get("preprocessing_sha256") != fingerprint(explicit_preprocessing)
+            or identity.get("backbone_sha256") != state_hash({
+                k.removeprefix("backbone."):v for k,v in sd.items() if k.startswith("backbone.")})):
+            raise ValueError("bundle feature identity mismatch")
 
     shared = _shared_backbone(name)
     if shared is not None:
@@ -94,11 +120,13 @@ def load(checkpoint_path) -> ContentHeadModel:
             model.head = nn.Linear(shared.num_features, 1)
             model.head.load_state_dict(
                 {k.split(".", 1)[1]: v for k, v in sd.items() if k.startswith("head.")})
+            _set_preprocessing(model, explicit_preprocessing)
             model._backbone_fp = first._backbone_fp  # noqa: SLF001
             model.eval()
             return model
 
     model = ContentHeadModel(backbone=name)
+    _set_preprocessing(model, explicit_preprocessing)
     model.load_state_dict(sd)
     model._backbone_fp = _backbone_fingerprint(sd)  # noqa: SLF001
     model.eval()

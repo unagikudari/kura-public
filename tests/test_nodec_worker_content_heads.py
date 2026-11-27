@@ -217,3 +217,61 @@ def test_source_records_skin_model(monkeypatch):
     assert "skin=0c2b5be1e6d8" in w.ensemble_source_id(12, None)
     monkeypatch.setattr(w, "SKIN_MODEL_SHA", None)
     assert "skin=absent" in w.ensemble_source_id(12, None)
+
+
+def test_execution_identity_excludes_loaded_but_unevaluated_heads():
+    from tagger.content_head_policy import executed_heads
+
+    heads = {
+        "executed": object(), "loaded_only": object(),
+        "__artifact_sha256__executed": "a" * 64, "__artifact_sha256__loaded_only": "b" * 64,
+        "__policy__executed": {"threshold": .7, "apply_mode": "replace"},
+        "__policy__loaded_only": {"threshold": .8, "apply_mode": "add_only"},
+    }
+    assert executed_heads(heads, {"executed"}) == [{
+        "tag": "executed", "artifact_sha256": "a" * 64,
+        "threshold": .7, "apply_mode": "replace",
+    }]
+
+
+
+def test_loaded_artifact_exposes_full_execution_hash(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+    from tagger import content_head_model, nodec_autotag_worker
+    from tagger.content_head_policy import executed_heads
+
+    sha = "a" * 64
+    model = SimpleNamespace(to=lambda device: model)
+    monkeypatch.setattr(content_head_model, "load", lambda path: model)
+    heads = nodec_autotag_worker.load_content_heads(
+        [{"tag": "fixture", "content_sha256": sha, "threshold": .7,
+          "apply_mode": "replace", "category": "general"}],
+        artifact_fetcher=lambda _: tmp_path / "model",
+    )
+    assert heads["__sha__fixture"] == sha[:12]
+    assert executed_heads(heads, {"fixture"}) == [{
+        "tag": "fixture", "artifact_sha256": sha, "threshold": .7, "apply_mode": "replace",
+    }]
+
+
+def test_wd14_refresh_does_not_adopt_partial_replacement(monkeypatch):
+    from tagger import nodec_autotag_worker as worker
+    from tagger.content_head_policy import RequiredContentHeadError
+
+    old = {"fixture": object()}
+    monkeypatch.setattr(worker, "CONTENT_HEADS", old)
+    monkeypatch.setattr(worker, "_POLICY_FP", "old")
+    policy = {"tag": "fixture", "content_sha256": "a" * 64, "threshold": .5,
+              "category": "general", "apply_mode": "replace"}
+    monkeypatch.setattr(worker, "load_head_policies", lambda *, require_complete: [policy])
+    replacement = {"fixture": None, "__policy__fixture": policy}
+    monkeypatch.setattr(worker, "load_content_heads", lambda _: replacement)
+    reported = []
+    monkeypatch.setattr(worker, "report_node_heads", reported.append)
+    with pytest.raises(RequiredContentHeadError, match="content_head_not_loaded"):
+        worker.refresh_content_heads()
+    assert worker.CONTENT_HEADS is old and worker._POLICY_FP == "old" and not reported
+    replacement["fixture"] = object()
+    assert worker.refresh_content_heads()
+    assert worker.CONTENT_HEADS is replacement and reported == [[policy]]
+    assert not worker.refresh_content_heads()

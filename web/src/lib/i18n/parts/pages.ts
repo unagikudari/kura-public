@@ -182,6 +182,11 @@ export const en = {
     countN: (n: number) => `${n}`,
     hint: 'Several people and works are supported. Names that do not fit show as "+N more"; tap the band to see them all. The tag display language applies too. Lists show images only.',
     reset: 'Reset to defaults',
+    gridHeading: 'Image list',
+    hoverPreview: 'Show the original after hovering a thumbnail for',
+    hoverPreviewOff: 'Off',
+    seconds: (n: number) => `${n} s`,
+    hoverPreviewHint: 'The original appears on the half of the screen away from the mouse. Leaving, clicking or scrolling hides it.',
   },
   identity: {
     heading: 'Artists, characters, works',
@@ -455,6 +460,11 @@ export const ja: Shape<typeof en> = {
     countN: (n) => `${n}件`,
     hint: '複数の人物・作品に対応しています。入りきらない名前は「ほか○件」と表示し、情報の帯を押すとすべて確認できます。タグの表示言語も反映されます。一覧は画像だけを表示します。',
     reset: '初期設定に戻す',
+    gridHeading: '画像一覧',
+    hoverPreview: 'サムネイルに乗せ続けると元画像を表示',
+    hoverPreviewOff: 'オフ',
+    seconds: (n) => `${n}秒`,
+    hoverPreviewHint: '元画像はマウスと反対側の半分に出ます。マウスを離す・クリックする・スクロールすると消えます。',
   },
   identity: {
     heading: 'アーティスト・キャラクター・作品',

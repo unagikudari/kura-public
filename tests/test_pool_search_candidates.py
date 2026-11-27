@@ -1,6 +1,8 @@
 """Small request-local search sets preserve the relational search contract."""
 import itertools
 import subprocess
+from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 from uuid import uuid4
 import pytest
 import sqlalchemy as sa
@@ -95,3 +97,54 @@ def test_search_scope_equivalence_and_bounded_fallback(search_database, monkeypa
             monkeypatch.setattr(P,'POOL_SEARCH_CANDIDATE_LIMIT',1)
             assert (await P.list_pools(**args)).model_dump() == expected.model_dump()
     run(search_database,scenario)
+
+
+def test_hidden_pools_are_excluded_from_discovery_and_activity(search_database, monkeypatch):
+    from api import extension_hooks
+    from api.routers.activity import activity
+    from api.routers.tags import discover_tag_links, list_tag_links
+
+    monkeypatch.setattr(extension_hooks, 'installed', lambda: {})
+    owner = SimpleNamespace(rank='administrator')
+    async def scenario(sessions):
+        metadata = sa.MetaData()
+        for model in Base.metadata.tables.values():
+            table = model.to_metadata(metadata)
+            table.constraints = {c for c in table.constraints if not isinstance(c, sa.ForeignKeyConstraint)}
+            table.foreign_keys.clear()
+            for column in table.columns:
+                column.foreign_keys.clear()
+        async with sessions.kw['bind'].begin() as db:
+            await db.run_sync(metadata.create_all)
+            for statement in (
+                "INSERT INTO tag_category(id,version,name,color,\"default\",\"order\") VALUES(1,1,'artist','#fff',true,0)",
+                "INSERT INTO tag(id,category_id,version,creation_time) VALUES(1,1,1,now())",
+                "INSERT INTO tag_name(tag_id,name,ord) VALUES(1,'example_artist',0)",
+                "INSERT INTO pool(id,category_id,version,creation_time,hidden,meta_tagging_status,meta_tagging_attempts) VALUES(1,1,1,now(),true,'pending',0),(2,1,1,now(),false,'pending',0)",
+                "INSERT INTO pool_name(pool_name_id,pool_id,name,ord) VALUES(1,1,'example hidden',0),(2,2,'example visible',0)",
+                "INSERT INTO tag_link(tag_id,platform,url,pool_id) VALUES(1,'example','https://example.org/hidden',1),(1,'example','https://example.org/visible',2),(1,'example','https://example.org/external',NULL)",
+                "INSERT INTO post(id,version,creation_time,primary_pool_id,safety,type,checksum,file_size,status,flags,\"mime-type\") SELECT i,1,timezone('UTC',now()),1,'safe','image',i::text,100,'ok','','image/png' FROM generate_series(1,2)i",
+                "INSERT INTO pool_post(pool_id,post_id,ord) VALUES(1,1,0),(1,2,1),(2,2,0)",
+                "UPDATE pool SET cover_post_id=1",
+                "INSERT INTO post_tag(post_id,tag_id,locked) VALUES(1,1,false),(2,1,false)",
+            ):
+                await db.execute(sa.text(statement))
+        async with sessions() as db:
+            args = dict(query='example', offset=0, limit=40, include_empty=True, hide_verify=False,
+                        sort='id', dir='asc', safe=False, db=db)
+            for query in ('example', ''):
+                listing = await P.list_pools(**dict(args, query=query))
+                assert listing.total == 1
+                [pool] = listing.results
+                assert pool.id == 2 and pool.thumbnailUrl == '/api/post/2/thumbnail'
+            from api.services.tag_thumbnails import representatives
+            assert await representatives(db, [1]) == {1: 2}
+            links = await discover_tag_links(None, None, None, None, None, 200, db)
+            assert {(link['poolId'], link['poolCover']) for link in links} == {(None, None), (2, '/api/post/2/thumbnail')}
+            links = await list_tag_links('example_artist', db)
+            assert {link['url'].rsplit('/', 1)[-1] for link in links} == {'visible', 'external'}
+            since = datetime.now(timezone.utc) - timedelta(minutes=1)
+            events = (await activity(since=since, user=owner, db=db))['events']
+            assert [(e['pool_id'], e['post_ids']) for e in events] == [(2, [2])]
+
+    run(search_database, scenario)

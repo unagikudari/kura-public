@@ -1,0 +1,6 @@
+"""Declared synthetic current-GT agreement, only for built UI regression fixtures."""
+def response(q):
+    counts={k:v for k,v in {'unseen':q['remaining'],'uncertain':q['judged'].get('uncertain',0),'current_definite':q['judged'].get('present',0)+q['judged'].get('absent',0)}.items() if v}
+    current={k:v for k,v in counts.items() if k!='unseen'}
+    state='waiting_for_responses' if counts.get('unseen') else 'blocked_uncertain' if counts.get('uncertain') else 'responses_bound_not_qualified'
+    return dict(schema='training-support-readiness/1',scope='queue_population_only',outcome='observed',tag=q['tag'],tag_id=1,queue_sha256=q['queue_sha256'],frame_sha256=q['frame_sha256'],model_sha256=None,total=q['total'],counts=counts,current_definite={'positive':q['judged'].get('present',0),'negative':q['judged'].get('absent',0)},current_eligibility_counts=current,excluded_from_next_training=counts.get('uncertain',0),observed_at='2026-11-16T00:00:00Z',groups=None,groups_state='not_measured',state=state,reason=state,quality_granted=False,admission='not_granted',training_dispatched=False,transaction_snapshot='1:2:',**{key:'e'*64 for key in ['sha256','source_provenance_sha256','population_sha256','current_overlay_sha256','responses_overlay_sha256']})

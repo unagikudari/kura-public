@@ -18,12 +18,14 @@ from api.db.models import User
 from api.db.session import get_db
 from api.schemas.tagging import (
     ClaimResponse,
+    ClaimExecution,
     CompleteRequest,
     CompleteResponse,
     StatsResponse,
     TaggingKind,
 )
 from api.errors import KuraError
+from api.tagger_core.execution_receipt import ReceiptRefused
 from api.services import governed_window
 from api.services.tagging import (
     ClaimNotEligibleError,
@@ -42,6 +44,7 @@ router = APIRouter(prefix="/api/internal/tagging", tags=["tagging-internal"])
 
 @router.post("/claim", response_model=ClaimResponse)
 async def claim(
+    execution: ClaimExecution | None = None,
     kind: TaggingKind = Query(...),
     limit: int = Query(10, ge=1, le=200),
     lease_seconds: int = Query(300, ge=30, le=3600),
@@ -103,6 +106,7 @@ async def claim(
                     db, host=host, worker_id=worker_id, profile=profile,
                     release_id=release_id, generation=generation,
                     provider=provider or "unknown", model_sha256=model_sha256,
+                    execution_receipt=execution.packet if execution is not None else None,
                 )
             except ClaimNotEligibleError as e:
                 raise HTTPException(status_code=409, detail=str(e)) from e
@@ -137,6 +141,9 @@ async def complete(
                     tags=payload.tags, error=payload.error, source=payload.source,
                     reap_scope=payload.reap_scope, host=payload.host, release_id=payload.release_id,
                     veto_gates=payload.veto_gates, generation=payload.generation,
+                    worker_id=payload.worker_id, execution_receipt_sha256=payload.execution_receipt_sha256,
+                    **({"executed_content_heads": payload.executed_content_heads}
+                       if payload.executed_content_heads else {}),
                     commit=False,
                 ),
                 function, route="complete", started=started,
@@ -146,6 +153,8 @@ async def complete(
                 status_code=503,
                 detail="tagging functions are being replaced; retry the completion",
             ) from e
+        except ReceiptRefused as e:
+            raise KuraError(409, str(e), fix="restart the worker and report its execution receipt before completing") from None
         except PostGone as e:
             raise KuraError(
                 404, "tagging_post_gone", context={"post_id": e.post_id},

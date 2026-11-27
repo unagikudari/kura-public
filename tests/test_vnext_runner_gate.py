@@ -51,6 +51,8 @@ from tagger.vnext_state import (  # noqa: E402
 
 def test_literal_marker_excluded_in_any_category():
     assert "tagger-exclude" in NON_TRAINABLE_TAGS
+    # owner 2026-11-25: provenance, not an image feature -- never learned or human-reviewed
+    assert is_non_trainable("source_unknown", "general")
     for cat in (None, "general", "meta"):
         assert is_non_trainable("tagger-exclude", cat)
 
@@ -463,7 +465,7 @@ def test_noop_outcomes_do_not_consume_the_per_tick_limit():
     stage が動いた (moved) は数えない。
     """
     src = (REPO / "tagger" / "learn.py").read_text()
-    body = src[src.index("async def run_pass("):]
+    body = src[src.index("async def measurement_pass("):]  # the queue is walked there
     counted = body[body.index("if result in ("):].split(")")[0]
     assert '"busy"' not in counted and '"moved"' not in counted, "空振りは枠を使わない"
     assert '"registered"' in counted

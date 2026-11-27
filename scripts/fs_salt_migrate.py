@@ -291,7 +291,8 @@ def fire_canary(ingress: str, timeout: float = 10.0) -> dict:
     """One legacy-named GET through the production ingress. 404 is the expected answer."""
     import urllib.error
     import urllib.request
-    ua = f"{_CANARY_UA}{int(time.time())}"
+    import secrets
+    ua = f"{_CANARY_UA}{secrets.token_hex(16)}"
     path = f"/data/{POSTS_DIR}/{_CANARY_POST_ID}_{get_legacy_hash(_CANARY_POST_ID)}.jpg"
     url = ingress.rstrip("/") + path
     status, err = None, None
@@ -337,6 +338,7 @@ def tally(access_log: str, days: int, origin: str, phase_b_started: dt.date | No
     future_dated = 0
     canary_seen = False
     canary_ua = (canary or {}).get("ua")
+    canary_path = f"/data/{POSTS_DIR}/{_CANARY_POST_ID}_{get_legacy_hash(_CANARY_POST_ID)}.jpg"
     for f in files_read:
         for line in _open_log(f):
             m = _LOG.match(line)
@@ -347,7 +349,10 @@ def tally(access_log: str, days: int, origin: str, phase_b_started: dt.date | No
                 day = dt.datetime.strptime(m.group("ts").split()[0], "%d/%b/%Y:%H:%M:%S").date()
             except ValueError:
                 continue
-            if canary_ua and canary_ua in ua:
+            own_canary = bool(canary_ua and ua == canary_ua
+                              and m.group("path") == canary_path
+                              and m.group("method") == "GET" and day == now)
+            if own_canary:
                 canary_seen = True
             if day > now:
                 # A line dated after "now" means the log's clock and ours disagree
@@ -358,8 +363,8 @@ def tally(access_log: str, days: int, origin: str, phase_b_started: dt.date | No
                 continue
             log_first = day if log_first is None else min(log_first, day)
             log_last = day if log_last is None else max(log_last, day)
-            if ua.startswith(_CANARY_UA):
-                continue                     # never count our own probes as demand
+            if own_canary:
+                continue                     # only this run's exact probe is not demand
             fm = _FILENAME.match(pathlib.PurePosixPath(m.group("path").split("?", 1)[0]).name)
             if not fm:
                 continue

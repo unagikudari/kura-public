@@ -93,7 +93,7 @@ async def tagger_releases(limit: int = 10) -> str:
 @mcp.tool()
 async def kura_whats_happening() -> str:
     """kura全体の「今何が起きているか」を一望できるサマリを返す(タガーライフ
-    サイクル + フリート状態 + 検証待ちpool + head candidate + queue状況)を
+    サイクル + フリート状態 + head candidate + queue状況)を
     1回の呼び出しで要約する — 複数ツールを個別に叩かなくて済むエントリポイント。
     """
     lifecycle_issues = await _fetch_all(
@@ -103,9 +103,6 @@ async def kura_whats_happening() -> str:
     fleet = await _fetch_all(
         "SELECT host, liveness, degraded_reason FROM tagger_fleet "
         "WHERE liveness != 'active' OR degraded_reason IS NOT NULL"
-    )
-    pending_pools = await _fetch_all(
-        "SELECT count(*) AS n FROM pool WHERE verify_status = 'pending'"
     )
     open_candidates = await _fetch_all(
         "SELECT tag, reason, added_at FROM tagger_head_candidate "
@@ -119,7 +116,7 @@ async def kura_whats_happening() -> str:
     return _dumps({
         "lifecycle_consistency_issues": lifecycle_issues,
         "fleet_attention_needed": fleet,
-        "pending_verify_pools": pending_pools[0]["n"] if pending_pools else 0,
+        "verification_pool_workflow": "retired",
         "open_head_candidates": open_candidates,
         "tagging_queue": queue,
         "reconciler": reconciler[0] if reconciler else None,

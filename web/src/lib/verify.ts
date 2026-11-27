@@ -7,6 +7,7 @@
 //   グリッド bulk (routes/+page.svelte) と同じ「クリック=選択、適用で PATCH」。
 import { writable, type Writable } from 'svelte/store';
 import type { Post } from '#lib/types.ts';
+import { BULK_TAG_HISTORY_KEEP, pushTagHistory } from '#lib/tagHistory.ts';
 
 const hasLS = typeof localStorage !== 'undefined';
 
@@ -57,6 +58,30 @@ export const verifyFocusTags: Writable<string[]> = (() => {
   if (hasLS) st.subscribe((v) => localStorage.setItem('kura_focus_tags', JSON.stringify(v)));
   return st;
 })();
+
+/** 一括編集で最近使った target タグ (新しい順、BULK_TAG_HISTORY_KEEP 件保存し、
+ *  バーは今の target とフォーカス中を除いた BULK_TAG_HISTORY_MAX 件を出す)。
+ *  verifyTarget に入ったタグを自動で積むので、グリッドとマンガビューアで共有される
+ *  (owner 2026-11-24「開閉しただけで全部最初からなのはつらい。履歴として 5 つぐらい」)。 */
+
+export const bulkTagHistory: Writable<string[]> = (() => {
+  let init: string[] = [];
+  if (hasLS) {
+    try {
+      const parsed = JSON.parse(localStorage.getItem('kura_bulk_tag_history') ?? '[]');
+      if (Array.isArray(parsed)) {
+        init = parsed.filter((t) => typeof t === 'string' && t.trim()).slice(0, BULK_TAG_HISTORY_KEEP);
+      }
+    } catch { /* 壊れた値は空扱い */ }
+  }
+  const st = writable(init);
+  if (hasLS) st.subscribe((v) => localStorage.setItem('kura_bulk_tag_history', JSON.stringify(v)));
+  return st;
+})();
+
+verifyTarget.subscribe((name) => {
+  if (name.trim()) bulkTagHistory.update((h) => pushTagHistory(h, name, BULK_TAG_HISTORY_KEEP));
+});
 
 /** name が post に付いているか (エイリアス名でも判定) */
 export function postHasTag(post: Post, name: string): boolean {

@@ -16,8 +16,12 @@ npm --prefix web run build
 python3 web/scripts/web-release.py --source "$PWD" --origin https://<canonical-host>:8443
 ```
 
-Node must be on PATH or supplied with `--node /absolute/path/to/node`. Existing
-private `web/.env.server` is read by systemd, never copied into the bundle or
+Node must be on PATH or supplied with `--node /absolute/path/to/node`. The
+deployment checks require the October 2026 security baseline: Node 22.23.4,
+24.22.1 or 26.12.1 and later patches in those release lines. Other release lines
+and prereleases are rejected until their baseline is reviewed. The selected
+executable is checked before preparing a release and again before activation.
+Existing private `web/.env.server` is read by systemd, never copied into the bundle or
 passed as argv. Per-release env files hold only ports, runtime paths and origin.
 Only the selected active unit remains enabled for reboot. The previous process
 is not stopped during switching; when reusing its slot the controller refuses

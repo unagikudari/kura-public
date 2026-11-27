@@ -1,0 +1,85 @@
+{
+  "reviewer": "担当Codex・自己評価",
+  "reviewer_kind": "author",
+  "reviewed_revision": "1f058d0f3276ad8623003358ba52d288720006a1",
+  "observed_api_revision": "db4f1e8b2427401e1c3341be307ca85d89fbd91c",
+  "method": "本番1440px/390px画像・本文と実装を確認。作者の自己評価であり独立レビューではない。",
+  "evaluated_at": "2026-11-16",
+  "criteria": [
+    {
+      "id": "situation",
+      "verdict": "fail",
+      "assessment": "fail",
+      "evidence": "分類件数が主役で、注目タグの問題と進展が埋もれる。",
+      "nextfix": "タグの自動付与可否と確認時刻を初期画面に出す。smegmaの遮断を画面だけで答えられるか確認する。"
+    },
+    {
+      "id": "consistency",
+      "verdict": "unverified",
+      "assessment": "partial",
+      "evidence": "部分的：異なる観測範囲を注記で説明するだけで統合できていない。",
+      "nextfix": "概要とタグ表に共通スナップショット時刻を表示し、操作が必要か任意かを分ける。"
+    },
+    {
+      "id": "duplication",
+      "verdict": "unverified",
+      "assessment": "partial",
+      "evidence": "部分的：説明は一部整理されたが、定型文と別枠の実験が重複。",
+      "nextfix": "全行共通の説明・リンクを圧縮し、各タグ固有の差を先に表示する。"
+    },
+    {
+      "id": "completeness",
+      "verdict": "fail",
+      "assessment": "fail",
+      "evidence": "訂正から評価・反映までの対応関係が欠落。",
+      "nextfix": "停止理由・解除条件・実行ジョブ・訂正を取り込んだ標本を結ぶ。欠落は推測で埋めない。"
+    },
+    {
+      "id": "brevity",
+      "verdict": "fail",
+      "assessment": "fail",
+      "evidence": "最初の画面にカードと説明が多く、具体的な仕事が下へ追いやられる。",
+      "nextfix": "最初の画面を人の判断・進行中の仕事・本番の安全状態にし、分類カードを下げる。"
+    },
+    {
+      "id": "actionability",
+      "verdict": "fail",
+      "assessment": "fail",
+      "evidence": "訂正一般への誘導で、どの画像がどの不足を解決するか分からない。",
+      "nextfix": "人の判断が必要な画像群に直接進める。再試験は既存の品質条件を維持し二重投入を防ぐ。"
+    },
+    {
+      "id": "exploration",
+      "verdict": "unverified",
+      "assessment": "partial",
+      "evidence": "部分的：操作部品はあるが、実際の目的達成は未確認。",
+      "nextfix": "必要な判断・進行中・停止中・最近の変化で絞り込み、実測値で比較できるようにする。"
+    },
+    {
+      "id": "graphics",
+      "verdict": "fail",
+      "assessment": "fail",
+      "evidence": "件数の割合が主で、改善や処理の前進を示していない。",
+      "nextfix": "タグごとの実工程図と、同じ評価画像での旧新headのFP/FN比較を表示する。"
+    },
+    {
+      "id": "freshness",
+      "verdict": "unverified",
+      "assessment": "partial",
+      "evidence": "部分的：完了した実験結果と実行中プロセスの鮮度を混同する。",
+      "nextfix": "処理の最終前進時刻と生存確認を分ける。完了記録を心拍切れだけで不明に戻さない。"
+    },
+    {
+      "id": "accessibility",
+      "verdict": "unverified",
+      "assessment": "unverified",
+      "evidence": "実際のユーザーによる目的達成や読み上げは未検証。",
+      "nextfix": "クリック・キーボード操作と初見のタスク達成を実測する。スクリーンショットだけで合格にしない。"
+    }
+  ],
+  "limitations": [
+    "初見利用者のタスク達成を実測した評価ではない。",
+    "モデルの品質や本番適用を承認するものではない。"
+  ],
+  "supersedes": "2026-11-15の全項目合格は撤回。原文はhistory/20261115-withdrawnに保存。"
+}

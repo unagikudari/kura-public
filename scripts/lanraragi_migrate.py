@@ -67,7 +67,7 @@ class Lanraragi:
         return h
 
     def archives(self) -> list[dict]:
-        url = f"{self.url}/api/archives"
+        url = f"{self.url}/api/archives"  # refguard:ignore — external LANraragi API, not a Kura route
         with urllib.request.urlopen(urllib.request.Request(url, headers=self._headers(url)), timeout=120) as r:
             data = json.loads(r.read())
         if not isinstance(data, list):
@@ -76,7 +76,7 @@ class Lanraragi:
                       key=lambda a: natural_key(a.get("title") or a["arcid"]))
 
     def download(self, arcid: str, dest: Path) -> None:
-        url = f"{self.url}/api/archives/{urllib.parse.quote(arcid)}/download"
+        url = f"{self.url}/api/archives/{urllib.parse.quote(arcid)}/download"  # refguard:ignore — external LANraragi API
         req = urllib.request.Request(url, headers=self._headers(url))
         with urllib.request.urlopen(req, timeout=600) as r, open(dest, "wb") as f:
             declared = r.headers.get("content-length")

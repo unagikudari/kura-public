@@ -100,3 +100,18 @@ def load(query: Query, post_ids: Iterable[int], *, workers: int = 8) -> list[tup
                     if data is not None:
                         got[pid] = data
     return [(pid, got[pid]) for pid in want if pid in got]
+
+
+def identities(query: Query, post_ids: Iterable[int]) -> list[tuple]:
+    """Snapshot the identity of the bytes load() will use, not original sha256.
+
+    A moved rendition is available even when post.data is NULL. Its address
+    alone does not prove a file exists: extraction must hash the actual bytes
+    against this identity and refuse missing/changed input rather than drop GT.
+    """
+    return list(query("""SELECT p.id, p.type, p.status,
+        encode(CASE WHEN p.data IS NOT NULL THEN sha256(p.data)
+                    ELSE r.sha256 END, 'hex')
+        FROM post p LEFT JOIN post_rendition r
+          ON r.post_id=p.id AND r.kind='view'
+        WHERE p.id=ANY(%s)""", (list(dict.fromkeys(post_ids)),)))

@@ -99,6 +99,7 @@ def main() -> int:
               f"kura DB writes happen on the canonical node only (INV-R1). Run this on {APPLY_HOST}.", file=sys.stderr)
         return 2
 
+    import psycopg2.errors
     from tagger.kura_db import connect_canonical   # KURA_CANONICAL_DSN, default primary
     conn = connect_canonical()
     conn.autocommit = True

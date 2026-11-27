@@ -31,7 +31,7 @@ sys.path.insert(0, str(REPO))
 
 import pytest  # noqa: E402
 
-from api.tagger_core import artifact_kind  # noqa: E402
+from api.tagger_core import artifact_kind, registration_review  # noqa: E402
 
 from tagger import auto_review
 
@@ -69,7 +69,7 @@ class _FakeDB:
 
     async def execute(self, stmt, params=None):
         sql = str(stmt)
-        if "SELECT id, tag, metrics" in sql:
+        if "FROM tagger_registration_request" in sql and "SELECT" in sql:
             return _Result(self._rows)
         self.transitions.append((sql, params))
         return _Result([])
@@ -88,8 +88,8 @@ def _run(rows, monkeypatch):
         called.append(metrics)
 
     monkeypatch.setattr(auto_review, "load_config", _load_config)
-    monkeypatch.setattr(auto_review, "validate_registration_metrics_floor", _floor)
-    db = _FakeDB(rows)
+    monkeypatch.setattr(registration_review, "validate_registration_metrics_floor", _floor)
+    db = _FakeDB([{"artifact_sha256": None, "gt": None, **row} for row in rows])
     out = asyncio.run(auto_review.review_pending(db))
     return out, db, called
 
@@ -243,7 +243,7 @@ def _promote(rows, monkeypatch, tmp_path, floor=None, *, db_class=None, patch_re
         return None
 
     monkeypatch.setattr(auto_review, "load_config", _load_config)
-    monkeypatch.setattr(auto_review, "validate_registration_metrics_floor",
+    monkeypatch.setattr(registration_review, "validate_registration_metrics_floor",
                         floor or (lambda m, c: called.append(m)))
     monkeypatch.setattr(auto_review, "_latest_stage", _stage)
     monkeypatch.setattr(auto_review, "acquire_lease", acquire or _acquire)
@@ -333,7 +333,7 @@ def test_review_and_promote_ask_the_same_question():
     """**手続きは 1 つ**。2 箇所に書くと片方だけが新形式を知る状態が作れる。"""
     src = (REPO / "tagger" / "auto_review.py").read_text()
     body = src[src.index("async def promote_validated("):]
-    assert "decide(" in body, "promote が共有の判定手続きを使っていない"
+    assert "await _review_current_registration(" in body, "promote が共有の判定手続きを使っていない"
     assert "validate_registration_metrics_floor" not in body, \
         "promote が旧 gate を直接呼んでいる"
 
@@ -381,7 +381,7 @@ def test_a_failed_commit_does_not_undo_the_promotion(monkeypatch, tmp_path):
     async def _load_config(db):
         return {}
     monkeypatch.setattr(auto_review, "load_config", _load_config)
-    monkeypatch.setattr(auto_review, "validate_registration_metrics_floor",
+    monkeypatch.setattr(registration_review, "validate_registration_metrics_floor",
                         lambda m, c: called.append(m))
     async def _stage(db, tag):
         return "training"
@@ -459,3 +459,23 @@ def test_a_lifecycle_conflict_leaves_the_registration_for_the_next_pass(monkeypa
     promoted, db, _ = _promote([DEPLOYABLE_ROW], monkeypatch, tmp_path, acquire=_busy)
     assert promoted == []
     assert not any("tagger_governed_promote_registration" in q for q, _p in db.transitions)
+
+
+def test_pending_review_refuses_measurement_when_human_labels_changed(monkeypatch):
+    from tagger.label_identity import label_identity
+
+    frozen = [(1, "positive", "human_correction")]
+    corrected = [(1, "negative", "human_correction")]
+
+    async def read_labels(db, tag):
+        assert tag == "fixture"
+        return corrected
+
+    monkeypatch.setattr(registration_review, "read_label_rows", read_labels)
+    out, db, floor_calls = _run([{
+        "id": 1, "tag": "fixture", "metrics": {"disposition": "deployable"},
+        "gt": {"label_sha256": label_identity(frozen)},
+    }], monkeypatch)
+    assert out["not_needed"] == [("fixture", "stale_training_labels")]
+    assert db.transitions[0][1]["reason"] == "stale_training_labels"
+    assert not floor_calls

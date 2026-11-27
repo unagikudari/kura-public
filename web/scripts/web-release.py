@@ -1,17 +1,40 @@
 #!/usr/bin/env python3
 """Prepare an immutable web release, warm it, then switch only Kura's ingress: its Serve routes,
 or the upstream of a user-run nginx edge (HTTP/2 + HTTP/3) when the origin is not on Serve."""
-import argparse,fcntl,hashlib,json,os,re,shutil,subprocess,tempfile,time,urllib.error,urllib.request
+import argparse,fcntl,hashlib,json,os,re,shutil,stat,subprocess,tempfile,time,urllib.error,urllib.request
 from pathlib import Path
 from urllib.parse import urlsplit
 PORTS=(3002,3003)
 PATHS=('/', '/api', '/data/')
+EXTENSION_PAGES={
+    'lora': '/lora',
+}
 EDGE=Path.home()/'.local/share/kura-edge'
 UPSTREAM=re.compile(r'upstream kura_web \{ server 127\.0\.0\.1:(\d+); \}\n')
 class NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self,*a,**k):return None
 HTTP=urllib.request.build_opener(NoRedirect)
 def command(*args):return subprocess.check_output(args,text=True,stderr=subprocess.PIPE)
+def validate_node(node):
+    """Reject runtimes predating the October 2026 Node security releases."""
+    node=Path(node)
+    if not node.is_absolute() or not node.is_file():raise ValueError('Absolute Node runtime required')
+    version=subprocess.check_output([str(node),'--version'],text=True,stderr=subprocess.PIPE,timeout=10).strip()
+    match=re.fullmatch(r'v(\d+)\.(\d+)\.(\d+)',version)
+    minimum={22:(22,23,4),24:(24,22,1),26:(26,12,1)}
+    parsed=tuple(map(int,match.groups())) if match else ()
+    if not parsed or parsed[0] not in minimum or parsed<minimum[parsed[0]]:
+        raise ValueError(f'Unsupported or insecure Node runtime: {version}; require 22.23.4+, 24.22.1+, or 26.12.1+ in those release lines')
+    return version
+def validate_probe_env(source):
+    """Check metadata only; the authenticated probe still verifies the credentials."""
+    path=source/'web/.env.server'
+    try:info=path.lstat()
+    except OSError:
+        raise ValueError('Private probe environment file is missing or inaccessible') from None
+    if (not stat.S_ISREG(info.st_mode) or info.st_uid!=os.getuid()
+            or stat.S_IMODE(info.st_mode)!=0o600 or not 0<info.st_size<=65536):
+        raise ValueError('Private probe environment must be an owned regular 0600 file of 1–65536 bytes, not a symlink')
 def read(path):return json.loads(path.read_text())
 def atomic(path,value):
     path.parent.mkdir(mode=0o700,parents=True,exist_ok=True)
@@ -25,6 +48,23 @@ def response(url):
     try:r=HTTP.open(url,timeout=5)
     except urllib.error.HTTPError as e:r=e
     with r:return r.status,r.read(1024*1024)
+
+def verify_extension_pages(web_origin):
+    status, body = response('http://127.0.0.1:8001/api/info')
+    if status != 200:
+        raise ValueError('Cannot determine installed Kura extensions')
+    extensions = json.loads(body).get('extensions')
+    if not isinstance(extensions, dict):
+        raise ValueError('Invalid installed Kura extension inventory')
+    missing = [
+        path for name, path in EXTENSION_PAGES.items()
+        if name in extensions and response(web_origin + path)[0] != 303
+    ]
+    if missing:
+        raise ValueError(
+            'Web release is missing installed extension routes: '
+            + ', '.join(missing) + '. Compose the pinned extensions and rebuild.'
+        )
 def routes(config,origin):
     host=urlsplit(origin).netloc
     handlers=config.get('Web',{}).get(host,{}).get('Handlers',{})
@@ -113,6 +153,7 @@ def switch(origin,port,probe,edge=EDGE):
     return before
 
 def prepare(source,root,node):
+    validate_node(node)
     build=source/'web/build';version=read(build/'client/_app/version.json')['version']
     if not re.fullmatch('[A-Za-z0-9_.-]{1,80}',version):raise ValueError('Invalid build version')
     commit=command('git','-C',str(source),'rev-parse','--short=12','HEAD').strip()
@@ -173,6 +214,7 @@ def live_probe(origin,version):
     if response(origin+'/')[0]!=303 or response(origin+'/api/posts?limit=1')[0]!=401 or response(origin+'/data/nonexistent.jpg')[0]!=401:raise ValueError('Private ingress check failed')
     if json.loads(response(origin+'/_app/version.json')[1])['version']!=version:raise ValueError('Public version differs')
 def activate(source,root,release,manifest,origin,edge=EDGE):
+    validate_node(manifest['node'])
     state=root/'active.json';old=read(state) if state.exists() else None
     active_port=current_port(origin,edge)
     if old and old['port']!=active_port:raise ValueError('Receipt and ingress differ')
@@ -195,6 +237,7 @@ def activate(source,root,release,manifest,origin,edge=EDGE):
     command('systemctl','--user','start',unit)
     warm(port,manifest['build_version'])
     authenticated_probe(port,source,manifest['node'])
+    verify_extension_pages(f'http://127.0.0.1:{port}')
     command('systemctl','--user','enable',unit)
     before=switch(origin,port,lambda base:live_probe(base,manifest['build_version']),edge)
     receipt={'format':'kura-web-release-v1','port':port,'release':str(release),'unit':unit,'commit':manifest['commit'],
@@ -209,7 +252,7 @@ def activate(source,root,release,manifest,origin,edge=EDGE):
     if old:command('systemctl','--user','disable',old['unit']) # keep in-flight requests alive
     print(json.dumps({k:receipt[k] for k in ('port','unit','commit','build_version')}))
 def built_origin(source):
-    """SvelteKit 3 (adapter-node 6) fixes the origin at build time; ORIGIN at start is ignored."""
+    """The origin is fixed at build time (paths.origin); adapter-node 6.0.2+ ignores ORIGIN at start when the build has one (it logs so)."""
     for line in (source/'web/build/adapter-node.js').read_text().splitlines():
         if line.startswith('export const origin = '):
             value=line.split('=',1)[1].strip().rstrip(';')
@@ -220,11 +263,12 @@ def main():
     p.add_argument('--root',type=Path,default=Path.home()/'.local/share/kura-web');p.add_argument('--edge',type=Path,default=EDGE)
     p.add_argument('--node',type=Path,default=Path(shutil.which('node') or ''))
     a=p.parse_args()
-    if not a.node.is_file() or not a.node.is_absolute():raise ValueError('Absolute Node runtime required')
+    validate_node(a.node)
     origin=urlsplit(a.origin)
     if origin.scheme!='https' or not origin.hostname or origin.path or origin.username:raise ValueError('HTTPS origin required')
     if built_origin(a.source)!=a.origin.rstrip('/'):
         raise ValueError(f'the build is for origin {built_origin(a.source)!r}, not {a.origin!r}: run ORIGIN={a.origin.rstrip("/")} npm run build')
+    validate_probe_env(a.source)
     a.root.mkdir(mode=0o700,parents=True,exist_ok=True)
     with (a.root/'deploy.lock').open('a') as lock:
         fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)

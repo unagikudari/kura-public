@@ -152,3 +152,21 @@ def migrate_legacy(old: dict, *, machine_applied: bool, actor_for_human: str) ->
         actor = actor_for_human
     return make_row(concept=old["c"], post_id=int(old["pid"]), label=label,
                     source=source, actor=actor, at=old.get("t", ""), pool=old.get("pool"))
+
+
+def is_proven(row: object) -> bool:
+    """Require a referenced canonical event for heads training."""
+    if not isinstance(row, dict) or row.get("schema") != 3:
+        return False
+    if row.get("source") not in ("human_review_event", "human_tag_audit"):
+        return False
+    if row.get("label") not in LABELS:
+        return False
+    if any(type(row.get(key)) is not int or row[key] <= 0 for key in ("post_id", "evidence_id")):
+        return False
+    if any(not isinstance(row.get(key), str) or not row[key].strip() for key in ("concept", "actor", "at")):
+        return False
+    actor_id = row.get("actor_id")
+    if row["source"] == "human_review_event":
+        return type(actor_id) is int and actor_id > 0
+    return isinstance(actor_id, str) and bool(actor_id.strip())

@@ -21,7 +21,7 @@ def exercise(context,base,width,evidence):
    if path=='imports':value={'items':[summary(key) for key in reversed(plans)],'next_cursor':None}
    elif path.startswith('imports/'):
     key=path.split('/')[1];value={'items':items[key],'next_cursor':None} if path.endswith('/items') else summary(key)
-   else:value={'safe_mode':False} if path=='status' else [] if path=='collections' else {'items':[],'next_cursor':None}
+   else:value={'safe_mode':False} if path=='status' else {'items':[],'next_cursor':None} if path=='collections' else {'items':[],'next_cursor':None}
    return req.fulfill(json=value)
   if path=='imports':
    plan=req.request.post_data_json;key=plan['request_key'];plans[key]=plan

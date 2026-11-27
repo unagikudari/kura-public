@@ -8,6 +8,7 @@ No production API, database, or media directory is used.
 import asyncio
 from contextlib import asynccontextmanager
 import hashlib
+import importlib
 import io
 import json
 import os
@@ -94,17 +95,26 @@ def harness(monkeypatch, tmp_path, database_url):
         sa.Index("test_unique_sha256", metadata.tables["post"].c.sha256, unique=True,
                  postgresql_where=metadata.tables["post"].c.status == "ok")
         async with engine.begin() as conn:
+            await conn.execute(sa.text("DROP TABLE IF EXISTS post_rendition, rendition_object"))
+            await conn.execute(sa.text("DROP FUNCTION IF EXISTS post_rendition_follow_legacy() CASCADE"))
+            await conn.execute(sa.text("DROP FUNCTION IF EXISTS post_video_view_follow_original() CASCADE"))
             await conn.run_sync(metadata.drop_all)
             await conn.run_sync(metadata.create_all)
             await conn.execute(sa.text("CREATE TABLE IF NOT EXISTS test_pool_membership (name text, post_id int, PRIMARY KEY(name, post_id))"))
             await conn.execute(sa.text("TRUNCATE test_pool_membership"))
             await conn.execute(sa.text("CREATE TABLE IF NOT EXISTS test_tag_membership (post_id int, tag text, PRIMARY KEY(post_id, tag))"))
             await conn.execute(sa.text("TRUNCATE test_tag_membership"))
-            await conn.execute(sa.text("DROP TABLE IF EXISTS post_rendition, rendition_object"))
-            await conn.execute(sa.text("CREATE TABLE rendition_object (sha256 bytea PRIMARY KEY, mime text, "
-                                       "byte_size bigint, width int, height int)"))
-            await conn.execute(sa.text("CREATE TABLE post_rendition (post_id int, kind text, sha256 bytea, "
-                                       "recipe text, attached_at timestamptz DEFAULT now(), PRIMARY KEY(post_id, kind))"))
+            def install_rendition_schema(sync_conn):
+                from alembic.migration import MigrationContext
+                from alembic.operations import Operations
+                operations = Operations(MigrationContext.configure(sync_conn))
+                for name in ('0177_rendition_store', '0188_video_view_renditions',
+                             '0189_video_only_view_invalidation'):
+                    migration = importlib.import_module('api.alembic.versions.' + name)
+                    with monkeypatch.context() as patch:
+                        patch.setattr(migration, 'op', operations)
+                        migration.upgrade()
+            await conn.run_sync(install_rendition_schema)
         sessions = async_sessionmaker(engine, expire_on_commit=False)
 
         async def send(data, tag="a", pool="pool-a", **kwargs):
@@ -441,4 +451,47 @@ def test_a_commit_with_an_unknown_outcome_keeps_the_original(harness):
                     await U.store(db, png("red"), filename="a.png", tags="a")
             [post] = await h.rows()
             assert h.names("content", post.post_id, "image/png")[0].read_bytes() == png("red")
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('format', ['PNG', 'JPEG'])
+def test_ingest_keeps_committed_image_view_after_identity_is_filled(harness, format):
+    """Run actual upload/materialization/commit with 0177->0188->0189 SQL triggers."""
+    data = io.BytesIO()
+    Image.new('RGB', (16, 12), 'purple').save(data, format)
+    async def scenario():
+        async with harness() as h:
+            result = await h.send(data.getvalue())
+            async with h.sessions() as db:
+                row = (await db.execute(sa.text('''SELECT p.sha256,p."mime-type",o.sha256,o.mime
+                    FROM post p JOIN post_rendition r ON r.post_id=p.id AND r.kind='view'
+                    JOIN rendition_object o ON o.sha256=r.sha256 WHERE p.id=:id'''),
+                    {'id': result['id']})).one()
+                assert bytes(row[0]) == hashlib.sha256(data.getvalue()).digest()
+                assert row[1] == row[3] == 'image/webp'
+                path = U.renditions.path_for(bytes(row[2]), row[3])
+                with Image.open(path) as im:
+                    assert im.format == 'WEBP' and im.size == (16, 12)
+    asyncio.run(scenario())
+
+
+def test_legacy_duplicate_identity_backfill_preserves_existing_view(harness):
+    async def scenario():
+        async with harness() as h:
+            data = png('orange')
+            first = await h.send(data)
+            query = sa.text("SELECT sha256 FROM post_rendition WHERE post_id=:id AND kind='view'")
+            async with h.sessions() as db:
+                await db.execute(sa.update(Post).where(Post.post_id == first['id']).values(sha256=None))
+                # Construct the legacy state independently of new-ingest behavior:
+                # retained original, unknown SHA, and an already attached image view.
+                await U.renditions.attach_bytes(db, first['id'],
+                    {'view': U.materialize_image_bytes(data)['data']}, U.renditions.LEGACY_RECIPE)
+                await db.commit()
+                original_view = bytes((await db.execute(query, {'id': first['id']})).scalar_one())
+            again = await h.send(data)
+            assert again['id'] == first['id'] and again['duplicate']
+            async with h.sessions() as db:
+                assert bytes((await db.execute(query, {'id': first['id']})).scalar_one()) == original_view
+                assert (await db.execute(sa.select(Post.sha256).where(Post.post_id == first['id']))).scalar_one() == hashlib.sha256(data).digest()
     asyncio.run(scenario())

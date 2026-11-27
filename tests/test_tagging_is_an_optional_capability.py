@@ -31,8 +31,14 @@ class NoTagger(importlib.abc.MetaPathFinder):
         return None
 sys.meta_path.insert(0, NoTagger())
 from api.main import app
-paths = sorted(app.openapi()["paths"])
-print(json.dumps(paths))
+from starlette.routing import Match
+
+paths = set(app.openapi()["paths"])
+for path in ("/api/tagger-dashboard", "/api/tagger-dashboard/summary"):
+    scope = {"type": "http", "method": "GET", "path": path, "root_path": ""}
+    if any(route.matches(scope)[0] is Match.FULL for route in app.routes):
+        paths.add(path)
+print(json.dumps(sorted(paths)))
 """
 
 
@@ -65,14 +71,18 @@ def test_the_core_boots_without_the_tagger_package_and_without_tagging():
 def test_enabled_mounts_the_tagging_surfaces_still_without_importing_the_tagger():
     routes = _routes(None)
     assert any(p.startswith("/api/internal/tagging") for p in routes)
-    assert any(p.startswith("/api/tagger") for p in routes)
+    assert "/api/tagger-dashboard" in routes
+    assert "/api/tagger-dashboard/summary" in routes
 
 
 def test_the_old_tagger_paths_are_the_same_modules():
     """Codex 1.266.0 (non-blocking): the compatibility aliases share state with the new home."""
     import importlib
 
-    for name in ("artifact_kind", "artifact_store", "transitions", "config", "gt_sync"):
+    for name in ("artifact_kind", "artifact_store", "transitions", "config", "gt_sync",
+                 "execution_receipt", "experiment_status", "exclusive_training", "review_refill",
+                 "canonical_evaluation", "human_evaluation_action", "stratified_evaluation",
+                 "label_identity"):
         old = importlib.import_module(f"tagger.{name}")
         new = importlib.import_module(f"api.tagger_core.{name}")
         assert old is new, name
@@ -91,3 +101,12 @@ def test_gt_sync_keeps_its_by_path_entry_point():
     assert module._impl is moved
     entry = (REPO / "tagger" / "gt_sync.py").read_text()
     assert 'if __name__ == "__main__":\n    sys.exit(_impl.main())' in entry
+
+
+
+def test_core_boot_policy_has_no_inference_dependency():
+    from scripts.capability_provider_manifest import DEFAULT_POLICY, scan
+
+    checked = scan(json.loads(DEFAULT_POLICY.read_text()))
+    scope = {"core_requires_inference_runtime", "no_disabled_configuration", "core_imports_capability"}
+    assert not [finding for finding in checked["findings"] if finding["kind"] in scope]

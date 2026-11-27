@@ -268,7 +268,8 @@ def test_tally_decides_phase_c_from_first_party_requests_or_the_bounded_fallback
     instrumented = today - dt.timedelta(days=60)
     span = "".join(f'1.2.3.4 - - [{(today - dt.timedelta(days=i)).strftime("%d/%b/%Y")}:09:00:00 +0900]'
                    f' "GET / HTTP/1.1" 200 5 "-" "Mozilla/5.0"\n' for i in range(7))
-    seen = line(today, canary["ua"], "-")
+    seen = line(today, canary["ua"], "-").replace(f'/data/posts/10_{legacy}.png',
+           f'/data/posts/0_{hashing._hash_with("old", 0)}.jpg')
     log = tmp_path / "access.log"
     log.write_text(span + seen + line(today, "Mozilla/5.0 Googlebot", "-") + line(today - dt.timedelta(days=1), "Mozilla/5.0", "https://kura.example/post/10"))
     out = mig.tally(log, 7, "kura.example", None, 30, 10, now=today, canary=canary, instrumented_since=instrumented)

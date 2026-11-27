@@ -25,6 +25,7 @@ def post(i):
  return dict(id=i,version=1,creationTime=None,lastEditTime=None,safety='unsafe' if IDENTITY_TAGS and i==1000 else 'safe',source=None,taggingSource=None,taggingCompletedAt=None,taggingTagsWritten=None,originalFilename=f'synthetic-{i}',type='document' if IDENTITY_TAGS and i==1001 else 'image',mimeType='image/svg+xml',fileSize=100,canvasWidth=80,canvasHeight=80,contentUrl=f'/fixture/{i}.svg',thumbnailUrl=f'/fixture/{i}.svg',flags=[],tags=tags,user=None,score=0,ownFavorite=False,tagCount=0,favoriteCount=0,commentCount=0,noteCount=0,pools=[])
 def response(url):
  u=urlparse(url);p=u.path;q=parse_qs(u.query); query=q.get('query',[''])[0]
+ if p=='/api/tag-browser':return dict(categories=[dict(name='default',color='#aaccdd',default=True)],tagsByCat={'default':[dict(id=1,names=['fixture'],category='default',categoryColor='#aaccdd',usages=1)]})
  if p=='/api/tag-categories': return [{'name':'default','color':'#aaccdd','default':True}]
  if p=='/api/posts':
   offset=int(q.get('offset',['0'])[0]);limit=int(q.get('limit',['40'])[0]); total=1 if query=='new' else 160; base=(9000 if query=='new' else 1000)+(10000 if q.get('sort')==['updated'] else 0)
@@ -58,13 +59,15 @@ def run():
    try:urllib.request.urlopen(ORIGIN+'/login',timeout=1);break
    except Exception:time.sleep(.2)
   with sync_playwright() as p:
-   browser=p.chromium.launch(channel=os.environ.get('KURA_UI_BROWSER_CHANNEL') or None,args=['--no-sandbox','--disable-gpu','--disable-dev-shm-usage'])
+   browser=p.chromium.launch(executable_path=os.environ.get('CHROMIUM') or None,channel=os.environ.get('KURA_UI_BROWSER_CHANNEL') or None,args=['--no-sandbox','--disable-gpu','--disable-dev-shm-usage'])
    ctx=browser.new_context(viewport={'width':1400,'height':1000})
    enc=lambda b:base64.urlsafe_b64encode(b).rstrip(b'=').decode()
    payload=enc(json.dumps({'u':'synthetic','t':'synthetic','e':'','exp':int(time.time())+3600}).encode());sig=enc(hmac.new(SECRET.encode(),payload.encode(),hashlib.sha256).digest())
    ctx.add_cookies([dict(name='kura_session',value=payload+'.'+sig,url=ORIGIN)])
    def intercept(route):
     req=route.request;u=urlparse(req.url)
+    if req.method=='POST' and u.hostname=='127.0.0.1' and u.path=='/m/client-timing':
+     route.fulfill(status=204);return
     if req.method not in ('GET','HEAD'):
      violations.append(req.method+' '+u.path);route.abort();return
     if u.hostname!='127.0.0.1':violations.append('external '+u.hostname);route.abort();return
@@ -81,9 +84,16 @@ def run():
    ctx.route('**/*',intercept);page=ctx.new_page();page.set_default_timeout(7000);errors=[];page.on('pageerror',lambda e:errors.append(str(e)))
    def go(path):page.goto(ORIGIN+path,wait_until='domcontentloaded');page.wait_for_timeout(900)
    def test(name,fn):
+    nonlocal ctx,page
     if os.environ.get('KURA_MOBILE_CASES') and name not in os.environ['KURA_MOBILE_CASES'].split(','):return
+    ctx.close();pending.clear();mode.update(hold_old=False,hold_tags=False)
+    ctx=browser.new_context(viewport={'width':1400,'height':1000})
+    ctx.add_cookies([dict(name='kura_session',value=payload+'.'+sig,url=ORIGIN)])
+    ctx.route('**/*',intercept);page=ctx.new_page();page.set_default_timeout(7000);page.on('pageerror',lambda e:errors.append(str(e)))
     try:results[name]=fn()
-    except Exception as e:results[name]={'error':str(e)[:400]}
+    except Exception as e:
+     results[name]={'error':str(e)[:400]}
+     page.screenshot(path=f'/tmp/kura-mobile-failure-{name}.png')
    def mobile_tags():
     out=[]
     for width in (320,390):
@@ -119,6 +129,7 @@ def run():
     return dict(pass_=inc==['fixture'] and exc==['-fixture'],include_query=inc,exclude_query=exc)
    test('touch_include_exclude',tag_modes)
    def sidebar_stale():
+    go('/tags')
     mode['hold_tags']=True;inp=page.locator('input.tag-search');inp.fill('older');page.wait_for_timeout(400);held=len(pending);inp.fill('newer');page.wait_for_timeout(450)
     for r in pending[:]:r.fulfill(json=response(r.request.url),headers={'Access-Control-Allow-Origin':'*'});pending.remove(r)
     page.wait_for_timeout(100);after=page.locator('.side-scroll').inner_text()
@@ -128,6 +139,7 @@ def run():
     return dict(pass_=held>0 and held_clear>0 and 'newer-result' in after and 'older-result' not in after and 'older-result' not in cleared,held=held,held_clear=held_clear,after=after,cleared=cleared)
    test('sidebar_latest_query_and_clear',sidebar_stale)
    def suggestion_keyboard():
+    go('/tags')
     inp=page.locator('header input[type=search]');inp.fill('keyboard');page.wait_for_timeout(350);inp.press('Tab');page.wait_for_timeout(350);option=page.locator('.tsi-sug').first;focused=option.evaluate('(el)=>el===document.activeElement');option.press('Enter');page.wait_for_timeout(100)
     picked=focused and 'keyboard-result' in inp.input_value()
     inp.fill('leave');page.wait_for_timeout(350);inp.press('Tab');page.wait_for_timeout(300);page.keyboard.press('Tab');page.wait_for_timeout(300);closed=page.locator('.tsi-sug').count()==0
@@ -169,8 +181,8 @@ def run():
     page.set_viewport_size({'width':390,'height':320});go('/tags')
     page.evaluate("let a=document.createElement('a');a.href='/login';a.id='audit-login-link';a.textContent='audit login';document.body.append(a)");page.locator('#audit-login-link').click();page.wait_for_timeout(500)
     top=page.locator('.login-panel, .login-box').bounding_box()['y'];wrap=page.locator('.login-wrap');wrap.evaluate('(el)=>el.scrollTop=el.scrollHeight');page.wait_for_timeout(100)
-    link=page.locator('a[href*="account/reset"]').bounding_box()
-    return dict(pass_=top>=0 and link['y']>=0 and link['y']+link['height']<=320,panel_initial_top=top,reset_link_after_scroll=link)
+    link=page.locator('.recovery').bounding_box()
+    return dict(pass_=top>=0 and link['y']>=0 and link['y']+link['height']<=320,panel_initial_top=top,recovery_help_after_scroll=link)
    test('landscape_login_from_tags_scrollable',landscape_login)
 
    def identity_display_settings():

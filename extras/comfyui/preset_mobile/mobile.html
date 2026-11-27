@@ -1,0 +1,219 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>キャラ選択</title>
+<style>
+:root { --bg:#14161a; --panel:#1d2026; --line:#2e333c; --text:#e8eaee; --dim:#9aa3b2; --accent:#5aa9ff; --ok:#49c48a; --bad:#ff6b6b; }
+* { box-sizing:border-box; }
+html, body { margin:0; background:var(--bg); color:var(--text); font:16px/1.45 system-ui, -apple-system, "Hiragino Sans", "Noto Sans JP", sans-serif; }
+main { max-width:640px; margin:0 auto; padding:10px 12px 120px; }
+h1 { font-size:17px; margin:6px 0 10px; display:flex; align-items:center; gap:8px; }
+h1 small { color:var(--dim); font-weight:400; font-size:12px; }
+.tabs { display:flex; gap:6px; margin-bottom:10px; overflow-x:auto; }
+.tabs button { flex:1 0 auto; padding:9px 12px; border-radius:10px; border:1px solid var(--line); background:var(--panel); color:var(--dim); font-size:15px; }
+.tabs button.on { color:#fff; border-color:var(--accent); background:#20324a; }
+section { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:10px; margin-bottom:10px; }
+section > h2 { font-size:13px; color:var(--dim); margin:0 0 8px; font-weight:600; }
+label.f { display:block; margin-bottom:9px; }
+label.f > span { display:block; font-size:12px; color:var(--dim); margin-bottom:3px; }
+select, textarea, input[type=text], input[type=number] { width:100%; background:#12141a; color:var(--text); border:1px solid var(--line); border-radius:9px; padding:10px; font-size:16px; }
+textarea { min-height:92px; resize:vertical; }
+.row2 { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
+.pick { display:grid; grid-template-columns:1fr 92px; gap:6px; }
+.pick input { font-size:14px; padding:8px; }
+.check { display:flex; align-items:center; gap:8px; padding:6px 0; }
+.check input { width:22px; height:22px; }
+details > summary { color:var(--dim); font-size:13px; padding:4px 0; }
+#bar { position:fixed; left:0; right:0; bottom:0; padding:10px 12px calc(10px + env(safe-area-inset-bottom)); background:linear-gradient(transparent, var(--bg) 30%); }
+#bar .in { max-width:640px; margin:0 auto; display:flex; gap:8px; }
+#go { flex:1; padding:15px; font-size:17px; font-weight:700; border:0; border-radius:12px; background:var(--accent); color:#06121f; }
+#go[disabled] { background:#3a4250; color:#8b93a1; }
+#stop { padding:15px 16px; border-radius:12px; border:1px solid var(--line); background:var(--panel); color:var(--text); font-size:15px; display:none; }
+#status { font-size:13px; color:var(--dim); min-height:20px; margin:4px 2px 8px; }
+#status.bad { color:var(--bad); } #status.ok { color:var(--ok); }
+#result img { width:100%; border-radius:10px; display:block; background:#000; }
+#result .act { display:flex; gap:8px; margin-top:8px; }
+#result .act button, #result .act a { flex:1; text-align:center; text-decoration:none; padding:12px; border-radius:10px; border:1px solid var(--line); background:#12141a; color:var(--text); font-size:15px; }
+#result .act button.sent { border-color:var(--ok); color:var(--ok); }
+#info { white-space:pre-wrap; word-break:break-word; font-size:12px; color:var(--dim); margin-top:8px; }
+#strip { display:flex; gap:6px; overflow-x:auto; margin-top:8px; }
+#strip img { width:64px; height:92px; object-fit:cover; border-radius:6px; border:2px solid transparent; flex:0 0 auto; }
+#strip img.on { border-color:var(--accent); }
+</style>
+</head>
+<body>
+<main>
+  <h1>キャラ選択 <small id="host"></small></h1>
+  <div class="tabs" id="tabs"></div>
+  <div id="status">読み込み中…</div>
+
+  <section id="result" hidden>
+    <img id="img" alt="">
+    <div class="act">
+      <button id="send">kura に送る</button>
+      <a id="open" target="_blank" rel="noopener">原寸で開く</a>
+    </div>
+    <div id="strip"></div>
+    <details><summary>生成の詳細（info）</summary><div id="info"></div></details>
+  </section>
+
+  <section><h2>プリセット</h2><div id="presets"></div></section>
+  <section><h2>プロンプト</h2>
+    <label class="f"><span>プロンプト</span><textarea id="prompt"></textarea></label>
+    <label class="f"><span>ネガティブ</span><textarea id="negative" style="min-height:56px"></textarea></label>
+  </section>
+  <section><h2>構図・ポーズ</h2><div id="controls" class="row2"></div></section>
+  <section><h2>設定</h2>
+    <div class="row2">
+      <label class="f"><span>シード（空 = 毎回ランダム）</span><input type="number" id="seed" inputmode="numeric" placeholder="ランダム"></label>
+      <label class="f"><span>直前のシード</span><input type="text" id="lastseed" readonly></label>
+    </div>
+    <label class="check" id="fastrow" hidden><input type="checkbox" id="fast"><span>高速（数ステップ、画質は落ちる）</span></label>
+    <details><summary>サイズ・LoRA の強さ</summary>
+      <div class="row2" id="advanced" style="margin-top:8px"></div>
+    </details>
+  </section>
+</main>
+<div id="bar"><div class="in"><button id="go" disabled>生成</button><button id="stop">中止</button></div></div>
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const NONE = "(なし)";
+const PRESETS = [["chara", "キャラクター"], ["style", "画風"], ["concept", "状況 1"], ["concept2", "状況 2"]];
+const LABEL = { angle: "アングル（向き）", angle_height: "アングル（高さ）", framing: "画角", pose: "ポーズ", people: "人数・相手", expression: "表情", gaze: "視線", focus: "フォーカス",
+                width: "幅（0 = 既定）", height: "高さ（0 = 既定）", chara_weight: "キャラの強さ", style_weight: "画風の強さ", concept_weight: "状況 1 の強さ", concept2_weight: "状況 2 の強さ" };
+const FAMILY = { anima: "Anima", sdxl: "SDXL", sd15: "SD1.5", krea: "Krea" };
+let defs = {}, family = null, busy = false, shown = null, results = [];
+const store = (k, v) => { try { v === undefined ? 0 : localStorage.setItem("pm:" + k, JSON.stringify(v)); return JSON.parse(localStorage.getItem("pm:" + k) || "null"); } catch (e) { return null; } };
+
+function status(text, kind) { const s = $("status"); s.textContent = text; s.className = kind || ""; }
+async function api(path, body) {
+  const r = await fetch(path, body === undefined ? {} : { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  const text = await r.text(); let data = {}; try { data = text ? JSON.parse(text) : {}; } catch (e) { data = { raw: text }; }
+  if (!r.ok) throw Object.assign(new Error(data?.error?.message || r.status), { data });
+  return data;
+}
+
+function inputsOf(fam) { const d = defs[fam].input; return { ...d.required, ...(d.optional || {}) }; }
+
+function select(id, options, value) {
+  const s = document.createElement("select"); s.id = id;
+  for (const o of options) { const e = document.createElement("option"); e.value = o; e.textContent = o.includes(" | ") ? o.split(" | ")[0] : o; s.appendChild(e); }
+  if (options.includes(value)) s.value = value;
+  return s;
+}
+
+function field(label, node) { const l = document.createElement("label"); l.className = "f"; const s = document.createElement("span"); s.textContent = label; l.append(s, node); return l; }
+
+function build() {
+  const inp = inputsOf(family), saved = store("v:" + family) || {};
+  $("presets").replaceChildren(); $("controls").replaceChildren(); $("advanced").replaceChildren();
+  for (const [name, label] of PRESETS) {
+    const all = inp[name][0];
+    const wrap = document.createElement("div"); wrap.className = "pick";
+    const sel = select("f_" + name, all, saved[name] ?? NONE);
+    const filter = document.createElement("input"); filter.type = "text"; filter.placeholder = "絞り込み"; filter.autocapitalize = "off";
+    filter.oninput = () => { const q = filter.value.trim().toLowerCase(), keep = sel.value;
+      sel.replaceChildren(...select("x", all.filter((o) => o === NONE || o === keep || o.toLowerCase().includes(q)), keep).children); sel.value = keep; };
+    wrap.append(sel, filter); $("presets").appendChild(field(`${label}（${all.length - 1}）`, wrap));
+  }
+  for (const [name, spec] of Object.entries(inp)) {
+    if (PRESETS.some((p) => p[0] === name) || ["prompt", "negative", "seed", "fast", "pose_image", "family"].includes(name)) continue;
+    if (Array.isArray(spec[0])) $("controls").appendChild(field(LABEL[name] || name, select("f_" + name, spec[0], saved[name] ?? spec[1]?.default ?? NONE)));
+    else if (spec[0] === "INT" || spec[0] === "FLOAT") {
+      const i = document.createElement("input"); i.type = "number"; i.id = "f_" + name; i.inputMode = "decimal"; i.step = spec[1]?.step ?? 1; i.value = saved[name] ?? spec[1]?.default ?? 0;
+      $("advanced").appendChild(field(LABEL[name] || name, i));
+    }
+  }
+  $("prompt").value = saved.prompt ?? inp.prompt[1].default ?? ""; $("negative").value = saved.negative ?? "";
+  $("fastrow").hidden = !inp.fast; $("fast").checked = !!saved.fast;
+  for (const b of $("tabs").children) b.classList.toggle("on", b.dataset.f === family);
+}
+
+function values() {
+  const inp = inputsOf(family), v = {};
+  for (const [name, spec] of Object.entries(inp)) {
+    const e = $("f_" + name); if (!e) continue;
+    v[name] = Array.isArray(spec[0]) ? e.value : (spec[0] === "INT" ? parseInt(e.value || "0", 10) : parseFloat(e.value || "0"));
+  }
+  v.prompt = $("prompt").value; v.negative = $("negative").value;
+  if (inp.fast) v.fast = $("fast").checked;
+  return v;
+}
+
+function show(i) {
+  shown = i; const r = results[i]; if (!r) return;
+  const q = new URLSearchParams({ filename: r.image.filename, subfolder: r.image.subfolder || "", type: r.image.type || "output" });
+  $("img").src = "/view?" + q; $("open").href = "/view?" + q; $("info").textContent = r.info; $("result").hidden = false;
+  $("send").textContent = r.sent ? "kura に送りました" : "kura に送る"; $("send").classList.toggle("sent", !!r.sent);
+  [...$("strip").children].forEach((e, n) => e.classList.toggle("on", n === i));
+}
+
+function addResult(r) {
+  results.push(r); const t = document.createElement("img"); const n = results.length - 1;
+  t.src = "/view?" + new URLSearchParams({ filename: r.image.filename, subfolder: r.image.subfolder || "", type: r.image.type || "output", preview: "webp;60" });
+  t.onclick = () => show(n); $("strip").appendChild(t); show(n); t.scrollIntoView({ inline: "end", block: "nearest" });
+}
+
+async function generate() {
+  if (busy) return;
+  const v = values(); store("v:" + family, v);
+  const typed = $("seed").value.trim(); const seed = typed ? Math.floor(Number(typed)) : Math.floor(Math.random() * 2 ** 48);
+  $("lastseed").value = seed;
+  const graph = { "1": { class_type: "PresetPick_" + family, inputs: { ...v, seed } }, "2": { class_type: "SaveImage", inputs: { images: ["1", 0], filename_prefix: "mobile/" + family } },
+                  "3": { class_type: "PreviewAny", inputs: { source: ["1", 1] } } };   // puts the node's info text into /history
+  busy = true; $("go").disabled = true; $("stop").style.display = "block"; status("キューに入れています…");
+  try {
+    const { prompt_id } = await api("/prompt", { prompt: graph, client_id: "preset-mobile" });
+    const t0 = Date.now();
+    for (;;) {
+      await new Promise((r) => setTimeout(r, 1500));
+      const h = (await api("/history/" + prompt_id))[prompt_id];
+      if (!h) { status(`生成中… ${Math.round((Date.now() - t0) / 1000)} 秒`); continue; }
+      if (h.status?.status_str !== "success") {
+        const m = (h.status?.messages || []).find((x) => x[0] === "execution_error");
+        const stopped = (h.status?.messages || []).some((x) => x[0] === "execution_interrupted");
+        throw new Error(stopped ? "中止しました" : (m?.[1]?.exception_message || "生成に失敗しました"));
+      }
+      const image = Object.values(h.outputs).flatMap((o) => o.images || [])[0];
+      addResult({ image, info: infoOf(h), sent: false });
+      status(`完了（${Math.round((Date.now() - t0) / 1000)} 秒）`, "ok"); break;
+    }
+  } catch (e) {
+    const ne = e.data?.node_errors ? Object.values(e.data.node_errors).flatMap((n) => n.errors.map((x) => x.details || x.message)).join(" / ") : "";
+    status("エラー: " + (ne || e.message), "bad");
+  } finally { busy = false; $("go").disabled = false; $("stop").style.display = "none"; }
+}
+
+function infoOf(h) { return Object.values(h.outputs).flatMap((o) => o.text || []).join("\n"); }
+
+async function sendToKura() {
+  const r = results[shown]; if (!r || r.sent) return;
+  try {
+    const d = await api("/kura_send/send", { images: [r.image] });
+    if (!d.sent?.length) throw new Error("送れませんでした");
+    r.sent = true; show(shown); status("kura に送りました（1〜2 分で登録されます）", "ok");
+  } catch (e) { status("kura に送れませんでした: " + e.message, "bad"); }
+}
+
+async function start() {
+  $("host").textContent = location.host;
+  try {
+    const all = await api("/object_info");
+    for (const f of Object.keys(FAMILY)) if (all["PresetPick_" + f]) defs[f] = all["PresetPick_" + f];
+    if (!Object.keys(defs).length) throw new Error("キャラ選択ノードがこの ComfyUI にありません");
+    for (const f of Object.keys(defs)) { const b = document.createElement("button"); b.textContent = FAMILY[f]; b.dataset.f = f;
+      b.onclick = () => { store("v:" + family, values()); family = f; store("family", f); build(); }; $("tabs").appendChild(b); }
+    family = defs[store("family")] ? store("family") : Object.keys(defs)[0];
+    build(); $("go").disabled = false; status("");
+  } catch (e) { status("読み込めませんでした: " + e.message, "bad"); }
+}
+$("go").onclick = generate; $("send").onclick = sendToKura;
+$("stop").onclick = () => api("/interrupt", {}).catch(() => {});
+start();
+</script>
+</body>
+</html>

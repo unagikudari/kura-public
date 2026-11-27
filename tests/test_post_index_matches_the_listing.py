@@ -80,6 +80,8 @@ def sessions(database_url):
         async with engine.begin() as conn:
             await conn.run_sync(metadata.drop_all)
             await conn.run_sync(metadata.create_all)
+            await conn.execute(sa.text("CREATE TABLE IF NOT EXISTS pool(id integer PRIMARY KEY, hidden boolean NOT NULL DEFAULT false)"))
+            await conn.execute(sa.text("INSERT INTO pool(id) VALUES (7),(8) ON CONFLICT DO NOTHING"))
             tags = sorted({t for *_, ts in FIXTURE.values() for t in ts})
             tag_id = {t: n for n, t in enumerate(tags, 1)}
             for t, n in tag_id.items():
@@ -183,3 +185,18 @@ def test_list_posts_and_the_index_share_one_definition():
     src = inspect.getsource(P.list_posts), inspect.getsource(P.get_post_index)
     for s in src:
         assert "_listing_set(" in s and "_listing_order(" in s
+
+
+def test_hidden_membership_does_not_hide_a_post_from_its_visible_pool(sessions):
+    async def go():
+        async with sessions() as db:
+            await db.execute(sa.text("UPDATE pool SET hidden=true WHERE id=7"))
+            await db.execute(sa.text("INSERT INTO pool_post(pool_id,post_id,ord) VALUES (8,1,1)"))
+            for post, query, visible in (
+                (1, "", True), (2, "", False), (1, "pool:7", False),
+                (1, "pool:8", True), (60, "", True),
+            ):
+                result = await P.get_post_index(post, query=query, sort="", dir="desc", db=db, safe=False)
+                assert result["member"] is visible
+            await db.rollback()
+    asyncio.run(go())

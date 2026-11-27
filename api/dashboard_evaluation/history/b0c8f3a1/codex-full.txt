@@ -1,0 +1,27 @@
+# Codex independent assessment — 2026-11-16
+Verdict: REVISE. Previous blanket approval withdrawn. Implementation author; NOT an independent reviewer. Recorded before reading Claude/Gemini results.
+Evidence: current authenticated GET-only production captures at 1440 and390. Initial tag-pane text capture omitted iframe content; second capture includes loaded iframe. No human usability experiment, no keyboard/screen-reader certification.
+
+## Failures and remedies
+1. Overview promotes nine taxonomy counts above the owner's concrete problems. 304 unknown dominates, without a targeted explanation or meaningful action. Replace first screen with high-priority incident rows (tag, current machine-add permission, last verified outcome, active job, next actionable step). Keep global taxonomy in a collapsible inventory.
+2. Human action is generic "correct tags". This does not explain which images teach what, whether corrections were consumed, or what work is already running. Add scoped review queues with purpose, unresolved count, positive/negative/uncertain decisions; uncertain must never become an absent pin. Buttons must navigate to actual bounded cohorts, not generic all-tag search.
+3. "Learning0" and the separate experimental progress strip describe different systems. A disclaimer explains the discrepancy but the owner still cannot follow one tag end to end. Join admitted lifecycle and experimental jobs in a per-tag timeline with job IDs, input snapshot, current process state, last actual progress, heldout result, deployment decision, production revision. Missing links remain visibly unknown; do not invent a completion percentage.
+4. Experiment completed3/3 appears stale/operationally unknown after collector stops. Separate terminal result facts from live liveness: a durable completed result does not become unknown merely because no new heartbeat is expected. Timestamp result and process observation separately.
+5. Multiple quality numbers need explicit denominators and population. Internal TP147/200, FP3/800 and incident FP69/246 are DIFFERENT cohorts/candidates; neither is blanket production accuracy. Show fixed-sample old/new FP/FN comparison and a sparse timeline only where comparable data exists. No fabricated smooth accuracy trend.
+6. Technical wording (inspect records, reconcile candidate/publication) delegates undefined maintenance to users. Each blocker needs named actionable owner, concrete unresolved prerequisite, last attempt, and what its button really does. Show user action only when the person can resolve it.
+7. Small text, nine similar cards, footnotes and long IDs consume first screen. Keep three major blocks: needs your judgment / system work / production safety. Use tag table to compare columns, filter by user action / blocked / changed since last visit, sort by severity then latest change. Names and observation timestamps remain drill-down.
+8. Evaluation20/20 gave false assurance. Replace total trophy with dated findings, scope, evidence, unresolved issues and outcome of realistic tasks. Preserve old report as history, mark it disputed/withdrawn; do not rewrite independent reviewer words or fabricate agreement.
+
+## Initial wireframe
+[Safety: smegma auto-add blocked | verified time] [Last successful deployment]
+[Your decisions: tag / why / N images / Review]  (only actual requests)
+[In progress: tag / concrete stage / last forward progress / next condition]
+[Blocked: tag / cause / responsible actor / next concrete action]
+[Tag comparison table, searchable sortable filterable]
+Below: historical evidence, worker diagnostics, evaluation comments.
+
+## Acceptance tasks
+Without maintainer explanation: find whether smegma can be newly applied now; find last correction batch and whether used; identify horse vs knotted next step and owner; distinguish completed rejected experiment from currently running work; resolve one genuine requested annotation without treating uncertainty as absence. Record answer correctness and navigation needed, not arbitrary pass thresholds after the fact.
+
+## Ten criteria
+Situation FAIL; consistency PARTIAL (different scopes explained but not integrated); duplication PARTIAL; completeness FAIL; brevity FAIL; actionability FAIL; exploration PARTIAL (controls exist, task success not tested); useful graphics FAIL; freshness PARTIAL (honest staleness but terminal results conflated); accessibility UNVERIFIED beyond screenshot layout.

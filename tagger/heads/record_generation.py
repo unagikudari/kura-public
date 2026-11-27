@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """サイクル完了後に世代台帳へ1行追記(val 指標・applied 数・pool)。"""
 import json,os,datetime
-HOME=os.path.expanduser("~/tagger-heads")
+HOME=os.environ.get("TAGGER_HEADS_DATA", os.path.expanduser("~/tagger-heads"))
 gen=int(open(f"{HOME}/generation").read().strip())
 src=f"trainer-head-g{gen}"
 rec={"gen":gen,"src":src,"t":datetime.datetime.now().isoformat(timespec="minutes")}

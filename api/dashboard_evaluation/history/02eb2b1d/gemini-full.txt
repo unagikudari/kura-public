@@ -1,0 +1,142 @@
+### Adversarial Evaluation of Kura Tagger Overview (`main 02eb2b1d` / `source 8f87f42c`)
+
+**Evaluation Scope & Constraints:**
+- Evaluated strictly from inline visible parent document text and Svelte component source.
+- Screenshots and rendered visual/layout states (including the embedded image viewer/iframe and actual rendered mobile/desktop geometry) are unavailable and marked **`unverified`** where visual verification is required.
+- Does not claim model quality approval or that human labels are wrong.
+
+---
+
+### Criterion-by-Criterion Assessment
+
+#### 1. `situation` — 状況が一目で分かる
+*条件: 動いているもの・止まっているもの・対応が必要なものが分かる*
+- **Rating:** **`partial`**
+- **Evidence:**
+  - **Working / Stopped / Action Needed:** The runtime section (`本番と改善処理`) shows active production (`release 15`), held tags (`機械による付与停止 4タグ`), active bounded scoring (`smegma の改善 · 未公開 · 検証 · nodeb + p52 (CPU 8 each) · 108/5000 工程`), and stale auto-learning (`自動学習の最終報告 · 最後の報告: 評価履歴を登録済み（過去）・現在の稼働は未確認`). The review section (`画像の確認と受領結果`) highlights `確認依頼 1セット` (`smegma 新候補の評価 159/159枚`).
+  - **Defects:**
+    1. The 4 held tags (`machine_output_holds`) are hidden inside a `<details><summary>対象と理由</summary>` block in the initial view, so which 4 tags are stopped is not immediately visible at a glance.
+    2. The distinction between `smegma の改善` (active 108/5000 CPU scoring on `nodeb + p52`) and `自動学習の最終報告` (past report on `smegma`, current run unverified) requires reading two separate lines about `smegma` with no explicit relation explained.
+    3. The top nav shows `ノード 5` and `概要` is repeated twice in visible text (`概要` tab + `概要` heading), plus three separate refresh buttons (`再読み込み`, `状況を更新`, `更新`) across the parent and sub-sections.
+- **Feasible Improvement (Priority: High):** Inline the 4 held tag names directly on the `機械による付与停止` summary line (when `<= 5` tags) instead of hiding them inside `<details>`, and clarify what `108/5000 工程` is doing (e.g., additional candidate scoring vs. training).
+
+#### 2. `consistency` — 矛盾がない
+*条件: 候補評価と本番使用を別に示し、同じ状態を矛盾して説明しない*
+- **Rating:** **`partial`**
+- **Evidence:**
+  - **Strengths:** Candidate evaluation (`smegma の改善: 未公開 · 検証`, `新候補の評価 · 確認依頼 159/159枚`) is separated from production (`本番の選択 release 15`), and disclaimers state that comparisons do not reflect training progress, full-population accuracy, or publication approval.
+  - **Contradictions / Confusions:**
+    1. For `smegma`, the runtime section says `未公開 · 検証 · 108/5000 工程` (`labels['evaluating'] = '検証'`), while the review table also says `smegma 新候補の評価 · 確認依頼 159/159枚`. Both use evaluation terminology (`検証` vs `新候補の評価`) without distinguishing that `108/5000 工程` is machine CPU scoring on `nodeb + p52` (5,000 images) whereas `159/159枚` is an unjudged human sample (9 pred-positive + 150 pred-negative from unseen 2,000, scores hidden).
+    2. When `smegma 新候補の評価` (`159/159枚`) has `comparison.state === 'not_supplied'` (scores intentionally withheld to avoid bias), the table cell says `未測定`, while expanding `比較グラフ・全画像` says `比較スコアは未用意です。` — two different terms for the same intentional blind-review state, neither explaining that scores are intentionally hidden during candidate human evaluation to prevent bias.
+- **Feasible Improvement (Priority: High):** Distinguish machine scoring (`検証採点中 108/5000`) from human blind evaluation, and replace `未測定` / `比較スコアは未用意です。` on `candidate_evaluation` queues with explicit blind-evaluation wording (e.g., `採点非表示（判定バイアス防止）`).
+
+#### 3. `duplication` — 重複がない
+*条件: 同じ情報を繰り返さず、詳細の参照先が一つに決まる*
+- **Rating:** **`fail`**
+- **Evidence:**
+  - **Three refresh controls in one view:** Parent has `再読み込み`, `RuntimeSummary` has `状況を更新`, and `ReviewQueues` has `更新`.
+  - **Duplicate disclaimers:** The review section has three separate disclaimer `<p class="note">` lines around the table (`固定モデルとの比較 · 不一致は人の誤りとは限りません。`, `人手判定の変更で比較は変わりますが、モデルは変わりません。上記の比較は学習中の成績・全画像の精度・公開の合否を示しません。`, `固定スコアは学習中のモデルに連動しません。`) plus inside `ReviewComparison.svelte` (`本番の採用状態はこの比較データからは確認できません。`). "Fixed score / model doesn't change with training / doesn't show production adoption" is stated three times.
+  - **Duplicate `<h3>` and summary text in `<details>`:** Every row in `ReviewQueues` has `<strong>{q.tag}</strong><small>{purpose(q)}...</small>`, `<td>{q.comparison.compared}枚比較 · 不一致{difference(q)}枚</td>`, and `<a href={q.browse_url}>`. Opening `<details><summary>比較グラフ・全画像</summary>` renders `ReviewComparison`, which immediately repeats `<h3>{tag} · {label}</h3>`, `<p><strong>{comparison.compared}/{total}枚を比較 · 不一致{disagreements}枚</strong></p>`, another disagreement link (`不一致の{disagreements}枚を見る（任意）`), and another `<a href={q.browse_url}>セット全{q.total}枚を見る</a>`.
+  - **Stale status phrasing duplicated verbatim:** Both `experiment` and `learning` in `RuntimeSummary` use the exact same template `最後の報告: ...（過去）・現在の稼働は未確認`.
+- **Feasible Improvement (Priority: High):** Remove the repeated `<h3>`, `<p>{compared}/{total}枚を比較 · 不一致{disagreements}枚</p>`, and duplicate disagreement link from `ReviewComparison.svelte` when rendered inside a table row that already displays those exact fields, and consolidate the three footer notes into one concise line.
+
+#### 4. `completeness` — 必要な情報が揃う
+*条件: 対象・状態・理由・担当・次の処理・最終更新が同じ場所で分かる*
+- **Rating:** **`partial`**
+- **Evidence:**
+  - **Present:** Target tag (`smegma`, `horse_penis`, `knotted_penis`), count (`159/159枚`, `108/5000 工程`), host (`nodeb + p52 (CPU 8 each)`), and timestamps (`観測 2026/11/17 1:39:29`, `1:15:13`, `最終取得 2026/11/17 1:39:49`) are shown.
+  - **Missing / Incomplete in the same place:**
+    1. **Sampling rationale / reason (`理由`):** For `smegma 新候補の評価 159/159枚`, there is no explanation of *why* these 159 images were selected (9 predicted-positive + 150 predicted-negative sample from 2,000 unseen images, with labels/scores withheld to avoid bias) or what happens once all 159 are judged.
+    2. **Owner / actor (`担当`) & Next step (`次の処理`):** In `本番と改善処理`, `smegma の改善` (`108/5000 工程`) and `自動学習の最終報告` (`現在の稼働は未確認`) do not state who/what is responsible next (system vs. human) or whether the 159-image human review or the 5,000-image CPU scoring is the gate for the next lifecycle transition.
+    3. **Queue freshness:** `ReviewQueues` shows client fetch time (`最終取得 2026/11/17 1:39:49（この端末の時刻）`), but not when the queue counts or human judgments were last updated on the server.
+- **Feasible Improvement (Priority: High):** Add a concise queue reason/gate note or API-driven description to requested queues (e.g., explaining that the 159 images are an unseen candidate evaluation sample with scores hidden, and that completing them unlocks candidate quality evaluation).
+
+#### 5. `brevity` — 初期表示が少なく明確
+*条件: 判断に必要な項目を優先し、内部用語は詳細へ移す*
+- **Rating:** **`partial`**
+- **Evidence:**
+  - **Strengths:** Collapsible `<details>` blocks hide the 4 held tags' explanation, the per-row comparison bar charts, and `モデル sha256 / 閾値 / 固定スコア sha256`.
+  - **Defects:**
+    1. All 5 review sets (including 3 optional/internal sets: `horse_penis 予測ありの確認`, `smegma 固定確認セット` (160 judged training/internal labels), `knotted_penis 学習用の確認`, and 1 completed set `smegma 判定境界の確認 受領済み`) are shown by default (`filter = 'all'`) alongside the single actual human request (`smegma 新候補の評価 159/159枚`).
+    2. Every single table row renders a second `<tr class="details-row">` with `比較グラフ・全画像`, even when `comparison.state === 'not_supplied'` (`未測定`, i.e., no graph exists for `smegma 新候補の評価` or `knotted_penis 学習用の確認`), doubling the visual row count to 10 rows and inviting clicks that only reveal `比較スコアは未用意です。`.
+    3. Three multi-sentence caveats/notes sit above and below the table in initial view.
+- **Feasible Improvement (Priority: High):** Only render the `<details>` comparison graph toggle when valid comparison data actually exists (`difference(q) !== null`), and move the full-set browse link (`全N枚`) into the action cell so `未測定` rows don't have a dead `比較グラフ・全画像` drawer.
+
+#### 6. `actionability` — 次の行動が具体的
+*条件: 誰が何をし、何が揃えば進むかと、必要な操作の入口が分かる*
+- **Rating:** **`partial`**
+- **Evidence:**
+  - **Strengths:** The primary CTA for the requested set (`この159枚を確認` -> `q.unjudged_url`) is visually distinguished from optional sets (`未判定の263枚を確認（任意）`) and completed sets (`確認済みの全8枚を見る`).
+  - **Defects:**
+    1. **Embedded vs. specific images:** The table only links to `/\?q=...` URLs (`この159枚を確認`); no specific images or thumbnails needing human judgment are visible or previewed on the overview itself (and any embedded iframe is unseen/unverified).
+    2. **Unclear completion condition (`何が揃えば進むか`):** The summary says `確認依頼 1セット。評価を進めるための確認です。分からない画像は保留で構いません。`, which tells the user *how* to judge, but not *what* completes the gate (e.g., whether judging all 159 images in `smegma 新候補の評価` + finishing `108/5000` scoring is required before candidate comparison against the 4-tag hold can proceed).
+    3. **Unverified auto-learning (`現在の稼働は未確認`):** `自動学習の最終報告` reports `現在の稼働は未確認` with no link or action to check the service/logs or jump to the `自動化` / `タグ・学習` tab.
+- **Feasible Improvement (Priority: Medium):** Add a direct navigation link on `自動学習の最終報告` (e.g., to the `自動化` or `タグ・学習` view) when `現在の稼働は未確認`, and state the concrete gate condition for `確認依頼`.
+
+#### 7. `exploration` — 比較・探索ができる
+*条件: 検索・状況別フィルター・ソート・件数・解除が使える*
+- **Rating:** **`pass`**
+- **Evidence:**
+  - `ReviewQueues` provides status filtering (`全セット`, `確認依頼`, `不一致あり`, `未判定あり`), tag search (`input type="search" placeholder="タグ名で絞る"`), sorting (`依頼を先頭`, `未判定が多い順`, `不一致が多い順`, `タグ名順`), visible count (`{visible.length}セット` -> `5セット`), empty-state handling (`この条件のセットはありません。`), and a conditional reset button (`{#if filter !== 'all' || search || sort !== 'priority'}<button ...>表示をリセット</button>{/if}`).
+  - Sorting tie-breakers are deterministic (`a.tag.localeCompare(b.tag) || a.queue_sha256.localeCompare(b.queue_sha256)`).
+- **Feasible Improvement (Priority: Low):** Show total count alongside filtered count when filtered (e.g., `{visible.length}/{queues.length}セット`) and show option counts in filter labels (e.g., `確認依頼 (1)`).
+
+#### 8. `graphics` — 図が判断を助ける
+*条件: 対象・単位が明確で、未測定を0扱いせず精度・件数・進捗を混同しない*
+- **Rating:** **`partial`** (visual rendering **`unverified`**)
+- **Evidence:**
+  - **Code Verification:**
+    - `RuntimeSummary` uses `<progress value={x.done} max={x.total} aria-label="実験内の工程数">` with explicit units (`108/5000 工程` or `epoch`), only when `experimentLive && !snapshotOld && !error && ['extracting','training','evaluating'].includes(x.phase) && x.total > 0`.
+    - `ReviewComparison` checks `validComparison(comparison, total)` before rendering the 5-part stacked flex bar (`ありで一致`, `なしで一致`, `モデルだけが「あり」`, `人だけが「あり」`, `未比較`) with explicit `枚` units, and does not treat unmeasured sets (`not_supplied`) as 0 disagreements (renders `未測定` in table).
+  - **Defects:**
+    1. In `ReviewQueues`, rows with `comparison.state === 'not_supplied'` (`smegma 新候補の評価` and `knotted_penis 学習用の確認`) still display a `<summary>比較グラフ・全画像</summary>` toggle even though there is **no graph** inside (it opens to `比較スコアは未用意です。`).
+    2. Visual appearance of the stacked bar (e.g., whether small counts like `不一致2枚` or `不一致9枚 out of 300` are visually discernible at `height: 16px` without a minimum width) is **`unverified`** without screenshots.
+- **Feasible Improvement (Priority: Medium):** Suppress the `比較グラフ` label/drawer when no valid comparison exists (`!validComparison`), and add a minimum pixel/flex basis (`min-width: 4px` when `p.value > 0`) on `.bar span` so non-zero confusion segments (like 2/8 or 9/300) cannot collapse to sub-pixel invisibility.
+
+#### 9. `freshness` — 鮮度と不確実性が分かる
+*条件: 古い報告や理由未記録を現在の実行と誤認しない*
+- **Rating:** **`pass`**
+- **Evidence:**
+  - `RuntimeSummary` tracks both server-reported `fresh` / `age_seconds` and client elapsed time (`clock - receivedAt`), degrading `experiment` to `最後の報告: ...（過去）・現在の稼働は未確認` after 120s and hiding the `<progress>` bar so stale progress is never shown as actively running.
+  - `自動学習の最終報告` explicitly renders `smegma · 最後の報告: 評価履歴を登録済み（過去）・現在の稼働は未確認` with `観測 2026/11/17 1:15:13` (~25 minutes older than current time `1:40:13`), preventing confusion with the live `1:39:29` experiment observation.
+  - Fetch failures in both components explicitly warn that lack of data does not mean "no work" (`確認依頼を取得できません。「作業なし」とは判断できません。`) and flag stale snapshots (`以下は前回取得した状態です。`).
+- **Feasible Improvement (Priority: Low):** Display relative age (e.g., `25分前`) next to raw timestamps (`2026/11/17 1:15:13`) so the user does not have to mentally compare `1:15:13` against `1:39:29` to spot the 24-minute gap.
+
+#### 10. `accessibility` — 操作しやすい
+*条件: スマホ・キーボードで操作でき、色だけに意味を持たせない*
+- **Rating:** **`unverified`** (static code **`partial`**)
+- **Evidence:**
+  - **Static Code Strengths:** Interactive elements (`button`, `input`, `select`, `a`, `summary`) set `min-height: 44px`. The stacked bar is `aria-hidden="true"` and paired with an explicit text/count `<ul>` list (`ありで一致 X枚`, etc.), so meaning does not rely on color alone. Mobile CSS (`@media(max-width:700px)`) switches table cells to block layout with `td[data-label]::before`.
+  - **Code Defect & Unverified Visuals:**
+    1. On mobile (`@media(max-width:700px)`), `table, tbody, tr, th, td { display: block }` is applied while explicit `<table role="table">`, `<tr role="row">`, `<th role="rowheader">`, and `<td role="cell">` ARIA attributes are hardcoded in the markup. This is a good pattern for preserving table semantics in CSS block layout, **but** `.details-row td` has no `data-label` and `th, td { padding: 4px 0 }` may stack tightly; actual mobile layout, keyboard focus ring visibility, and touch overflow cannot be verified without screenshots (`unverified`).
+    2. `ReviewQueues` does not pause its 30s `setInterval` polling when `document.hidden` is true (unlike `RuntimeSummary`), which can reset/announce live regions while backgrounded.
+- **Feasible Improvement (Priority: Low):** Redundant explicit ARIA roles (`role="table"`, `role="row"`, `role="cell"`) can be kept, but guard `ReviewQueues` auto-refresh with `!document.hidden` (matching `RuntimeSummary`) and avoid resetting `<details open>` state when the 30-second background poll updates `queues`.
+
+---
+
+### Summary Scorecard
+
+| ID | Title | Rating | Priority of Fix |
+| :--- | :--- | :--- | :--- |
+| `situation` | 状況が一目で分かる | **`partial`** | High |
+| `consistency` | 矛盾がない | **`partial`** | High |
+| `duplication` | 重複がない | **`fail`** | High |
+| `completeness` | 必要な情報が揃う | **`partial`** | High |
+| `brevity` | 初期表示が少なく明確 | **`partial`** | High |
+| `actionability` | 次の行動が具体的 | **`partial`** | Medium |
+| `exploration` | 比較・探索ができる | **`pass`** | Low |
+| `graphics` | 図が判断を助ける | **`partial`** *(visuals `unverified`)* | Medium |
+| `freshness` | 鮮度と不確実性が分かる | **`pass`** | Low |
+| `accessibility` | 操作しやすい | **`unverified`** *(code `partial`)* | Low |
+
+---
+
+### ONE Recommended Next Small Improvement
+
+**Eliminate dead/duplicate comparison drawers and clarify blind candidate evaluation in `ReviewQueues` + `ReviewComparison` (fixes `duplication`, `brevity`, `consistency`, and `graphics` in one small change):**
+
+1. **In `ReviewQueues.svelte`:**
+   - Do **not** render the `<details><summary>比較グラフ・全画像</summary>` drawer row when `difference(q) === null` (such as `smegma 新候補の評価 159/159枚` and `knotted_penis 学習用の確認 30/30枚`), because opening it only shows `比較スコアは未用意です。` with no graph. Instead, place the secondary `<a href={q.browse_url}>全{q.total}枚</a>` link inline in the action cell when `q.remaining > 0`.
+   - For `q.purpose === 'candidate_evaluation'` when `comparison.state === 'not_supplied'`, display `採点非表示（バイアス防止）` instead of `未測定` so the user knows scores are intentionally withheld for blind human evaluation rather than broken or unmeasured.
+2. **In `ReviewComparison.svelte`:**
+   - Remove the redundant `<h3>{tag} · {label}</h3>`, `<p><strong>{comparison.compared}/{total}枚を比較 · 不一致{disagreements}枚</strong></p>`, and duplicate `不一致の{disagreements}枚を見る（任意）` link that repeat the parent table row verbatim. Keep only the stacked bar, the 5-category breakdown list (`ありで一致` / `なしで一致` / `モデルだけが「あり」` / `人だけが「あり」` / `未比較`), and the `採点情報を開く` metadata.

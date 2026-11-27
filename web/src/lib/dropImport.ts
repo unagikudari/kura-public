@@ -17,5 +17,12 @@ export function duplicateUpload(error: unknown) {
   return e?.status === 409
     && (e.error === 'post_already_exists' || e.message === 'すでに登録済みです (checksum重複)');
 }
+/** The post that already holds a refused duplicate, when the API named it (older APIs do not). */
+export function existingPost(error: unknown): { id: number; safety?: string } | null {
+  const context = (error as { context?: { post_id?: unknown; safety?: unknown } })?.context;
+  const id = context?.post_id;
+  if (!duplicateUpload(error) || typeof id !== 'number' || !Number.isInteger(id) || id <= 0) return null;
+  return { id, safety: typeof context?.safety === 'string' ? context.safety : undefined };
+}
 /** Window event DropImport sends after a batch added posts; the list reloads in place. */
 export const POSTS_ADDED_EVENT = 'kura:posts-added';

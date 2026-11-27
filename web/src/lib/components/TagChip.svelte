@@ -18,7 +18,8 @@
   //                に戻す — 旧 .lb-tagbar:hover .lb-tag > span 規則の移設先)
   //   'overlay'  … VerifyTagOverlay: 枠なしテキスト chip (text-shadow で可読性担保)。
   //                onclick があれば 2 段階タップ削除 button (armed/busy 状態は親が
-  //                判断して props で渡す)。onpointerenter/leave は tooltip 用
+  //                判断して props で渡す)。onpointerenter/leave は tooltip 用。
+  //                oncontextmenu = 右クリックでそのタグの検索へ (漫画ビュー, 2026-11-22)
   //   'pill'     … /tags ブラウザ: 丸 pill トグル。data-st (inc/exc) で選択状態、
   //                --c で hover 枠色、usages カウント付き。oncontextmenu = 右クリック
   //                除外トグル (preventDefault は呼び手のハンドラが行う)
@@ -82,12 +83,12 @@
       class:tc-em-target={emphasis === 'target'} class:tc-em-related={emphasis === 'related'}
       class:tc-em-exclusive={emphasis === 'exclusive'}
       style="color:{color}" {onpointerenter} {onpointerleave}
-      {onclick}>{displayName}<span class="tc-xmark">×</span></button>
+      {onclick} {oncontextmenu}>{displayName}<span class="tc-xmark">×</span></button>
   {:else}
     <span class="tag-chip tc-overlay" style="color:{color}"
       class:tc-em-target={emphasis === 'target'} class:tc-em-related={emphasis === 'related'}
       class:tc-em-exclusive={emphasis === 'exclusive'}
-      {onpointerenter} {onpointerleave}>{displayName}</span>
+      {onpointerenter} {onpointerleave} {oncontextmenu}>{displayName}</span>
   {/if}
 {:else if variant === 'lightbox'}
   <!-- onpointerenter/leave は TagTooltip 用 (description の hover 表示)。

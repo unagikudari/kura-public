@@ -66,3 +66,36 @@ def test_a_character_policy_that_is_not_a_bundle_stops_tagging(monkeypatch, tmp_
         _endpoint(monkeypatch, [_row('alice', 1, 'e', 'probe_safetensors', category='character')], tmp_path)
     assert exc.value.status == 503 and exc.value.error == 'character_head_unavailable'
     assert exc.value.context['kind'] == 'probe_safetensors'
+
+
+def test_strict_inventory_refuses_a_missing_general_head(monkeypatch, tmp_path):
+    row = _row('general', 1, 'f', 'content_head_bundle')
+    result = SimpleNamespace(mappings=lambda: SimpleNamespace(all=lambda: [row]))
+    db = SimpleNamespace(execute=AsyncMock(return_value=result), rollback=AsyncMock())
+    monkeypatch.setattr(artifact_store, 'default_store', lambda: SimpleNamespace(have=lambda sha: False, path_for=lambda sha: tmp_path / sha))
+    with pytest.raises(KuraError) as exc:
+        asyncio.run(list_head_policies(db, require_complete=True))
+    assert exc.value.status == 503 and exc.value.error == 'content_head_unavailable'
+
+
+def test_strict_empty_inventory_is_explicit_not_an_old_api(monkeypatch, tmp_path):
+    result = SimpleNamespace(mappings=lambda: SimpleNamespace(all=lambda: []))
+    db = SimpleNamespace(execute=AsyncMock(return_value=result), rollback=AsyncMock())
+    monkeypatch.setattr(artifact_store, 'default_store', lambda: SimpleNamespace(have=lambda sha: False, path_for=lambda sha: tmp_path / sha))
+    response = asyncio.run(list_head_policies(db, require_complete=True))
+    assert response.headers['X-Kura-Head-Inventory'] == 'deployable-complete-v1'
+    assert response.body == b'[]'
+
+
+@pytest.mark.parametrize('kind', ['probe_safetensors', None])
+def test_strict_inventory_is_complete_for_deployable_lane(kind):
+    # 0186 excludes non-bundle measurements from deployable heads by definition.
+    # Their exclusion is explicit; no old version is resurrected.
+    import json
+    row = _row('general', 1, 'f', kind)
+    result = SimpleNamespace(mappings=lambda: SimpleNamespace(all=lambda: [row]))
+    db = SimpleNamespace(execute=AsyncMock(return_value=result), rollback=AsyncMock())
+    response = asyncio.run(list_head_policies(db, require_complete=True))
+    assert json.loads(response.body) == []
+    assert response.headers['X-Kura-Head-Inventory'] == 'deployable-complete-v1'
+    assert response.headers['X-Kura-Head-Excluded-Non-Bundles'] == '1'

@@ -1,13 +1,15 @@
 """Pools router — GET + write endpoints (Phase C: pool_url unified table)."""
 
 import re
+import os
 from datetime import datetime
 
 from fastapi import APIRouter, Body, Depends, Form, HTTPException, Query
 from api.routers.posts import safe_mode
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+from api.tagger_core.paired_review import is_paired_review
 from sqlalchemy import Text, and_, bindparam, func, literal_column, or_, select, text
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload, raiseload, load_only
 
@@ -15,6 +17,7 @@ from api.auth import get_current_user
 from api.config import DATA_URL
 from api.services.pool_naming import derive_pool_name_from_url
 from api.services import tagging_queue
+from api.services.pool_visibility import pool_covers
 from api.db.models import CensorAnnotation, Pool, PoolCategory, PoolName, PoolPost, PoolState, PoolUrl, Post, PostTag, Tag, TagCategory, TagImplication, TagName, User
 from api import site_rules
 from api.site_rules import detect_domain
@@ -22,6 +25,226 @@ from api.db.session import get_db
 from api.schemas.common import PagedResult, PoolSummary
 
 router = APIRouter(prefix="/api", tags=["pools"])
+dashboard_router = APIRouter(prefix="/api", tags=["pools"])
+
+
+class ReselectReviews(BaseModel):
+    references: list[str] = Field(min_length=1, max_length=5)
+
+
+@dashboard_router.post('/tagger-dashboard/reselect-reviews')
+async def reselect_reviews(body: ReselectReviews, db: AsyncSession = Depends(get_db),
+                           auth_user: User = Depends(get_current_user)):
+    from api.errors import KuraError
+    from api.services.review_reselection import replace
+
+    if os.environ.get('KURA_DB_ROLE', 'canonical').lower() != 'canonical':
+        raise KuraError(503, "human_review_canonical_required")
+    if len(set(body.references)) != len(body.references) or any(
+            re.fullmatch(r"[a-f0-9]{64}", ref) is None for ref in body.references):
+        raise KuraError(422, "review_reselection_invalid")
+    try:
+        result = await replace(db, body.references, auth_user.user_id)
+        await db.commit()
+    except Exception:
+        await db.rollback()
+        raise
+    return result
+
+
+@dashboard_router.get('/tagger-dashboard/review-queues/compact', include_in_schema=False)
+async def compact_review_queues(all_pending: bool = False, db: AsyncSession = Depends(get_db),
+                                auth_user: User = Depends(get_current_user)):
+    from api.services.dashboard_review_catalog import first_pending, population, project
+    from api.services.review_set_registry import available
+
+    if not await available(db):
+        return {"state": "not_configured", "queues": [], "pending_total": 0}
+    if all_pending:
+        queues, completed = project(await population(db))
+        return {"state": "available", "queues": queues, "pending_total": len(queues), "completed": completed}
+    rows = await first_pending(db)
+    queues, _ = project(rows)
+    return {"state": "available", "queues": queues, "pending_total": rows[0]["pending_total"] if rows else 0}
+
+
+@dashboard_router.get('/tagger-dashboard/review-queues/history', include_in_schema=False)
+async def review_queue_history(offset: int = Query(0, ge=0), limit: int = Query(30, ge=1, le=100),
+                               db: AsyncSession = Depends(get_db), auth_user: User = Depends(get_current_user)):
+    from api.services.dashboard_review_catalog import history
+    from api.services.review_set_registry import available
+
+    if not await available(db):
+        return {"results": [], "total": 0, "offset": offset, "limit": limit}
+    page = await history(db, offset=offset, limit=limit)
+    return {"results": page["results"], "total": page["total"], "offset": offset, "limit": limit}
+
+
+@dashboard_router.get('/tagger-dashboard/review-queues/{ref}/open', include_in_schema=False)
+async def open_legacy_review(ref: str, db: AsyncSession = Depends(get_db),
+                             auth_user: User = Depends(get_current_user)):
+    from fastapi.responses import RedirectResponse
+    from api.services.review_set_registry import catalog_sets
+
+    if not re.fullmatch(r"[a-f0-9]{64}", ref):
+        raise HTTPException(404, "Review set not found")
+    queues = await catalog_sets(db, ref)
+    if len(queues) != 1 or queues[0]["schema"] != "human-review-set/1":
+        raise HTTPException(404, "Review set not found")
+    return RedirectResponse(queues[0]["unjudged_url"], status_code=303)
+
+
+@dashboard_router.get('/tagger-dashboard/review-queues')
+async def review_queues(db: AsyncSession = Depends(get_db), auth_user: User = Depends(get_current_user)):
+    import asyncio
+    from api.errors import KuraError
+    from api.services.review_queues import ReviewQueueRefused, read_legacy_lora_refs, review_lanes
+    try:
+        from api.services.review_set_registry import candidates_for_release_review, legacy_lora_refs, load_configured
+        queues = await load_configured(db)
+    except ReviewQueueRefused as exc:
+        raise KuraError(503, 'review_sets_unavailable', context={'reason': str(exc)},
+                        fix='固定セットの配置とdigestを確認してください。空の成功として扱わないでください。') from exc
+    if queues is None:
+        return {'state': 'not_configured', 'queues': []}
+    origin_metadata_unavailable = False
+    try:
+        legacy_refs = await legacy_lora_refs(db)
+        if legacy_refs is None:
+            legacy_refs = await asyncio.to_thread(read_legacy_lora_refs)
+    except (OSError, ValueError):
+        legacy_refs = set()
+        origin_metadata_unavailable = True
+    review_lanes(queues, legacy_refs)
+    from api.services.review_requests import load_requests
+    try:
+        requests = await asyncio.to_thread(load_requests, queues)
+        request_unavailable = None
+        requests_state = 'not_configured' if requests is None else 'available'
+    except Exception:
+        # Optional operator metadata must not hide existing purpose-based requests.
+        # Do not expose arbitrary local exception text.
+        requests, requests_state = {}, 'unavailable'
+        request_unavailable = {'reason': 'request_metadata_unavailable'}
+    for queue in queues:
+        queue['request'] = (requests or {}).get(queue['queue_sha256'])
+        queue['request_unavailable'] = bool(request_unavailable and queue['purpose'] == 'training_support')
+    from api.services.review_comparison import load_scores, compare
+    try:
+        scores = await asyncio.to_thread(load_scores, queues)
+        score_error = None
+    except ReviewQueueRefused as exc:
+        scores, score_error = {}, str(exc)
+    except Exception:
+        # Optional comparison must not hide working review requests. Never
+        # expose arbitrary exception text (paths or other local context).
+        scores, score_error = {}, 'score_read_failed'
+    from api.services.review_adjudication import awaiting_resolution, is_adjudication
+    from api.services.review_reselection import retired_refs
+    retired = await retired_refs(db)
+    current_queues = [
+        queue for queue in queues
+        if not queue.get('superseded_by') and queue['queue_sha256'] not in (retired or ())
+    ]
+    # Resolve each frozen name once, maintaining the database's exact case
+    # comparison and the canonical-name requirement.
+    resolved_by_tag = {}
+    names = sorted({queue['tag'] for queue in current_queues})
+    if names:
+        rows = (await db.execute(text(
+            'SELECT requested.name, n.tag_id, canonical.name '
+            'FROM unnest(CAST(:names AS text[])) AS requested(name) '
+            'JOIN tag_name n ON lower(n.name)=lower(requested.name) '
+            'JOIN tag_name canonical ON canonical.tag_id=n.tag_id AND canonical.ord=0'
+        ), {'names': names})).all()
+        for requested, tag_id, canonical in rows:
+            resolved_by_tag.setdefault(requested, []).append((tag_id, canonical))
+    available, unavailable = [], []
+    for queue in current_queues:
+        resolved = resolved_by_tag.get(queue['tag'], ())
+        if len(resolved) != 1 or resolved[0][1] != queue['tag']:
+            raise KuraError(503, 'review_sets_unavailable', context={'reason': 'tag_unresolved'},
+                            fix='固定セットの正式なタグ名を確認してください。')
+        tag_id = resolved[0][0]
+        if queue['schema'] in ('human-review-set/2', 'human-review-set/3'):
+            reason = None
+            paired_review = is_paired_review(queue)
+            events = []
+            if os.environ.get('KURA_DB_ROLE', 'canonical').lower() != 'canonical':
+                reason = 'human_review_canonical_required'
+            else:
+                from api.services.human_review import bounded_transaction, reviewable_post_ids
+                try:
+                    nested = await db.begin_nested()
+                    try:
+                        await bounded_transaction(db)
+                        queue['post_ids'] = await reviewable_post_ids(db, queue)
+                        events = (await db.execute(text(
+                            'SELECT DISTINCT ON(post_id) post_id,decision FROM tagger_human_review_event '
+                            'WHERE queue_sha256=:q AND post_id=ANY(:ids) ORDER BY post_id,id DESC'),
+                            {'q':queue['queue_sha256'],'ids':queue['post_ids']})).all()
+                    finally:
+                        await nested.rollback()  # Also restore SET LOCAL on a successful read.
+                except DBAPIError as exc:
+                    if getattr(exc.orig, 'sqlstate', None) not in ('42P01','55P03','57014'):
+                        raise
+                    reason = 'human_review_storage_unavailable'
+            if reason:
+                unavailable.append({'queue_sha256':queue['queue_sha256'], 'tag':queue['tag'],
+                                    'total':len(queue['post_ids']), 'reason':reason})
+                continue
+            if not queue['post_ids']:
+                continue
+            queue['judged'] = {state:sum(s==state for _,s in events) for state in ('present','absent','uncertain')}
+            queue['adjudication'] = is_adjudication(queue)
+            queue['reselectable'] = (retired is not None and not queue['adjudication']
+                                     and queue['purpose'] == 'historical_label_recheck'
+                                     and not paired_review)
+            resolved_dispute = (
+                queue['adjudication'] and not (queue['judged']['present'] or queue['judged']['absent'])
+                and not await awaiting_resolution(db, queue)
+            )
+            queue['total'] = len(queue.pop('post_ids'))
+            queue['remaining'] = queue['total']-len(events)
+            if queue['adjudication']:
+                queue['remaining'] = 0 if resolved_dispute else queue['remaining'] + queue['judged']['uncertain']
+            queue['comparison'] = {'state':'explicit_recheck_not_quality','quality_granted':False}
+            queue['responses'] = len(events)
+            queue['decisive'] = queue['judged']['present'] + queue['judged']['absent']
+            queue['review_state'] = ('awaiting_responses' if queue['remaining'] else
+                'review_completed_quality_unresolved' if queue['judged']['uncertain'] else 'review_completed_not_quality_approval')
+            available.append(queue)
+            continue
+        pins = (await db.execute(text(
+            'SELECT pin.post_id, pin.state FROM post_tag_pin pin '
+            "WHERE pin.tag_id=:tag_id AND pin.post_id=ANY(:ids) AND pin.state IN ('present','absent') ORDER BY pin.post_id"
+        ), {'tag_id': tag_id, 'ids': queue['post_ids']})).all()
+        queue['judged'] = {state: sum(s == state for _, s in pins)
+                           for state in ('present', 'absent') if any(s == state for _, s in pins)}
+        if score_error:
+            queue['comparison'] = {'state': 'unavailable', 'reason': score_error}
+        elif queue['queue_sha256'] in scores:
+            queue['comparison'] = compare(queue, scores[queue['queue_sha256']], pins)
+        else:
+            queue['comparison'] = {'state': 'not_supplied'}
+        queue['total'] = len(queue.pop('post_ids'))
+        queue['remaining'] = queue['total'] - sum(queue['judged'].values())
+        available.append(queue)
+    release_reviews = await candidates_for_release_review(db, [
+        queue['queue_sha256'] for queue in available
+        if queue['schema'] == 'human-review-set/3' and queue['remaining'] == 0
+        and queue['decisive'] == queue['total']
+    ])
+    from api.services.dashboard_review_accuracy import read_review_accuracy
+    accuracy = await asyncio.to_thread(read_review_accuracy)
+    # The dashboard lists sets; it never reads their per-image digests (2026-11-27: media_sha256
+    # was 1.29 MB of a 1.87 MB response). The review screen gets them per set from its own API.
+    for queue in available:
+        queue.pop('media_sha256', None)
+    return {'state': 'available', 'queues': available, 'unavailable_queues': unavailable,
+            'requests_state': requests_state, 'request_unavailable': request_unavailable,
+            'release_reviews': release_reviews, 'origin_metadata_unavailable': origin_metadata_unavailable,
+            'review_accuracy': accuracy}
 
 METADATA_LOAD_OPTS = [
     selectinload(Pool.names),
@@ -293,16 +516,11 @@ async def get_pool_by_source(
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     pool = await _find_pool_by_source(url, db)
-    if pool is None:
+    if pool is None or pool.hidden:
         raise HTTPException(status_code=404, detail="Pool not found")
     data = _serialize_pool(pool)
-    cover_id = pool.cover_post_id
-    if cover_id is None and data["posts"]:
-        cover_id = data["posts"][0]
-    first_post_source = None
-    if cover_id is not None:
-        result = await db.execute(select(Post.source).where(Post.post_id == cover_id))
-        first_post_source = result.scalar_one_or_none()
+    covers = await pool_covers(db, [pool.pool_id])
+    cover_id, first_post_source = covers.get(pool.pool_id, (None, None))
     sorted_names = sorted(pool.names, key=lambda n: n.order)
     data["name"] = sorted_names[0].name if sorted_names else f"pool#{pool.pool_id}"
     data["thumbnailUrl"] = _thumbnail_url_by_id(cover_id) if cover_id else None
@@ -355,19 +573,10 @@ def _apply_pool_filters(stmt, free_terms: list[str], name_terms: list[str],
                         tag_terms: list[str], hide_verify: bool = False,
                         resolved: dict[str, list[int]] | None = None):
     if hide_verify:
-        # 0058 の verify_status 列を SoT として隠す (2026-07-19、名前正規表現だけでは
-        # 判定完了プールが取りこぼされ「ごみプール大量表示」になった実測を受けて):
-        #  - verified / excluded = 判定完了・引退 → 隠す
-        #  - pending = user の判定待ち作業キュー → hide_verify でも隠さない (不可視化が
-        #    判定待ち滞留を生んだ教訓、observation c4c94983)
-        #  - NULL (legacy、status 未設定) のみ従来の名前正規表現で判定
-        # SQL 3値論理に注意: NULL 行で IN/NOT の否定形は NULL に落ちて行が消えるため
-        # 「見える条件」を正形で書く (hidden の否定形にしない)。
+        # hide_verify is retained as the legacy-history filter; no review work is pending.
         name_sub = select(PoolName.pool_id).where(PoolName.name.op("~*")(VERIFY_POOL_NAME_RE))
-        visible = or_(
-            Pool.verify_status == "pending",
-            and_(Pool.verify_status.is_(None), Pool.pool_id.not_in(name_sub)),
-        )
+        # All verification metadata is historical, including former pending pools.
+        visible = and_(Pool.verify_status.is_(None), Pool.pool_id.not_in(name_sub))
         stmt = stmt.where(visible)
     # 裸の語は「pool 名 **または** メンバーのタグ」に当てる (2026-09-05)。
     #
@@ -700,8 +909,86 @@ async def dedup_scan_pool(
             "note": "perceptual auto-demote removed; phash is search-only, sha256/md5 is the dedup key"}
 
 
-@router.get("/tagger-dashboard", include_in_schema=False)
-async def tagger_dashboard(raw: bool = Query(False), db: AsyncSession = Depends(get_db)):
+async def _dashboard_nodes(db: AsyncSession):
+    nodes = (await db.execute(text(
+        "SELECT w.host, n.release_id, n.verified, n.detail, n.reported_at, "
+        "CASE WHEN n.reported_at IS NULL THEN 'missing' "
+        "     WHEN now() - n.reported_at < interval '5 minutes' THEN 'active' "
+        "     WHEN now() - n.reported_at < interval '1 hour' THEN 'stale' "
+        "     ELSE 'dead' END AS liveness, "
+        "w.description "
+        "FROM tagger_expected_worker w "
+        "LEFT JOIN tagger_node_state n ON n.host = w.host "
+        "ORDER BY (n.reported_at IS NULL), n.reported_at DESC"
+    ))).mappings().all()
+    # 登録忘れの worker (expected に無いが報告はしている) も別途拾う — 逆方向の
+    # ドリフトも沈黙させない。
+    unexpected_nodes = (await db.execute(text(
+        "SELECT n.host, n.release_id, n.reported_at FROM tagger_node_state n "
+        "WHERE NOT EXISTS (SELECT 1 FROM tagger_expected_worker w WHERE w.host = n.host)"
+    ))).mappings().all()
+    return nodes, unexpected_nodes
+
+
+@dashboard_router.get("/tagger-dashboard/summary/compact", include_in_schema=False)
+async def tagger_dashboard_summary_compact(auth_user: User = Depends(get_current_user)):
+    import asyncio
+    from fastapi.responses import JSONResponse
+    from api.services.dashboard_runtime_cache import fresh_snapshot
+
+    return JSONResponse(await asyncio.to_thread(fresh_snapshot), headers={"Cache-Control": "private, no-store"})
+
+
+@dashboard_router.get("/tagger-dashboard/summary", include_in_schema=False)
+async def tagger_dashboard_summary(auth_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    import asyncio
+    from fastapi.responses import JSONResponse
+    from api.services.dashboard_summary import snapshot
+    from api.services.web_release_observation import dashboard_status
+    from api.services.dashboard_human_support import read_human_support
+    summary = await snapshot(db)
+    summary["human_support"] = await read_human_support(db)
+    from api.services.dashboard_base_comparison import read_comparison
+    summary["base_comparison"] = await read_comparison(db)
+    from api.services.dashboard_base_vocabulary import read_vocabulary
+    summary["base_vocabulary"] = await read_vocabulary(db)
+    summary["web_release"] = await asyncio.to_thread(dashboard_status)
+    return JSONResponse(summary, headers={"Cache-Control": "private, no-store"})
+
+
+@dashboard_router.get("/tagger-dashboard/lifecycle-health", include_in_schema=False)
+async def tagger_dashboard_lifecycle_health(auth_user: User = Depends(get_current_user),
+                                            db: AsyncSession = Depends(get_db)):
+    from fastapi.encoders import jsonable_encoder
+    from fastapi.responses import JSONResponse
+    from api.services.lifecycle_health import snapshot
+    return JSONResponse(jsonable_encoder(await snapshot(db)), headers={"Cache-Control": "private, no-store"})
+
+
+@dashboard_router.get("/tagger-dashboard/experiment", include_in_schema=False)
+async def tagger_dashboard_experiment():
+    """Bounded local observation only; no aggregate query or worker contact."""
+    from fastapi.responses import HTMLResponse
+    from api.tagger_core.experiment_status import read
+    from api.tagger_core.dashboard_experiment import render
+    return HTMLResponse(render(read()), headers={"Cache-Control": "no-store"})
+
+
+@dashboard_router.get("/tagger-dashboard/nodes", include_in_schema=False)
+async def tagger_dashboard_nodes(db: AsyncSession = Depends(get_db)):
+    """Heartbeat snapshot only: never wait for dashboard aggregates or contact workers."""
+    from fastapi.encoders import jsonable_encoder
+    from fastapi.responses import JSONResponse
+    nodes, unexpected = await _dashboard_nodes(db)
+    return JSONResponse(jsonable_encoder({
+        "nodes": [dict(n) for n in nodes],
+        "unexpected": [dict(n) for n in unexpected],
+    }), headers={"Cache-Control": "no-store"})
+
+
+@dashboard_router.get("/tagger-dashboard", include_in_schema=False)
+async def tagger_dashboard(raw: bool = Query(False), db: AsyncSession = Depends(get_db),
+                           include_nodes: bool = Query(True)):
     """tagger ダッシュボード — **スキーマ直結の動的レンダー** (2026-07-20、静的HTML
     push を廃止)。毎リクエストで DB(tagger_release/active・tagger_node_state・
     tagger_expected_worker・post.tagging_status) と patches/*.json(head 詳細) を読み、
@@ -875,23 +1162,7 @@ async def tagger_dashboard(raw: bool = Query(False), db: AsyncSession = Depends(
     # worker を沈黙のまま見落とさない(primary の kura-tagger.service が1ヶ月
     # enable されず誰も気付かなかった事故の直接対策)。鮮度は SQL の now() で
     # 判定 (アプリ側時計に頼らない、フリート共通の "beat"/"stale" 慣習に合わせる)。
-    nodes = (await db.execute(text(
-        "SELECT w.host, n.release_id, n.verified, n.detail, n.reported_at, "
-        "CASE WHEN n.reported_at IS NULL THEN 'missing' "
-        "     WHEN now() - n.reported_at < interval '5 minutes' THEN 'active' "
-        "     WHEN now() - n.reported_at < interval '1 hour' THEN 'stale' "
-        "     ELSE 'dead' END AS liveness, "
-        "w.description "
-        "FROM tagger_expected_worker w "
-        "LEFT JOIN tagger_node_state n ON n.host = w.host "
-        "ORDER BY (n.reported_at IS NULL), n.reported_at DESC"
-    ))).mappings().all()
-    # 登録忘れの worker (expected に無いが報告はしている) も別途拾う — 逆方向の
-    # ドリフトも沈黙させない。
-    unexpected_nodes = (await db.execute(text(
-        "SELECT n.host, n.release_id, n.reported_at FROM tagger_node_state n "
-        "WHERE NOT EXISTS (SELECT 1 FROM tagger_expected_worker w WHERE w.host = n.host)"
-    ))).mappings().all()
+    nodes, unexpected_nodes = await _dashboard_nodes(db) if include_nodes else ([], [])
     queue = await tagging_queue.by_status(db)
 
     # ── throughput: 「いつどのタガーがどれだけ仕事したか」(post_tag_audit.host/
@@ -951,36 +1222,6 @@ async def tagger_dashboard(raw: bool = Query(False), db: AsyncSession = Depends(
         # (数千)で軽量。テーブルには「既に載っているタグだけ」を enrich する(下記)。
     ))).mappings().all()
 
-    # ── 検証待ち pool: 「検証プールはどれか管理できていない」対策。verify_status
-    # (0058) が SoT — 'pending' は今まさにレビュー待ちの実行可能なリスト、名前
-    # 正規表現(VERIFY_POOL_NAME_RE)だけに頼らない。NULL-status で検証プールらしき
-    # 名前の pool は別途件数のみ表示(個別列挙すると数百件になり実用性を欠く —
-    # 既知の構造的負債、docs/notes/tagger-correction-program-ledger.md 参照)。──
-    pending_pools = (await db.execute(text(
-        "SELECT p.id, pn.name, p.tagger_source, p.creation_time, "
-        "(SELECT count(*) FROM pool_post pp WHERE pp.pool_id = p.id) AS n_posts "
-        "FROM pool p LEFT JOIN pool_name pn ON pn.pool_id = p.id AND pn.ord = 0 "
-        "WHERE p.verify_status = 'pending' ORDER BY p.creation_time ASC"
-    ))).mappings().all()
-    unflagged_verify_like = (await db.execute(text(
-        f"SELECT count(*) AS n FROM pool p LEFT JOIN pool_name pn ON pn.pool_id = p.id AND pn.ord = 0 "
-        f"WHERE p.verify_status IS NULL AND pn.name ~ '{VERIFY_POOL_NAME_RE}'"
-    ))).scalar_one()
-
-    # ── 完了済み検証pool: verified/excludedに達した後は用済みだが誰も片付けない
-    # ため溜まり続ける(user指摘 2026-07-20「ずいぶんたまってしまった」、実測
-    # 39件)。bulk削除panel用 -- DELETE先(POST /api/tagger-dashboard/verify-
-    # pools/cleanup)は同じ述語(tagger_source IS NOT NULL AND verify_status IN
-    # ('verified','excluded'))をサーバ側でも検証するので、フォーム改ざんで
-    # 普通のcontent poolが消える経路にはならない。──
-    done_verify_pools = (await db.execute(text(
-        "SELECT p.id, pn.name, p.tagger_source, p.verify_status, p.last_edit_time, "
-        "(SELECT count(*) FROM pool_post pp WHERE pp.pool_id = p.id) AS n_posts "
-        "FROM pool p LEFT JOIN pool_name pn ON pn.pool_id = p.id AND pn.ord = 0 "
-        "WHERE p.tagger_source IS NOT NULL AND p.verify_status IN ('verified','excluded') "
-        "ORDER BY p.last_edit_time ASC NULLS LAST"
-    ))).mappings().all()
-
     # ── 反復補正の推移: user指示 2026-07-21「正答率が低いanilingusの学習を
     # 繰り返して補正をしているんだけど、それを掌握するバーもほしい」。
     # tagger_head_candidateはtag×poolで1行(検証プールを回すたび追加)なので
@@ -1029,9 +1270,8 @@ async def tagger_dashboard(raw: bool = Query(False), db: AsyncSession = Depends(
         candidates_by_tag[t]["rounds"] += 1
 
     # ── quarantine: 0068 tag_quarantine が SoT (infer.py の frozenset でなく schema) ──
-    quar = {r["tag"] for r in (await db.execute(text(
-        "SELECT tag FROM tag_quarantine WHERE active"
-    ))).mappings().all()}
+    from api.tagger_core.quality_hold import held_names
+    quar = set(await held_names(db))
 
     # ── lifecycle_stage: tagger_lifecycle view (0078) 直読 -- 「approved patchは
     # あるが、今まさにv-next再学習が走っている」を可視化するため(user指示
@@ -1046,32 +1286,10 @@ async def tagger_dashboard(raw: bool = Query(False), db: AsyncSession = Depends(
         ))).mappings().all()
     }
 
-    # ── LIVE 精度: 静的な tagger_patch.metrics(作成時の user 記入値「F1 0.9」等)を
-    # やめ、検証済み学習プール母集団での現行 head の実測成績を出す(user 指示 2026-07-21:
-    # 「精度値を実測値で変化させてほしい / タグ補正のやりがい / この現行 head は間違って
-    # ますよというのが強調表示」)。母集団 = 学習プール(統制されたレビュー、= head 成績
-    # 確認の場、user:「単に学習プールから出していい」)。post 単位で:
-    #   TP = 人間が触らず & タグ在り (tagger 付け・人間が残した)
-    #   FP = 人間が absent 化 (tagger 過検出・人間が消した) = 「間違い」そのもの
-    #   FN = 人間が present 化 (tagger 見逃し・人間が足した)
-    #   TN = 人間が触らず & タグ無し
-    # 実測 P=TP/(TP+FP)、R=TP/(TP+FN)。補正が増えるほど動く。全145タグで実測 ~31ms。──
-    live_gt_by_tag = {r["tag"]: dict(r) for r in (await db.execute(text(
-        "WITH vpool_posts AS ("
-        "  SELECT DISTINCT pp.post_id FROM pool_post pp JOIN pool po ON po.id=pp.pool_id "
-        "  WHERE po.tagger_source IS NOT NULL AND po.verify_status='verified') "
-        "SELECT tn.name AS tag, "
-        "  count(*) FILTER (WHERE pin.state IS NULL AND pt.tag_id IS NOT NULL) AS tp, "
-        "  count(*) FILTER (WHERE pin.state='absent') AS fp, "
-        "  count(*) FILTER (WHERE pin.state='present') AS fn, "
-        "  count(*) FILTER (WHERE pin.state IS NULL AND pt.tag_id IS NULL) AS tn "
-        "FROM vpool_posts vp "
-        "JOIN tagger_gt_label g ON g.post_id=vp.post_id "
-        "JOIN tag_name tn ON tn.name=g.tag AND tn.ord=0 "
-        "LEFT JOIN post_tag_pin pin ON pin.post_id=vp.post_id AND pin.tag_id=tn.tag_id "
-        "LEFT JOIN post_tag pt ON pt.post_id=vp.post_id AND pt.tag_id=tn.tag_id "
-        "GROUP BY tn.name"
-    ))).mappings().all()}
+    # Human evidence is independent of archived review pools and model accuracy.
+    from api.tagger_core.dashboard_evidence import EVIDENCE_SQL, evidence_counts
+    evidence_by_tag = {r["tag"]: dict(r) for r in
+                       (await db.execute(text(EVIDENCE_SQL))).mappings().all()}
 
     # ── head 詳細: tagger_patch を直読 (0070 で gt/head_type を専用列に昇格、band-aid 除去)。
     # 最新 version を DISTINCT ON で採る。head_type = 役割、gt = 教師、metrics = P/R/F1。──
@@ -1107,14 +1325,14 @@ async def tagger_dashboard(raw: bool = Query(False), db: AsyncSession = Depends(
     for r in rows:
         r["candidate"] = candidates_by_tag.get(r["tag"])
         r["lifecycle_stage"] = lifecycle_by_tag.get(r["tag"])
-        r["perf"] = live_gt_by_tag.get(r["tag"])
+        r["perf"] = evidence_by_tag.get(r["tag"])
     for t, cand in candidates_by_tag.items():
         if t not in seen:
             rows.append({"tag": t, "type": None, "logit": None, "ver": None,
                          "status": "(候補のみ・未approved)", "p": None, "r": None, "f1": None, "gt": None,
                          "by": None, "why": "", "updated_at": None, "live": False, "quar": t in quar,
                          "candidate": cand, "lifecycle_stage": lifecycle_by_tag.get(t),
-                         "perf": live_gt_by_tag.get(t)})
+                         "perf": evidence_by_tag.get(t)})
             seen.add(t)
     rows.sort(key=lambda r: (not r["live"], r["candidate"] is None, r["tag"]))
 
@@ -1155,6 +1373,8 @@ async def tagger_dashboard(raw: bool = Query(False), db: AsyncSession = Depends(
                 for n in unexpected_nodes)
     else:
         node_html = "<tr><td colspan=7 class=mut>tagger_expected_worker が空 — 0071 未適用の可能性</td></tr>"
+    node_panel = f"""<div data-tagger-nodes><h1 style='font-size:13px;margin:var(--control-padding-x) 0 var(--control-gap)'>worker node</h1>
+<div class=wrap><table><tr><th>host<th>role<th>status<th>release<th>verified<th>last seen<th>detail</tr>{node_html}</table></div></div>""" if include_nodes else ""
     _ROLE = {"wd14_logit_patch": "logit-patch", "content_head": "content-head",
              "anatomy_multihead": "anatomy"}
 
@@ -1188,21 +1408,29 @@ async def tagger_dashboard(raw: bool = Query(False), db: AsyncSession = Depends(
     if (await db.execute(text(
             "SELECT to_regclass('public.tagger_registration_request') IS NOT NULL"))).scalar():
         reg_rows = (await db.execute(text(
-            "SELECT id, tag, status, "
+            "SELECT DISTINCT ON (tag) id, tag, status, requested_at, validated_at, "
             "       metrics->>'disposition' AS disposition, "
             "       coalesce(rejected_reason,'') AS reason, "
             "       gt->>'positive' AS gt_pos, gt->>'negative' AS gt_neg, "
             "       (metrics->'classification'->>'net_fp_removed_deploy')::float AS net, "
             "       (metrics->'classification'->>'lift')::float AS lift, "
             "       metrics->'classification'->>'at' AS op_at, "
-            "       metrics->'arms' AS arms "
+            "       metrics->'arms' AS arms, "
+            "       metrics->'support' AS support, metrics->>'reason' AS measurement_reason, "
+            "       metrics->'serving_qualification' AS serving_qualification "
             "FROM tagger_registration_request "
-            "ORDER BY id DESC LIMIT 200"
+            "ORDER BY tag, id DESC"
         ))).mappings().all()
 
     def _reg_bucket(r) -> str:
         """status と理由の前置から 4 クラスへ写す。**disposition が空の旧行**も
         取りこぼさない — 旧形式は理由文しか手掛かりが無い。"""
+        if r.get("serving_qualification") is not None:
+            if r["status"] == "pending":
+                return "判定待ち"
+            if (r["reason"] or "").startswith("awaiting_production_precision"):
+                return "配備条件の確認待ち"
+            return "不採用"
         d = (r["disposition"] or "").strip()
         reason = r["reason"] or ""
         if r["status"] == "validated":
@@ -1223,6 +1451,12 @@ async def tagger_dashboard(raw: bool = Query(False), db: AsyncSession = Depends(
     # tag -> 登録判定。**別パネルにしない** (user 2026-08-05「タグ状況カードに
     # 統合しろ」/ 既存の「head candidate とのカード統合だ」「特殊化するな」と同じ方針)。
     # 統合テーブルの 1 列として出す — タグの状態は 1 箇所で見える方がよい。
+    from api.services.learning_execution import recent as read_learning_progress
+    learning_rows = await read_learning_progress(db)
+    learning_progress = learning_rows[0] if learning_rows else None
+    learning_by_tag = {row["tag"]: row for row in learning_rows}
+    from api.services.execution_receipts import published_candidate_coverage
+    candidate_coverage = await published_candidate_coverage(db) if include_nodes else {}
     reg_by_tag: dict[str, dict] = {}
     for r in reg_rows:
         t = r["tag"]
@@ -1249,12 +1483,13 @@ async def tagger_dashboard(raw: bool = Query(False), db: AsyncSession = Depends(
             if _a is not None and (_best_v is None or _a > _best_v):
                 _best_k, _best_v = _k, _a
         reg_by_tag[t] = {"bucket": _reg_bucket(r), "status": r["status"],
-                         "net": r["net"], "lift": r["lift"], "at": r["op_at"],
+                         "net": r["net"], "lift": r["lift"], "at": r["validated_at"] or r["op_at"], "requested_at": r["requested_at"], "request_id": r["id"],
                          "reason": r["reason"], "gt_pos": r["gt_pos"], "gt_neg": r["gt_neg"],
                          "cur_auc": _cur, "best_auc": _best_v, "best_arm": _best_k,
                          # **描画側が参照するので必ず載せる** — 抽出しただけで
                          # 辞書に入れ忘れ、乖離バッジが 1 件も出なかった (2026-08-05)。
-                         "cur_skip": _cur_skip}
+                         "cur_skip": _cur_skip, "serving_qualification": r.get("serving_qualification"),
+                         "support": r.get("support"), "measurement_reason": r.get("measurement_reason")}
 
     # ── 再学習の進捗 (user 2026-08-05「再学習の進捗も見たい」) ──────────
     # candidate⇄training の往復と、いま training に入ってからの経過。
@@ -1306,7 +1541,11 @@ async def tagger_dashboard(raw: bool = Query(False), db: AsyncSession = Depends(
         u = _ut(r["tag"]); u["type"] = r.get("type"); u["live"] = r["live"]
         u["status"] = r["status"] or ""; u["stage"] = r.get("lifecycle_stage")
         u["perf"] = r.get("perf"); u["cand"] = r.get("candidate")
-    for _t, _m in live_gt_by_tag.items():
+    for row in learning_rows:
+        _ut(row["tag"])
+    for _t in reg_by_tag:
+        _ut(_t)  # Rejected first candidates have no deployed patch row.
+    for _t, _m in evidence_by_tag.items():
         _ut(_t)["perf"] = _m
     # Keep snapshot-only tags visible even when their decisions are historical.
     # The per-row badge below reports pause/staleness instead of an action claim.
@@ -1324,18 +1563,14 @@ async def tagger_dashboard(raw: bool = Query(False), db: AsyncSession = Depends(
             continue
         u = _ut(_t); u["auto_add"] = _aa; u["auto_rm"] = _ar; u["man_add"] = _ma; u["man_rm"] = _mr
 
-    def _pnums(p):
-        if not p:
-            return (None, 0, 0)
-        lp = p["tp"] / (p["tp"] + p["fp"]) if (p["tp"] + p["fp"]) else None
-        return (lp, p["fp"], p["tp"] + p["fn"])
-
     uni = sorted(_uni.values(),
-                 key=lambda x: (-_pnums(x["perf"])[1],
+                 key=lambda x: (-evidence_counts(x["perf"])[1], -evidence_counts(x["perf"])[0],
                                 -(x["auto_add"] + x["auto_rm"] + x["man_add"] + x["man_rm"]), x["tag"]))
 
+    from api.tagger_core import dashboard_visual as visual
+
     def _uni_row(u: dict) -> str:
-        lp, fp, pos = _pnums(u["perf"])
+        corrections, violations, pos, neg = evidence_counts(u["perf"])
         tag = u["tag"]
         # 状態は多値(live+veto+training が同時に立つ)。各要素を独立バッジに分割し、
         # data-st トークンでフィルタのキーにする(user 2026-07-22:「状態カラムは
@@ -1347,8 +1582,8 @@ async def tagger_dashboard(raw: bool = Query(False), db: AsyncSession = Depends(
             # dark_labia_minora がこの経路で全 post に発火していたのに、release
             # 台帳しか見ないこの画面では稼働に見えなかった。
             (_pol is not None, "policy", "🧩",
-             (f"content-head policy 稼働 (v{_pol['ver']} thr {_pol['thr']:g} "
-              f"{_pol['mode']}, gate={','.join(_pol['gates']) or '無'}) — worker が毎サイクル適用"
+             (f"content-head policy 設定 (v{_pol['ver']} thr {_pol['thr']:g} "
+              f"{_pol['mode']}, gate={','.join(_pol['gates']) or '無'}) — worker の適用確認はノード欄"
               if _pol else "")),
             (u["veto"], "veto", "🛡", "gated-veto 稼働(推論で誤検出を打消)"),
             (u["reap_auth"], "reap", "🎯", "reap 権限あり: GT-positive recall が閾値以上と実測 → サーバが実際にこのタグの stale FP を削除する"),
@@ -1371,8 +1606,9 @@ async def tagger_dashboard(raw: bool = Query(False), db: AsyncSession = Depends(
             f"<span class=sb data-st={tok} title='{e(tt)}'>{ic}</span>"
             for on, tok, ic, tt in _STATES if on) or "<span class=mut>⚪</span>"
         st_attr = " ".join(st_tokens)
-        p_cell = (_pbar(lp * 100, 'tp内の真陽性率(検証プール実測)')
-                  if lp is not None else "<span class=mut>—</span>")
+        # No version-bound independent predictions are stored by this dashboard.
+        # A past registration score or a corrected tag is not current accuracy.
+        p_cell = "<span class=mut title='現行版の独立した予測と固定正解の比較結果は未登録。訂正履歴から精度は計算しない'>未測定</span>"
         # 増減は auto_tag(タガー)と manual(人間補正)を別カラムに分割
         # (user 2026-07-22:「autotag とマニュアルのカラムは分割しろ」)。
         aa, ar, ma, mr = u["auto_add"], u["auto_rm"], u["man_add"], u["man_rm"]
@@ -1432,6 +1668,14 @@ async def tagger_dashboard(raw: bool = Query(False), db: AsyncSession = Depends(
         # ── 登録判定 (4 クラス) ── **別 panel にしない** (user 2026-08-05
         # 「タグ状況カードに統合しろ」/ 既存の「特殊化するな」)。タグの状態は
         # 1 箇所で見えるほうがよいので、ここのバッジ列に合流させる。
+        if coverage := candidate_coverage.get(u["tag"]):
+            workers = coverage["workers"]
+            checked = sum(worker["confirmed"] for worker in workers)
+            label = "公開済み・推論確認済み" if coverage["complete"] else "公開済み・推論確認待ち"
+            reg_badge += "<span class=mut>" + e(f"{label} {checked}/{len(workers)}") + "</span> "
+        tag_learning = learning_by_tag.get(u["tag"])
+        if tag_learning:
+            reg_badge += "<span class=mut>" + e(tag_learning["label"]) + "</span> "
         _rg = u.get("reg") or {}
         if _rg:
             _b = _rg.get("bucket")
@@ -1456,6 +1700,9 @@ async def tagger_dashboard(raw: bool = Query(False), db: AsyncSession = Depends(
             _cls, _ico, _tip = _RG.get(_b, ("mut", "·", ""))
             reg_badge += (f"<span class={_cls} title='{e(_tip)}｜{e((_rg.get('reason') or '')[:200])}'>"
                            f"{_ico} {e(_b)}{e(_rg_num)}</span> ")
+        if _rg.get("serving_qualification") is not None:
+            from api.tagger_core.learning_evidence import serving_summary
+            reg_badge += "<span class=mut>" + e(serving_summary(_rg["serving_qualification"])) + "</span> "
         # 再学習の往復。**回数だけ出しても意味が薄い**ので、最後に training へ
         # 入った時刻を添える — 「回っているのに進まない」と「そもそも回って
         # いない」を区別できるようにする。
@@ -1530,23 +1777,13 @@ async def tagger_dashboard(raw: bool = Query(False), db: AsyncSession = Depends(
             auto_badge = f"<span class=auto-wait>{e(_why)}</span>"
         elif _dd and not auto_badge:
             auto_badge = f"<span class=auto-wait>{e(_progress.describe_decision(_d))}</span>"
-        # ＋正例 は「本当に検証プール正例が要る」ときだけ = 非 established(メインタガー
-        # 未組込で corpus 正例が使えない)候補、または disposition 情報が無いタグ。
-        # 隔離による自動学習停止を、正例不足と取り違えた導線にはしない。
-        _needs_pos_manual = ((_dd is None) or (_dd == "hold" and _d.get("reason") == "need_positives")) \
-            and progress["current"] and not (_dd == "hold" and _d.get("reason") == "quarantined_output_discarded")
-        if _needs_pos_manual and fp >= 5 and need > 0:
-            _lbl = f"＋正例 あと{need}"
-            _ttl = (f"正例あと{need}件で学習可({pos}/{int(_min_pos)})。この過検出タグはメインタガー未組込のため "
-                    f"corpus 正例が使えず、検証プールでの人手確認が要る")
-        else:
-            _lbl = "検証プール"
-            _ttl = "検証プールを生成して次の補正ラウンドを回す(反復補正)。自動再学習とは独立に GT 品質を上げる手動導線"
         auto_badge = (auto_badge + (" " if auto_badge and reg_badge else "") + reg_badge)
-        drive = (auto_badge + ("<br>" if auto_badge else "")
-                 + f"<form method=post action='/api/tagger-dashboard/head/{_q(tag)}/generate-pool' "
-                 f"target=_blank rel=noopener style='display:inline' onsubmit=\"return confirm('{e(tag)} の検証プール(約20枚)を生成しますか?')\">"
-                 f"<button type=submit title='{e(_ttl)}'>{_lbl}</button></form>")
+        from api.tagger_core.dashboard_actions import task, task_html
+        auto_badge = task_html(task(u, tag_learning, progress)) + "<details><summary>過去の候補・自動判定の記録</summary>" + auto_badge + "</details>"
+        drive = (auto_badge + "<details><summary>画像で訂正する（任意）</summary>"
+                 + f"<a href='/?q={_q(tag)}' target=_blank rel=noopener "
+                   "title='通常の画像でタグを追加・削除・確認すると正解データに反映されます'>付与済み画像の誤タグを訂正</a>"
+                 + f" · <a href='/?q={_q('-'+tag)}' target=_blank rel=noopener>未付与画像から不足を探す</a></details>")
         # 補正R: 検証プールを回した反復補正の推移(バーは古→新の補正率、右へ下がる=改善)。
         # 別 panel でなく1列に畳む(user 2026-07-22:「反復補正の推移も統合。特殊化するな」)。
         rounds = u.get("rounds")
@@ -1593,24 +1830,39 @@ async def tagger_dashboard(raw: bool = Query(False), db: AsyncSession = Depends(
         else:
             reap_cell, reap_sort = "<span class=mut>—</span>", -1.0
         role = _ROLE.get(u.get("type"), u.get("type") or "")
+        visual_group = visual.group(u, tag_learning, progress)
+        visual_label = dict((k, label) for k, label, _, _ in visual.GROUPS)[visual_group]
+        measured = visual.metrics(_rg.get("serving_qualification"))
+        precision_sort = measured["precision"] if measured and measured["precision"] is not None else ""
+        candidate_chart = visual.metric_cell(measured, _rg)
+        p_cell = visual.comparison_chart(_rg.get("serving_qualification")) + "<details><summary>候補の評価根拠</summary>" + candidate_chart + "</details>" + "<details class=model-detail><summary>配備モデルの保存済み測定</summary>" + p_cell + "</details>"
+        state = (visual.write_state(u) + f"<span class=group-label>{e(visual_label)}</span><span class=serving-label>配備設定: {'あり（実行確認はノード欄）' if visual.serving(u) else 'なし'}</span>"
+                 + "<details><summary>構成</summary>" + state + "</details>")
         return (
-            f"<tr data-tag='{e(tag)}' data-st='{st_attr}' data-fp='{fp}' data-p='{(lp or 0):.4f}' data-pos='{pos}' "
+            f"<tr data-group='{visual_group}' data-serving='{"yes" if visual.serving(u) else "no"}' data-precision='{precision_sort}' data-tag='{e(tag)}' data-st='{st_attr}' data-corrections='{corrections}' data-violations='{violations}' data-pos='{pos}' "
             f"data-aadd='{aa}' data-arm='{ar}' data-madd='{ma}' data-mrm='{mr}' "
             f"data-rounds='{r_sort}' data-roundpct='{rp_sort}' data-reap='{reap_sort:.4f}'>"
-            f"<td><a href='/?q={_q(tag)}' target=_blank rel='noopener noreferrer'><b>{e(tag)}</b></a>"
+            f"<td data-label='タグ'><a href='/?q={_q(tag)}' target=_blank rel='noopener noreferrer'><b>{e(tag)}</b></a>"
             f"{('<br><span class=mut style=font-size:10px>' + e(role) + '</span>') if role else ''}</td>"
-            f"<td title='🟢live(release焼込) 🧩policy稼働(content-head) 🛡veto稼働 🎯reap権限 ⭐昇格候補 🔄学習依頼済 ◔候補 ⚠quar'>{state}</td>"
+            f"<td data-label='次工程・配備設定' title='🟢live(release焼込) 🧩policy設定(content-head) 🛡veto設定 🎯reap権限 ⭐昇格候補 🔄学習依頼済 ◔候補 ⚠quar'>{state}</td>"
             f"<td>{reap_cell}</td>"
-            f"<td>{p_cell}</td>"
-            f"<td class=mono><span class=perf-fp>{fp}</span></td>"
-            f"<td class=mono>{pos}<span class=mut>/{int(_min_pos)}</span></td>"
+            f"<td data-label=評価>{p_cell}</td>"
+            f"<td class=mono data-label=保存済み訂正>{corrections}</td>"
+            f"<td class=mono data-label=現在タグとの不一致 title='人の負例なのにタグあり / 人の正例なのにタグなし'>{violations} "
+            f"<span class=mut>({(u['perf'] or {}).get('unwanted_present', 0)} / {(u['perf'] or {}).get('wanted_missing', 0)})</span></td>"
+            f"<td class=mono title='全GTと未同期pinを統合した正例 / 負例。専用プールの有無を問わない'>{pos} / {neg}</td>"
             f"<td class=mono>{_num(aa, 'perf-ok')}</td>"
             f"<td class=mono>{_num(ar, 'perf-fp')}</td>"
             f"<td class=mono>{_num(ma, 'perf-ok')}</td>"
             f"<td class=mono>{_num(mr, 'perf-fp')}</td>"
             f"<td>{rounds_cell}</td>"
-            f"<td>{drive}</td></tr>")
+            f"<td data-label=次にすること>{drive}</td></tr>")
 
+    action_overview = visual.overview(uni, learning_progress, rel["id"] if rel else None, progress,
+                                      learning_by_tag=learning_by_tag)
+    from api.tagger_core.experiment_status import read as read_experiment_progress
+    from api.tagger_core.dashboard_experiment import render as render_experiment_progress
+    action_overview += render_experiment_progress(read_experiment_progress())
     unified_html = "".join(_uni_row(u) for u in uni)
 
     _tp_rows = []
@@ -1626,39 +1878,6 @@ async def tagger_dashboard(raw: bool = Query(False), db: AsyncSession = Depends(
     throughput_html = "".join(_tp_rows) if _tp_rows else (
         "<tr><td colspan=8 class=mut>直近7日の auto_tag 監査行なし</td></tr>"
     )
-    _pp_rows = []
-    for p in pending_pools:
-        age = datetime.now() - p["creation_time"]  # pool.creation_time is naive (no tz), unlike post_tag_audit.created_at
-        stale = age.total_seconds() > 86400
-        pool_href = f"/?q={_q('pool:' + str(p['id']))}"
-        _pp_rows.append(
-            f"<tr class='{'off' if not stale else ''}'>"
-            f"<td><a href='{pool_href}' target=_blank rel='noopener noreferrer'>#{e(p['id'])}</a></td>"
-            f"<td><a href='{pool_href}' target=_blank rel='noopener noreferrer'>{e(p['name'])}</a></td>"
-            f"<td class=mono>{e((p['tagger_source'] or '')[:40])}</td>"
-            f"<td class=mono>{e(p['n_posts'])}</td>"
-            f"<td>{'⚠ ' if stale else ''}{e(p['creation_time'])}</td></tr>"
-        )
-    pending_pool_html = "".join(_pp_rows) if _pp_rows else (
-        "<tr><td colspan=5 class=mut>verify_status='pending' の pool なし</td></tr>"
-    )
-
-    _dv_rows = []
-    for p in done_verify_pools:
-        pool_href = f"/?q={_q('pool:' + str(p['id']))}"
-        _dv_rows.append(
-            f"<tr><td><input type=checkbox name=pool_id value='{e(p['id'])}' form=cleanup-form></td>"
-            f"<td><a href='{pool_href}' target=_blank rel='noopener noreferrer'>#{e(p['id'])}</a></td>"
-            f"<td><a href='{pool_href}' target=_blank rel='noopener noreferrer'>{e(p['name'])}</a></td>"
-            f"<td class=mono>{e((p['tagger_source'] or '')[:40])}</td>"
-            f"<td>{e(p['verify_status'])}</td>"
-            f"<td class=mono>{e(p['n_posts'])}</td>"
-            f"<td>{e(p['last_edit_time'])}</td></tr>"
-        )
-    done_verify_pool_html = "".join(_dv_rows) if _dv_rows else (
-        "<tr><td colspan=7 class=mut>完了済み検証pool(verified/excluded)なし</td></tr>"
-    )
-
     # tagger_config: 各行に個別 <form> でPOST(このダッシュボードはiframe
     # 埋め込みで認証headerを持てないため、GET側と同じく無認証 -- 書込先は
     # tagger_governed_set_config 経由のみで既知keyのみ更新可、値は数値検証
@@ -1720,8 +1939,17 @@ async def tagger_dashboard(raw: bool = Query(False), db: AsyncSession = Depends(
         f"<div class=kv><b>{int(r['cur']):,}</b>{e(r['tag'])} "
         f"<span class=perf-fp>−{int(r['reaped_24h'])}/24h</span></div>"
         for r in _reap_tag_rows) or "<div class=mut>reap 権限タグなし</div>"
+    # ライフサイクルの健康状態 (owner 裁定 2026-11-23: 警告は kura の画面に出す)。
+    # 集計の失敗で dashboard 全体を落とさない — 失敗はそのまま表示する。
+    try:
+        from api.services import lifecycle_health
+        async with db.begin_nested():
+            lifecycle_html = lifecycle_health.render(await lifecycle_health.snapshot(db), e)
+    except Exception as exc:  # noqa: BLE001 - shown, never hidden
+        lifecycle_html = (f"<div class=panel data-tagger-category=overview><h1>ライフサイクルの健康状態</h1>"
+                          f"<p class=perf-bad>集計に失敗しました: {e(type(exc).__name__)}</p></div>")
     automation_html = (
-        "<div class=panel><h1>自動化の稼働状況 "
+        "<div class=panel data-tagger-category=automation><h1>自動化の稼働状況 "
         "<span class=mut>(sweep 継続稼働 + 証拠ゲート reap · 7日窓に埋もれない短期指標)</span></h1>"
         "<div class=grid>"
         f"<div class=kv><b>{_sw_pct:.1f}%</b>backlog 再タグ済(rel {_rel_id})</div>"
@@ -1793,7 +2021,7 @@ async def tagger_dashboard(raw: bool = Query(False), db: AsyncSession = Depends(
                 f"<td>{e(h['nhist'])}</td>"
                 f"<td class=mut style='max-width:520px;white-space:normal'>{e((h['rej'] or '')[:180])}</td></tr>")
         held_html = (
-            "<div class=panel><h1>頭打ち held <span class=mut>("
+            "<div class=panel data-tagger-category=held><h1>頭打ち held <span class=mut>("
             f"{len(held_rows)} タグ · reconciler が自動 dismiss した候補。GT が伸びれば自動 release)</span></h1>"
             "<div class=wrap><table><thead><tr><th>tag<th>理由(hold_reason_class)<th title='corpus prevalence 補正後の deploy 精度。floor 未達で held'>P_deploy"
             "<th title='hold 時 GT(pos/neg) → 現在 GT。現在が上回れば +GT で自動 release 対象'>GT hold→現在<th title='hold_evidence.history の測定回数(append-only)'>測定<th>reject 根拠</tr></thead>"
@@ -1804,7 +2032,7 @@ async def tagger_dashboard(raw: bool = Query(False), db: AsyncSession = Depends(
             "vocab_absent_routing・inert_serving_path 等 (人手) 付きのクラスは GT が増えても自動復帰せず、人手 release/dismiss 待ち "
             "— routing や serving 経路の欠落はラベルでは解けないため。</div></div>")
     else:
-        held_html = ("<div class=panel><h1>頭打ち held <span class=mut>(0 — 現在 held の候補なし)</span></h1>"
+        held_html = ("<div class=panel data-tagger-category=held><h1>頭打ち held <span class=mut>(0 — 現在 held の候補なし)</span></h1>"
                      "<div class=mut>reconciler が prevalence ceiling 等で自動 held にした候補がhere に出る(Phase 0 §held)。"
                      "旧来は candidate⇄training を永久 respawn していたものを止める機構。</div></div>")
 
@@ -1813,6 +2041,7 @@ async def tagger_dashboard(raw: bool = Query(False), db: AsyncSession = Depends(
 <meta name=viewport content='width=device-width,initial-scale=1'>
 <title>kura tagger — メイン & head 状況</title>
 <link rel=stylesheet href="/control-tokens.css"><style>
+{visual.CSS}
 :root{{color-scheme:light dark}}body{{font:var(--control-font)/1.5 system-ui,sans-serif;overflow-wrap:anywhere;margin:0;padding:var(--control-padding-x);
 background:#0d1117;color:#e6edf3}}@media(prefers-color-scheme:light){{body{{background:#fff;color:#1a1a1a}}}}
 h1{{font-size:14px;margin:0 0 4px}}.mut{{opacity:.6;font-size:12px}}.mono{{font-family:ui-monospace,monospace}}
@@ -1849,79 +2078,70 @@ button,input:not([type=checkbox]):not([type=hidden]),select{{box-sizing:border-b
 button{{cursor:pointer;white-space:nowrap}}button:hover{{border-color:#58a6ff}}
 .filter-controls{{display:flex;gap:var(--control-gap);align-items:center;flex-wrap:wrap;margin-bottom:var(--control-gap)}}
 @media(max-width:600px),(pointer:coarse){{input:not([type=checkbox]):not([type=hidden]),select{{font-size:16px}}}}
+[hidden]{{display:none!important}}
+body.embedded{{background:var(--embed-background);color:var(--embed-text);padding:16px 24px}}
+.embedded .panel{{background:var(--embed-surface);border-color:var(--embed-line);padding:16px;margin:0 0 12px}}
+.embedded th,.embedded td{{border-color:var(--embed-line)}}
+.embedded table a{{color:var(--embed-accent)}}
+.embedded button,.embedded input,.embedded select{{border-color:var(--embed-line)}}
+@media(max-width:600px){{body.embedded{{padding:16px}}}}
 </style></head><body>
-<h1>kura tagger dashboard <span class=badge>schema-直結 live</span></h1>
-<div class=mut>rendered {e(datetime.now().isoformat(timespec='seconds'))} — 毎アクセスで DB + patches/*.json を直読</div>
+<div data-tagger-chrome><h1>tagger</h1>
+<div class=mut>rendered {e(datetime.now().isoformat(timespec='seconds'))} — 毎アクセスで DB + patches/*.json を直読</div></div>
 
-<div class=panel><h1>メインタガー</h1>
+{lifecycle_html}
+
+{action_overview}
+<details class=panel data-tagger-category=overview><summary>配備構成の内訳と処理件数</summary><p class=mut>構成ごとの数は重複を含みます。ノードでの実行成功・モデル精度を表す数ではありません。</p>
 <div class=grid>
 <div class=kv><b>{e(rel['base_model_repo'].split('/')[-1]) if rel else '—'}</b>base model</div>
-<div class=kv><b>rel {e(rel['id']) if rel else '—'}</b>稼働 release · {e(rel['created_at']) if rel else ''}</div>
+<div class=kv><b>rel {e(rel['id']) if rel else '—'}</b>選択 release · {e(rel['created_at']) if rel else ''}</div>
 <div class=kv><b>{e(rel['n_out']) if rel else '—'}</b>出力タグ (stock {e(rel['n_stock']) if rel else '—'})</div>
-<div class=kv><b>{n_live}</b>live head</div>
-<div class=kv title='content-head policy 配備 (release とは別の配備台帳・worker が毎サイクル適用)。「未宣言無gate」= gate 無し配備なのに tagger_tag_rule の domain 宣言も無い head — 校正域外で発火し得る 2026-09-03 incident の形。0 が健全'><b>{len(policy_by_tag)}</b>policy head (未宣言無gate {sum(1 for _t, _p in policy_by_tag.items() if not _p["gates"] and _t not in declared_by_tag)})</div>
+<div class=kv><b>{n_live}</b>releaseに組み込んだ補正</div>
+<div class=kv title='content-head policy 配備 (release とは別の配備台帳・worker の適用確認はノード欄)。「未宣言無gate」= gate 無し配備なのに tagger_tag_rule の domain 宣言も無い head — 校正域外で発火し得る 2026-09-03 incident の形。0 が健全'><b>{len(policy_by_tag)}</b>別途配備を設定した補正 (未宣言無gate {sum(1 for _t, _p in policy_by_tag.items() if not _p["gates"] and _t not in declared_by_tag)})</div>
 <div class=kv><b>{e(queue.get('done','0'))}</b>done</div>
 <div class=kv><b>{e(queue.get('pending','0'))}</b>pending</div>
 <div class=kv><b>{e(queue.get('failed','0'))}</b>failed</div>
 </div>
-<h1 style='font-size:13px;margin:var(--control-padding-x) 0 var(--control-gap)'>worker node</h1>
-<div class=wrap><table><tr><th>host<th>role<th>status<th>release<th>verified<th>last seen<th>detail</tr>{node_html}</table></div>
-</div>
+{node_panel}
+</details>
 
 {automation_html}
 
 {held_html}
 
-<div class=panel><h1>タグ状況 <span class=mut>({len(uni)} タグ · 統合ビュー — 列見出しでソート / 絞込)</span></h1>
+<div class=panel data-tagger-category=tags><h1>タグ状況 <span class=mut>({len(uni)} タグ · 統合ビュー — 列見出しでソート / 絞込)</span></h1>
+<p class=snapshot-note>表示生成: {e(datetime.now().astimezone().isoformat(timespec="seconds"))}。候補・タグ集計は順次取得した記録で、同時刻のDB snapshotではありません。最新にするには上部の「再読み込み」。実験観測とノードは30秒ごとに更新します。</p>
 <div class=filter-controls>
-<input id=tf placeholder='タグ絞込…' oninput='ftag()' style='width:180px'>
-<span class=mut>状態:</span>
-<span class=chip data-st=live onclick='tst(this)' title='稼働 release に焼込済'>🟢 live</span>
-<span class=chip data-st=policy onclick='tst(this)' title='content-head policy 稼働 (release とは別の配備台帳)'>🧩 policy稼働</span>
-<span class=chip data-st=ungated onclick='tst(this)' title='配備中なのに gate 無し + domain 未宣言 (2026-09-03 incident の形)'>⛔ 無gate</span>
-<span class=chip data-st=driftgate onclick='tst(this)' title='宣言 (tagger_tag_rule) と配備 (policy gate_tags) の食い違い'>⚠ 宣言≠配備</span>
-<span class=chip data-st=veto onclick='tst(this)' title='gated-veto 稼働'>🛡 veto</span>
-<span class=chip data-st=reap onclick='tst(this)' title='reap 権限あり(recall 実測が閾値以上、サーバが実削除)'>🎯 reap権限</span>
-<span class=chip data-st=promote onclick='tst(this)' title='昇格候補: recall 未達だが head-fixable(fresh probe が閾値到達)→ 再学習で reap 権限に昇格できる'>⭐ 昇格候補</span>
-<span class=chip data-st=training onclick='tst(this)' title='再学習 dispatch 済'>🔄 学習依頼済</span>
-<span class=chip data-st=candidate onclick='tst(this)' title='head 候補(未live)'>◔ 候補</span>
-<span class=chip data-st=quar onclick='tst(this)' title='quarantine'>⚠ quar</span>
-</div>
+<label for=tf>タグ名</label><input id=tf placeholder='タグ絞込…' oninput='ftag()' style='width:180px'>
+<details><summary>構成でさらに絞る</summary><span class=mut>構成:</span>
+<button type=button class=chip data-st=live onclick='tst(this)' title='稼働 release に焼込済'>🟢 live</button>
+<button type=button class=chip data-st=policy onclick='tst(this)' title='content-head policy 設定 (release とは別の配備台帳)'>🧩 policy設定</button>
+<button type=button class=chip data-st=ungated onclick='tst(this)' title='配備中なのに gate 無し + domain 未宣言 (2026-09-03 incident の形)'>⛔ 無gate</button>
+<button type=button class=chip data-st=driftgate onclick='tst(this)' title='宣言 (tagger_tag_rule) と配備 (policy gate_tags) の食い違い'>⚠ 宣言≠配備</button>
+<button type=button class=chip data-st=veto onclick='tst(this)' title='gated-veto 稼働'>🛡 veto</button>
+<button type=button class=chip data-st=reap onclick='tst(this)' title='reap 権限あり(recall 実測が閾値以上、サーバが実削除)'>🎯 reap権限</button>
+<button type=button class=chip data-st=promote onclick='tst(this)' title='昇格候補: recall 未達だが head-fixable(fresh probe が閾値到達)→ 再学習で reap 権限に昇格できる'>⭐ 昇格候補</button>
+<button type=button class=chip data-st=training onclick='tst(this)' title='再学習 dispatch 済'>🔄 学習依頼済</button>
+<button type=button class=chip data-st=candidate onclick='tst(this)' title='head 候補(未live)'>◔ 候補</button>
+<button type=button class=chip data-st=quar onclick='tst(this)' title='quarantine'>⚠ quar</button>
+</details></div>
+{visual.controls()}
 <div class=wrap><table id=tt>
-<thead><tr><th onclick="stag('tag')" style='cursor:pointer'>tag ⇅<th title='🟢live 🛡veto稼働 🎯reap権限 ⭐昇格候補 🔄学習依頼済 ◔候補 ⚠quar'>状態<th onclick="stag('reap')" style='cursor:pointer' title='reap 権限: GT-positive recall 実測が閾値以上なら 🎯(サーバが stale FP を実削除)、未達は保留、reap ドメインだが未測定は未測定。証拠ゲート reap_authorized.json を反映'>reap権限 ⇅<th onclick="stag('p')" style='cursor:pointer' title='検証済みプールでの真陽性率(補正で変動)'>実測P ⇅<th onclick="stag('fp')" style='cursor:pointer' title='検証プール内の誤検出。全体の補正件数ではない'>誤検出 ⇅<th onclick="stag('pos')" style='cursor:pointer' title='検証プール内の正例。全GTの正例数ではない'>正例 ⇅<th onclick="stag('aadd')" style='cursor:pointer' title='直近7日 タガー(auto_tag)が付与した数'>自動増 ⇅<th onclick="stag('arm')" style='cursor:pointer' title='直近7日 タガー(auto_tag/veto)が削除した数'>自動減 ⇅<th onclick="stag('madd')" style='cursor:pointer' title='直近7日 人間（一括操作を含む）が付与した数'>手動増 ⇅<th onclick="stag('mrm')" style='cursor:pointer' title='直近7日 人間（一括操作を含む）が削除した補正数=タガーが間違えた実信号'>手動減 ⇅<th onclick="stag('rounds')" style='cursor:pointer' title='検証プールを回した反復補正のラウンド数と補正率推移(左=初回,右=最新。右へ下がる=改善)'>補正R ⇅<th>導線</tr></thead>
+<thead><tr><th><button type=button onclick="stag('tag')">tag ⇅</button><th title='🟢live 🛡veto設定 🎯reap権限 ⭐昇格候補 🔄学習依頼済 ◔候補 ⚠quar'>状態<th title='reap 権限: GT-positive recall 実測が閾値以上なら 🎯(サーバが stale FP を実削除)、未達は保留、reap ドメインだが未測定は未測定。証拠ゲート reap_authorized.json を反映'><button type=button onclick="stag('reap')">reap権限 ⇅</button><th title='版を固定したモデル予測と独立した正解の比較。未登録なら未測定'>候補の固定評価<th title='保存中の人手負例（post/tagの件数）。訂正済みを含み、モデルの現在の誤検出数ではない'><button type=button onclick="stag('corrections')">訂正記録 ⇅</button><th title='人の正解と現在タグの不一致。内訳は不要なタグあり / 必要なタグなし。モデル起因とは限らない'><button type=button onclick="stag('violations')">未解決の不一致 ⇅</button><th title='全GTと未同期pinの正例 / 負例。人のpin優先で重複なし'><button type=button onclick="stag('pos')">GT 正 / 負 ⇅</button><th title='直近7日 タガー(auto_tag)が付与した数'><button type=button onclick="stag('aadd')">自動増 ⇅</button><th title='直近7日 タガー(auto_tag/veto)が削除した数'><button type=button onclick="stag('arm')">自動減 ⇅</button><th title='直近7日 人間（一括操作を含む）が付与した数'><button type=button onclick="stag('madd')">手動増 ⇅</button><th title='直近7日 人間（一括操作を含む）が削除した補正数=タガーが間違えた実信号'><button type=button onclick="stag('mrm')">手動減 ⇅</button><th title='旧検証プールの過去の反復補正ラウンド数と補正率推移(左=初回,右=最新。右へ下がる=改善)'><button type=button onclick="stag('rounds')">旧補正履歴 ⇅</button><th>次にすること</tr></thead>
 <tbody id=tb>{unified_html}</tbody></table></div>
-<div class=mut style='margin-top:6px'>状態: 🟢live(稼働release に焼込) · 🛡veto稼働(推論で誤検出を打消) · 🎯reap権限 · 🔄学習依頼済 · ◔候補 · ⚠quarantine。<b>reap権限</b>=証拠ゲート(reap_authorized.json)の反映: worker は reap ドメイン(patched∪veto)を提案するが、サーバは <b>GT-positive recall が {int(reap_min*100)}% 以上と実測されたタグだけ</b>を実際に reap(stale FP を削除)。未達タグは保留(recall が低い=タガーが TP を見逃す→非再現が FP でなく TP の巻き込みになる=削除しない)。recall が上がれば自動評価器 reap_authorization_eval.py が再測定して権限拡大。<b>⭐昇格候補</b>=recall 未達だが frozen 特徴の fresh linear probe が閾値に届く(head-fixable)タグ — logit-patch を再学習すれば reap 権限に昇格できる(強調表示)。逆に fresh probe も届かないタグは backbone-bound で base 改善待ち。現状: reap 稼働={'・'.join(sorted(reap_authorized)) or '(なし)'}、昇格候補={'・'.join(sorted(reap_promotable)) or '(評価中)'}。<b>実測P・誤検出・正例</b>は検証プール内の集計で、全GT件数とは異なる。<b>実測P</b>は flagged-only GT(タガー自身の陽性+誤検出)上の値で corpus 精度ではない(構造上限~0.74、trainer 実証)— 正しい評価は gate内 McNemar。<b>誤検出</b>降順が既定=タガーが最も間違っているタグが上。<b>自動増/自動減</b>=タガー(auto_tag)の付与/削除、<b>手動増/手動減</b>=人間（一括操作を含む）の付与/削除(直近7日, post_tag_audit)。<b>手動減</b>こそ人間の補正削除の実信号(自動増が高く手動減も高い=タガーが付け続け人間が消し続ける=veto 候補)。<b>補正R</b>=検証プールを反復した補正ラウンド、バーは補正率(緑≦30/黄30-70/赤≥70%)を古→新、右へ下がれば改善。<b>導線</b>=reconciler の自動処理 disposition(reconciler_disposition.json、tick 毎)を反映: <span class=auto-go>🔧 …再学習 dispatch済</span>=学習を投入済、<span class=auto-go>学習依頼済・実行未確認</span>=依頼後の段階（実行開始の証拠ではない）、<span class=auto-wait>⏳ FP+N で精度再学習</span>=established 過検出タグ(メインタガー組込済)で補正があと N 件たまれば自動で precision 再学習が発火(手動プール不要、正例源は corpus 全体)。<b>＋正例 あとN</b> はメインタガー未組込の候補=corpus 正例が使えず検証プールでの人手確認が要るタグにだけ出る。検証プールボタンは自動再学習と独立にいつでも GT 品質を上げられる。min_gt_negative={disp_min_neg if disp_min_neg is not None else int(_min_pos)}。SoT: tagger_patch/tagger_release/post_tag_audit/reconciler_disposition.json 直読{(' · disp ' + disp_generated_at[:19]) if disp_generated_at else ''}。</div>
+<details><summary>指標・構成の詳しい説明</summary><div class=mut style='margin-top:6px'>状態: 🟢live(稼働release に焼込) · 🛡veto設定(推論で誤検出を打消) · 🎯reap権限 · 🔄学習依頼済 · ◔候補 · ⚠quarantine。<b>reap権限</b>=証拠ゲート(reap_authorized.json)の反映: worker は reap ドメイン(patched∪veto)を提案するが、サーバは <b>GT-positive recall が {int(reap_min*100)}% 以上と実測されたタグだけ</b>を実際に reap(stale FP を削除)。未達タグは保留(recall が低い=タガーが TP を見逃す→非再現が FP でなく TP の巻き込みになる=削除しない)。recall が上がれば自動評価器 reap_authorization_eval.py が再測定して権限拡大。<b>⭐昇格候補</b>=recall 未達だが frozen 特徴の fresh linear probe が閾値に届く(head-fixable)タグ — logit-patch を再学習すれば reap 権限に昇格できる(強調表示)。逆に fresh probe も届かないタグは backbone-bound で base 改善待ち。現状: reap 稼働={'・'.join(sorted(reap_authorized)) or '(なし)'}、昇格候補={'・'.join(sorted(reap_promotable)) or '(評価中)'}。<b>モデル精度</b>=現行版の予測と独立した固定正解の比較。記録がないときは未測定。<b>訂正記録</b>=保存中の人手負例数（同一画像・タグは1件、訂正済みも含む）。削除イベントの累計や現行モデルの誤検出数ではない。<b>未解決の不一致</b>=人が不要としたタグが残る数＋人が必要としたタグがない数。タグ編集・同期などの影響も含み、モデル精度ではない。<b>GT 正 / 負</b>=通常の訂正を含む全GTと未同期pinの件数（pin優先）。旧検証プールに限定しない。既定は不一致数、次に訂正記録数の降順。<b>自動増/自動減</b>=タガー(auto_tag)の付与/削除、<b>手動増/手動減</b>=人間（一括操作を含む）の付与/削除(直近7日, post_tag_audit)。<b>手動減</b>こそ人間の補正削除の実信号(自動増が高く手動減も高い=タガーが付け続け人間が消し続ける=veto 候補)。<b>補正R</b>=検証プールを反復した補正ラウンド、バーは補正率(緑≦30/黄30-70/赤≥70%)を古→新、右へ下がれば改善。<b>次にすることの詳細</b>=reconciler の自動処理 disposition(reconciler_disposition.json、tick 毎)を反映: <span class=auto-go>🔧 …再学習 dispatch済</span>=学習を投入済、<span class=auto-go>学習依頼済・実行未確認</span>=依頼後の段階（実行開始の証拠ではない）、<span class=auto-wait>⏳ FP+N で精度再学習</span>=established 過検出タグ(メインタガー組込済)で補正があと N 件たまれば自動で precision 再学習が発火(手動プール不要、正例源は corpus 全体)。<b>＋正例 あとN</b> はメインタガー未組込の候補=確認済みの正例が不足しているタグにだけ出る。通常の画像でタグを訂正し、正しいタグは固定して確認する。専用の検証プール運用は廃止済み。min_gt_negative={disp_min_neg if disp_min_neg is not None else int(_min_pos)}。SoT: tagger_patch/tagger_release/post_tag_audit/reconciler_disposition.json 直読{(' · disp ' + disp_generated_at[:19]) if disp_generated_at else ''}。</div></details>
 </div>
-<script>
-var _stf={{}};
-function tst(el){{var k=el.dataset.st;if(_stf[k]){{delete _stf[k];el.classList.remove('on');}}else{{_stf[k]=1;el.classList.add('on');}}ftag();}}
-function ftag(){{var q=document.getElementById('tf').value.toLowerCase(),ks=Object.keys(_stf);document.querySelectorAll('#tb tr').forEach(function(r){{var okt=(r.dataset.tag||'').toLowerCase().indexOf(q)>=0,sts=(r.dataset.st||'').split(' '),oks=ks.every(function(k){{return sts.indexOf(k)>=0;}});r.style.display=(okt&&oks)?'':'none';}});}}
-function stag(k){{var b=document.getElementById('tb'),rs=Array.prototype.slice.call(b.children),n=(k!=='tag');rs.sort(function(a,c){{var x=n?parseFloat(a.dataset[k]):a.dataset[k],y=n?parseFloat(c.dataset[k]):c.dataset[k];return n?(y-x):(x<y?-1:(x>y?1:0));}});rs.forEach(function(r){{b.appendChild(r);}});}}
-</script>
+<script>{visual.JS}</script>
 
-<div class=panel><h1>タガー稼働量 <span class=mut>(post_tag_audit 直読 · actor 単位 · 直近7日で1件以上あるもののみ上位30)</span></h1>
+<div class=panel data-tagger-category=activity><h1>タガー稼働量 <span class=mut>(post_tag_audit 直読 · actor 単位 · 直近7日で1件以上あるもののみ上位30)</span></h1>
 <div class=wrap><table>
 <tr><th>actor<th>host<th>release<th>24h<th>7d<th>付与(7d)<th>削除(7d)<th>last seen</tr>
 {throughput_html}</table></div>
 <div class=mut style='margin-top:8px'>host/release が「(host未報告)」の actor は provenance 列(0072)未対応のワーカー — actor_id はどのcompletionでも常に記録されるが、host/release はワーカー側の対応が必要(2026-07-20時点: primary/nodec 対応済、trainer は追従中)。付与/削除は post_tag_audit.added_tags/removed_tags(0072/rev6)の配列長合計 — completion 1件で複数タグを同時付与・削除しうるため 7d 件数(completion 数)とは一致しない。</div>
 </div>
 
-<div class=panel><h1>検証待ち pool <span class=mut>(verify_status='pending' · {len(pending_pools)} 件 · 古い順)</span></h1>
-<div class=wrap><table>
-<tr><th>pool<th>name<th>tagger_source<th>枚数<th>作成</tr>
-{pending_pool_html}</table></div>
-<div class=mut style='margin-top:8px'>⚠ = 作成から24h超過(放置の疑い)。verify_status IS NULL だが検証プールらしき名前(HEADVERIFY/検証/判定/seed/SWEEP/audit等)の pool は他に{unflagged_verify_like}件あるが、既知の構造的負債(判定状態そのものが correction_audit 未実装のため追跡不能、docs/notes/tagger-correction-program-ledger.md)につき個別列挙はしない — SoT は verify_status のみ。</div>
-</div>
-
-<div class=panel><h1>完了済み検証pool <span class=mut>(verify_status IN verified/excluded · {len(done_verify_pools)}件 · 用済み)</span></h1>
-<form id=cleanup-form method=post action='/api/tagger-dashboard/verify-pools/cleanup'></form>
-<div class=wrap><table>
-<tr><th><th>pool<th>name<th>tagger_source<th>状態<th>枚数<th>最終更新</tr>
-{done_verify_pool_html}</table></div>
-<div class=mut style='margin-top:8px'>チェックしたpoolを削除(pool内のpost自体は削除しない、グルーピングのみ解除)。削除先はverify_status IN(verified,excluded)のpoolしか受け付けない(サーバ側で再検証)ので、普通のcontent poolを誤って消せない。head_candidateがまだこのpoolを根拠として参照している場合はスキップされる(その候補がまだ検討中という意味なので、削除で参照を壊さない)。<button type=submit form=cleanup-form style='margin-left:8px' onclick="return confirm('選択したpoolを削除します(postは消えません)。よろしいですか?')">選択したpoolを削除</button></div>
-</div>
-
-<div class=panel><h1>閾値設定 <span class=mut>(tagger_config · ML判断の閾値、旧マジックナンバー)</span></h1>
+<div class=panel data-tagger-category=settings><h1>閾値設定 <span class=mut>(tagger_config · ML判断の閾値、旧マジックナンバー)</span></h1>
 <div class=wrap><table>
 <tr><th>key<th>説明<th>値<th>最終更新</tr>
 {cfg_html}</table></div>
@@ -1931,7 +2151,7 @@ function stag(k){{var b=document.getElementById('tb'),rs=Array.prototype.slice.c
     return HTMLResponse(html, headers={"Cache-Control": "no-store"})
 
 
-@router.post("/tagger-config", include_in_schema=False)
+@dashboard_router.post("/tagger-config", include_in_schema=False)
 async def set_tagger_config(
     key: str = Form(...),
     value: float = Form(...),
@@ -1958,181 +2178,14 @@ async def set_tagger_config(
     return RedirectResponse("/api/tagger-dashboard?raw=1", status_code=303)
 
 
-@router.post("/tagger-dashboard/verify-pools/cleanup", include_in_schema=False)
-async def cleanup_verify_pools(
-    pool_id: list[int] = Form(default=[]),
-    db: AsyncSession = Depends(get_db),
-):
-    """tagger-dashboardの「完了済み検証pool」panelからのbulk削除POST先。
-    user指摘 2026-07-20「用を終えた検証プールも非表示または削除したい。
-    ずいぶんたまってしまった」(実測39件)。
-
-    無認証(dashboard iframeと同じ制約、Authorization header を持てない)
-    だが、DELETEはFORMが送ってきたIDをそのまま信用せず、この predicate
-    (tagger_source IS NOT NULL AND verify_status IN ('verified','excluded'))
-    を満たすものだけをサーバ側で再検証してから消す -- 改ざんされたPOSTでも
-    普通のcontent poolやまだ検証中のpoolには絶対に届かない、既存の
-    DELETE /pools/{id}(認証必須)は一切迂回しない別の狭い経路。
-    Pool.__table__ の cascade(_posts/names/state/urls)によりpool内の
-    実postは消えない、グルーピングのみ解除。
-    """
-    from fastapi.responses import RedirectResponse
-
-    if pool_id:
-        # tagger_head_candidate.source_pool_id REFERENCES pool(id) ON DELETE
-        # SET NULL -- but tagger_head_candidate is governed (0079), and the
-        # FK's own SET NULL cascade is issued as a raw UPDATE from role
-        # 'kura', which the governed trigger rejects (confirmed live:
-        # deleting a pool a still-open head_candidate cites 500'd with
-        # "table tagger_head_candidate is governed: direct UPDATE ... not
-        # permitted"). Skipping such pools is also semantically correct,
-        # not just a workaround -- a live head_candidate still citing this
-        # pool as evidence means its provenance link is still in use.
-        safe_ids = (await db.execute(text(
-            "SELECT id FROM pool WHERE id = ANY(:ids) "
-            "AND tagger_source IS NOT NULL AND verify_status IN ('verified','excluded') "
-            "AND NOT EXISTS (SELECT 1 FROM tagger_head_candidate hc WHERE hc.source_pool_id = pool.id)"
-        ), {"ids": pool_id})).scalars().all()
-        for pid in safe_ids:
-            # _load_pool carries the correct .options(*LOAD_OPTS) for Pool's
-            # joined-collection relationships (names/etc) -- a raw
-            # select(Pool) here throws "must invoke unique()" since Pool has
-            # lazy="joined" collections, confirmed live.
-            pool = await _load_pool(str(pid), db)
-            await db.delete(pool)
-        await db.commit()
-    return RedirectResponse("/api/tagger-dashboard?raw=1", status_code=303)
+@dashboard_router.post("/tagger-dashboard/verify-pools/cleanup", include_in_schema=False)
+async def cleanup_verify_pools(pool_id: list[int] = Form(default=[])):
+    raise HTTPException(status_code=410, detail="Verification pool workflow retired; historical evidence is retained.")
 
 
-@router.post("/tagger-dashboard/head/{tag}/generate-pool", include_in_schema=False)
-async def generate_head_review_pool(tag: str, db: AsyncSession = Depends(get_db)):
-    """head 状況panelの「プール生成」ボタン先。user指摘 2026-07-20「タグを
-    何とかしたいとクリックしてもそれはそのタグを検索するクエリが呼ばれる
-    だけでどうしようもない...そのタグに関する20枚程度の学習プールを生成
-    するボタンとか」。
-
-    候補選定: wd14推論のスコア自体はDBに永続化されていない(tagger/infer.py
-    はスコアをその場のthreshold判定にしか使わずpost_tag には可否しか残ら
-    ない)ので「閾値付近」選定はできない。代わりに実際に価値のある2種類を
-    優先:
-    1. 直近でauto_tagがこのタグを実際に付与/削除した投稿(=タガーの最近の
-       実判断そのもの、レビューする価値が最も高い)。
-    2. 1で20枚に満たない場合、現在このタグが付いている投稿からランダム
-       抽出で埋める(spot-check用)。
-
-    生成したpoolはverify_status='pending'・tagger_source='dashboard-
-    manual:<tag>'で作成 -- 以後は既存のverify-poolライフサイクル(review→
-    verified切替→gt_sync.py→reconciler.py)にそのまま乗る、新しい経路を
-    増やさない。
-
-    無認証(dashboard iframeと同じ制約)。pool作成は既存postを新規groupingに
-    入れるだけで、既存post/tagデータには一切書き込まない(create_pool同様の
-    安全な操作)。
-
-    冪等性: 選定は「直近のauto_tag活動」という決定的なクエリなので、レビュー
-    未完了(verify_status='pending')の同タグpoolがまだ残っている間に連続で
-    押すと毎回ほぼ同じ20枚になる(user報告 2026-07-20「同じタグについてもう
-    一回プール生成すると同じプールが生成される」)。既に未完了のdashboard-
-    manual poolがあればそれへ誘導し、新規poolは作らない -- 重複pool乱立
-    (前回発見した「投稿が何個ものpoolに属してヘッダーが折り返す」問題)も
-    ついでに防ぐ。
-    """
-    from fastapi.responses import RedirectResponse
-    from urllib.parse import quote
-
-    existing = (await db.execute(text(
-        "SELECT id FROM pool WHERE tagger_source = :src AND verify_status = 'pending' "
-        "ORDER BY creation_time DESC LIMIT 1"
-    ), {"src": f"dashboard-manual:{tag}"})).scalar_one_or_none()
-    # 一括編集モード ON + 検証対象タグをプリセットした状態で着地する
-    # (user 2026-08-02:「タグ検証ボタンでプールを生成した場合、タグ一括編集
-    # モードがオンであり、その対象に検証対象文字列が入力された状態で遷移」)。
-    bulk_qs = f"&bulk=1&bulkTag={quote(tag)}"
-    if existing is not None:
-        return RedirectResponse(f"/?q={quote('pool:' + str(existing))}{bulk_qs}", status_code=303)
-
-    # user指示 2026-07-20「学習プールにある画像はスキップして生成して」--
-    # 既にどこかの学習/検証pool(tagger_source IS NOT NULL、status問わず)に
-    # 入っている投稿は候補から除外。同じ投稿が何個ものpoolへ重複所属して
-    # ヘッダーのpoolバッジ行が折り返す問題(前回発見)の再発防止も兼ねる。
-    already_in_learning_pool = (
-        "NOT EXISTS (SELECT 1 FROM pool_post pp JOIN pool po ON po.id = pp.pool_id "
-        "WHERE pp.post_id = {alias}.id AND po.tagger_source IS NOT NULL)"
-    )
-
-    # 正例優先(user 2026-07-22「プール作成で表示される画像群に正例が全然来ない」)。
-    # 原因: sweep(継続再タグ)を有効化したら『直近 auto_tag 活動』が過検出タグの
-    # 再タグ FP で洪水になり、20枚が全部 FP で埋まって fill が発動せず正例ゼロに
-    # なった。修正: まず人間が肯定した信頼できる真陽性(human 付与 / present-pin /
-    # GT-positive)を最優先で surface(未 pool のみ)、次にタガー直近判断を FP
-    # レビュー用に少数だけ、足りなければタグ保持のランダムで埋める。──
-    # 正例は「人間が肯定したが、まだ tagger の GT に入っていない」新規のものだけ
-    # (user 2026-07-22「人間が一度検証したプールをもう一度学習プールに入れるのは
-    # よくない」)。GT-positive は既に検証済みラベルなので再投入は重複=除外。
-    # human 付与 / present-pin = 人間が一般タグ付けで肯定した真陽性だが tagger の
-    # GT 経路が未捕捉 → 検証すれば NEW な正例 GT が増える(recall 昇格の燃料)。
-    positives = (await db.execute(text(
-        "SELECT p.id FROM post p WHERE ("
-        "  EXISTS (SELECT 1 FROM post_tag_audit a WHERE a.post_id = p.id "
-        "          AND a.actor_type = 'human' AND :tag = ANY(a.added_tags)) "
-        "  OR EXISTS (SELECT 1 FROM post_tag_pin pin JOIN tag_name tn ON tn.tag_id = pin.tag_id "
-        "             WHERE pin.post_id = p.id AND tn.name = :tag AND pin.state = 'present')) "
-        "AND NOT EXISTS (SELECT 1 FROM tagger_gt_label g WHERE g.post_id = p.id AND g.tag = :tag) "
-        f"AND {already_in_learning_pool.format(alias='p')} "
-        "ORDER BY random() LIMIT 14"
-    ), {"tag": tag})).scalars().all()
-    post_ids = list(positives)
-    # タガーの直近判断(FP レビュー用) — sweep 洪水を避けるため少数に絞る。
-    if len(post_ids) < 20:
-        recent = (await db.execute(text(
-            "SELECT pa.post_id FROM post_tag_audit pa JOIN post p ON p.id = pa.post_id "
-            "WHERE pa.source = 'auto_tag' AND (:tag = ANY(pa.added_tags) OR :tag = ANY(pa.removed_tags)) "
-            "AND pa.post_id != ALL(:exclude) "
-            f"AND {already_in_learning_pool.format(alias='p')} "
-            "GROUP BY pa.post_id ORDER BY max(pa.created_at) DESC LIMIT :n"
-        ), {"tag": tag, "exclude": post_ids or [0], "n": min(6, 20 - len(post_ids))})).scalars().all()
-        post_ids.extend(recent)
-    if len(post_ids) < 20:
-        fill = (await db.execute(text(
-            "SELECT p.id FROM post_tag pt "
-            "JOIN tag_name tn ON tn.tag_id = pt.tag_id AND tn.name = :tag "
-            "JOIN post p ON p.id = pt.post_id "
-            "WHERE p.id != ALL(:exclude) "
-            f"AND {already_in_learning_pool.format(alias='p')} "
-            "ORDER BY random() LIMIT :n"
-        ), {"tag": tag, "exclude": post_ids or [0], "n": 20 - len(post_ids)})).scalars().all()
-        post_ids.extend(fill)
-
-    if not post_ids:
-        raise HTTPException(status_code=404, detail=f"tag {tag!r} に該当する投稿が見つかりません")
-
-    cat = await _get_default_category(db)
-    now = datetime.utcnow()
-    pool = Pool(
-        category_id=cat.id if cat else 1,
-        version=1,
-        creation_time=now,
-        description=f"tagger-dashboardから生成: {tag} の学習/検証プール({len(post_ids)}件)",
-        verify_status="pending",
-        tagger_source=f"dashboard-manual:{tag}",
-    )
-    db.add(pool)
-    await db.flush()
-
-    src_url = f"manual:pool/{pool.pool_id}"
-    db.add(PoolUrl(pool_id=pool.pool_id, url=src_url, is_primary=True))
-    db.add(PoolState(pool_id=pool.pool_id, scope=_infer_scope(src_url)))
-    # pool_name.name is globally UNIQUE -- a fixed "tagger-review-<tag>"
-    # collided the moment the same tag's button was clicked twice
-    # (confirmed live: UniqueViolationError on pool_name_name_key).
-    # pool.pool_id (fresh serial PK, known after flush) makes this
-    # unconditionally unique across repeat generations for the same tag.
-    db.add(PoolName(pool_id=pool.pool_id, name=f"tagger-review-{tag}-{pool.pool_id}", order=0))
-    await db.flush()
-    await _bulk_insert_pool_posts(db, pool.pool_id, post_ids)
-    await db.commit()
-
-    return RedirectResponse(f"/?q={quote('pool:' + str(pool.pool_id))}{bulk_qs}", status_code=303)
+@dashboard_router.post("/tagger-dashboard/head/{tag}/generate-pool", include_in_schema=False)
+async def generate_head_review_pool(tag: str):
+    raise HTTPException(status_code=410, detail="Verification pools are retired. Correct tags on ordinary posts instead.")
 
 
 def pool_list_options():
@@ -2170,16 +2223,6 @@ async def list_pools(
             Pool.cover_post_id.in_(select(Post.post_id).where(Post.safety == "safe"))
         )
 
-    # Phase C performance: use cover_post_id (trigger-maintained) and
-    # pool_url.observed_count instead of correlated subqueries.
-    # cover_post_id gives us the thumbnail post directly; observed_count
-    # gives post count without scanning pool_post.
-    cover_source_sq = (
-        select(Post.source)
-        .where(Post.post_id == Pool.cover_post_id)
-        .correlate(Pool)
-        .scalar_subquery()
-    )
     # observed_count from primary pool_url row (trigger-maintained on pool_post
     # +1/-1, so it counts EVERY member row including status!='ok' pending/near_dup
     # ones). Kept only as telemetry; the displayed count is displayable_sq below.
@@ -2246,7 +2289,8 @@ async def list_pools(
     )
 
     resolved = await _resolve_pool_query_tags(db, [*free_terms, *tag_terms])
-    base_stmt = _apply_pool_filters(select(Pool), free_terms, name_terms, tag_terms, hide_verify, resolved)
+    visible_pools = select(Pool).where(Pool.hidden.is_(False))
+    base_stmt = _apply_pool_filters(visible_pools, free_terms, name_terms, tag_terms, hide_verify, resolved)
     if not include_empty:
         base_stmt = base_stmt.where(Pool.cover_post_id.isnot(None))
     base_stmt = _safe_pool(base_stmt)
@@ -2287,10 +2331,10 @@ async def list_pools(
         select(
             Pool,
             displayable_sq.label("post_count"),
-            cover_source_sq.label("first_post_source"),
             has_censored_sq.label("has_censored"),
             has_censored_tag_sq.label("has_censored_tag"),
         )
+        .where(Pool.hidden.is_(False))
         .options(*list_opts)
         .order_by(*order_exprs)
         .offset(offset)
@@ -2307,12 +2351,15 @@ async def list_pools(
     rows = (await db.execute(stmt)).unique().all()
 
     from api import extension_hooks
-    annotations = await extension_hooks.annotate_pools(db, [row[0].pool_id for row in rows])
+    pool_ids = [row[0].pool_id for row in rows]
+    covers = await pool_covers(db, pool_ids, safe=safe)
+    annotations = await extension_hooks.annotate_pools(db, pool_ids)
     results: list[PoolSummary] = []
-    for pool, post_count, first_post_source, has_censored, has_censored_tag in rows:
+    for pool, post_count, has_censored, has_censored_tag in rows:
         sorted_names = sorted(pool.names, key=lambda n: n.order)
         name = sorted_names[0].name if sorted_names else f"pool#{pool.pool_id}"
-        thumb = _thumbnail_url_by_id(pool.cover_post_id) if pool.cover_post_id else None
+        cover_id, first_post_source = covers.get(pool.pool_id, (None, None))
+        thumb = _thumbnail_url_by_id(cover_id) if cover_id else None
         pu = pool.primary_url
         st = pool.state
         # An extension that knows where the pool came from names its domain (a set's
@@ -2390,17 +2437,13 @@ async def _pool_artists(db: AsyncSession, pool_id: int, *, localize: bool = Fals
 async def get_pool(pool_id_or_name: str, db: AsyncSession = Depends(get_db),
                    localize: bool = Query(False), include_posts: bool = Query(True)) -> dict:
     pool = await _load_pool(pool_id_or_name, db, include_posts=include_posts)
+    if pool.hidden:
+        raise HTTPException(status_code=404, detail="Pool not found")
     data = _serialize_pool(pool, include_posts=include_posts)
     data["focusTag"] = await _pool_focus_tag(db, pool)
     data["artists"] = await _pool_artists(db, pool.pool_id, localize=localize)
-    cover_id = pool.cover_post_id
-    if cover_id is None:
-        cover_id = (await db.execute(select(PoolPost.post_id).where(PoolPost.pool_id == pool.pool_id)
-                                    .order_by(PoolPost.order, PoolPost.post_id).limit(1))).scalar_one_or_none()
-    first_post_source = None
-    if cover_id is not None:
-        result = await db.execute(select(Post.source).where(Post.post_id == cover_id))
-        first_post_source = result.scalar_one_or_none()
+    covers = await pool_covers(db, [pool.pool_id])
+    cover_id, first_post_source = covers.get(pool.pool_id, (None, None))
     sorted_names = sorted(pool.names, key=lambda n: n.order)
     data["name"] = sorted_names[0].name if sorted_names else f"pool#{pool.pool_id}"
     data["thumbnailUrl"] = _thumbnail_url_by_id(cover_id) if cover_id else None
@@ -2669,135 +2712,9 @@ async def set_pool_name_from_title(
 # ── POST (create) ────────────────────────────────────────────────────
 
 @router.patch("/pools/{pool_id_or_name}/verify-status")
-async def set_pool_verify_status(
-    pool_id_or_name: str,
-    body: dict = Body(...),
-    db: AsyncSession = Depends(get_db),
-    auth_user: User = Depends(get_current_user),
-) -> dict:
-    """検証 pool のステータス切替: {"status": "pending"|"verified"|null}。
-    'verified' への切替が trainer poller の promote トリガ (検証完了シグナル)。
-
-    head candidate (0075) はここで**完全自動選出**する(user指示「head
-    candidateは自動的に選出しろ」「変なダイアログを出すな」— 人間に入力を
-    求めない)。verified 切替のたびに、この pool 内の post を対象に
-    `post_tag_audit`(actor_type='human', pool 作成後の行のみ)を集計し、
-    人間が実際に3回以上補正(追加 or 削除)したタグを自動登録する —
-    「検証中に人間が繰り返し直したタグ = タガーの誤検出ホットスポット」
-    という実測シグナルのみを使い、推測や固定リストは使わない。同一
-    (tag, pool) の重複登録は避ける(既存 candidate があればスキップ)。
-    任意で {"head_candidate": {"tag": str, "reason": str}} を明示的に渡す
-    こともできる(将来の他の自動化 caller 向けの経路として残置、UI からは
-    もう呼ばない)。"""
-    status = body.get("status")
-    if status not in (None, "pending", "verified", "excluded"):
-        raise HTTPException(status_code=400, detail="status must be pending|verified|excluded|null")
-    pool = await _load_pool(pool_id_or_name, db)
-    prev_status = pool.verify_status
-    pool.verify_status = status
-    pool.version = (pool.version or 0) + 1
-    pool.last_edit_time = datetime.utcnow()
-
-    hc = body.get("head_candidate")
-    if hc and hc.get("tag") and hc.get("reason"):
-        # tagger_head_candidate is governed (0079) -- go through the
-        # governed function (0085), which also dedups on (tag,
-        # source_pool_id) same as the auto-detected path below.
-        await db.execute(
-            text(
-                "SELECT tagger_governed_add_head_candidate(:tag, :pid, :reason, :by)"
-            ),
-            {"tag": str(hc["tag"])[:200], "pid": pool.pool_id,
-             "reason": str(hc["reason"])[:2000], "by": auth_user.name if auth_user else None},
-        )
-
-    if status == "verified" and prev_status != "verified":
-        n_posts = (await db.execute(
-            text("SELECT count(*) FROM pool_post WHERE pool_id = :pid"), {"pid": pool.pool_id}
-        )).scalar_one()
-        if n_posts:
-            corrected = (await db.execute(
-                text(
-                    "SELECT tag, count(DISTINCT post_id) AS n_corrected FROM ("
-                    "  SELECT pa.post_id, t.tag"
-                    "  FROM post_tag_audit pa JOIN pool_post pp ON pp.post_id = pa.post_id"
-                    "  CROSS JOIN LATERAL unnest(pa.added_tags || pa.removed_tags) AS t(tag)"
-                    "  WHERE pp.pool_id = :pid AND pa.actor_type = 'human' "
-                    "  AND pa.created_at >= :created"
-                    # gate hardening #2 (trainer review 1aacc111): a rename edit
-                    # (added=['paruru'], removed=['Paruru']) put BOTH case-variants
-                    # on the added||removed concat, registering 2-3 false
-                    # head_candidates per rename. Exclude a tag when the SAME row
-                    # has an added/removed pair that lower()-matches it = a rename,
-                    # not a correction. (All 7 observed pairs are case-only; alias
-                    # merge is a separate policy item.)
-                    "  AND NOT EXISTS (SELECT 1 FROM unnest(pa.added_tags) a(x), "
-                    "                  unnest(pa.removed_tags) r(y) "
-                    "                  WHERE lower(a.x) = lower(r.y) AND lower(a.x) = lower(t.tag))"
-                    ") x GROUP BY tag HAVING count(DISTINCT post_id) >= 3 "
-                    "ORDER BY n_corrected DESC"
-                ),
-                {"pid": pool.pool_id, "created": pool.creation_time},
-            )).mappings().all()
-            # Non-trainable exclusion (plan tagger-vnext-deterministic-runner
-            # Step 5 / E-M2): identity/meta tags (artist/copyright/character/
-            # meta categories, or the literal 'tagger-exclude') are corrected
-            # often precisely BECAUSE humans curate them -- but they are not
-            # visual concepts a head can learn, and flagging them only
-            # manufactures HOLD registrations ('Sakura🔞' entered the candidate
-            # list through this exact door). ONE shared predicate
-            # (api/tagger_core/config.py::is_non_trainable); a tag with no tag row /
-            # unknown category falls through to the literal check only.
-            if corrected:
-                from api.tagger_core.config import is_non_trainable
-                cat_rows = (await db.execute(
-                    text(
-                        "SELECT tn.name AS tag, tc.name AS category "
-                        "FROM tag_name tn "
-                        "JOIN tag tg ON tg.id = tn.tag_id "
-                        "JOIN tag_category tc ON tc.id = tg.category_id "
-                        "WHERE tn.name = ANY(:tags)"
-                    ),
-                    {"tags": [r["tag"] for r in corrected]},
-                )).mappings().all()
-                cat_by_tag = {r["tag"]: r["category"] for r in cat_rows}
-                corrected = [r for r in corrected
-                             if not is_non_trainable(r["tag"], cat_by_tag.get(r["tag"]))]
-            for row in corrected:
-                pct = round(100 * row["n_corrected"] / n_posts)
-                # tagger_head_candidate is governed (0079) -- the governed
-                # function (0085) itself dedups on (tag, source_pool_id),
-                # replacing the separate exists-check that used to guard
-                # this INSERT.
-                await db.execute(
-                    text(
-                        "SELECT tagger_governed_add_head_candidate(:tag, :pid, :reason, 'auto:verify-status')"
-                    ),
-                    {"tag": row["tag"], "pid": pool.pool_id,
-                     "reason": (f"pool #{pool.pool_id} 検証時、人間が {row['n_corrected']}/{n_posts}"
-                                f"件({pct}%)を補正(自動検出、post_tag_audit human補正の実測)")},
-                )
-
-    await db.commit()
-
-    # GT label sync (user指示「検証終了ボタンの通知を受けて自動プロセスが
-    # 動いていく」): head_candidate として今まさに登録した各タグについて、
-    # このpoolのGTラベルを即座に導出する。api.tagger_core.transitions.acquire_lease
-    # は内部でcommitするため、上のverify-status本体のcommitとは別に、
-    # commit後のフォローアップとして実行する(トランザクション混在を避ける)。
-    # ベストエフォート -- 失敗してもverify-status自体のレスポンスは止めない。
-    if status == "verified" and prev_status != "verified" and n_posts:
-        from api.tagger_core.gt_sync import _sync_human_corrections, _sync_implicit_review
-        for row in corrected:
-            try:
-                hp, hn = await _sync_human_corrections(db, row["tag"], pool.pool_id)
-                ip, iin = await _sync_implicit_review(db, row["tag"], pool.pool_id)
-                await db.commit()
-            except Exception:
-                await db.rollback()
-
-    await db.refresh(pool, ["names", "category"])
-    return _serialize_pool(pool)
+async def set_pool_verify_status(pool_id_or_name: str, body: dict = Body(...),
+                                 auth_user: User = Depends(get_current_user)):
+    raise HTTPException(status_code=410, detail="Verification status is historical and read-only. Correct tags on ordinary posts instead.")
 
 
 @router.post("/pools", status_code=200)
@@ -2808,6 +2725,8 @@ async def create_pool(
     auth_user: User = Depends(get_current_user),
 ) -> dict:
     _refuse_unknown_fields(body, CREATE_FIELDS)
+    if body.get("verify_status") is not None or body.get("tagger_source") is not None:
+        raise HTTPException(status_code=410, detail="Verification pools are retired; create an ordinary pool without verification metadata.")
     names = body.get("names", [])
     if not names:
         raise HTTPException(status_code=400, detail="names is required")
@@ -2824,7 +2743,7 @@ async def create_pool(
         version=1,
         creation_time=now,
         description=body.get("description"),
-        # 検証 pool ライフサイクル (0058): 自動タガー更新ループが 'pending' で生成する
+        # Legacy verification metadata is rejected above; new pools are ordinary groups.
         verify_status=body.get("verify_status"),
         tagger_source=body.get("tagger_source"),
     )
@@ -3103,6 +3022,34 @@ async def set_primary_source(
     return _serialize_pool(await _load_pool(str(pool.pool_id), db))
 
 
+@router.get("/pool/{pool_id}/visibility")
+async def pool_visibility(pool_id: int, db: AsyncSession = Depends(get_db),
+                          user: User = Depends(get_current_user)) -> dict:
+    if user.rank != "administrator":
+        raise HTTPException(status_code=403, detail="Administrator required")
+    hidden = await db.scalar(select(Pool.hidden).where(Pool.pool_id == pool_id))
+    if hidden is None:
+        raise HTTPException(status_code=404, detail="Pool not found")
+    return {"poolId": pool_id, "hidden": hidden}
+
+
+@router.put("/pool/{pool_id}/visibility")
+async def set_pool_visibility(pool_id: int, body: dict = Body(...), db: AsyncSession = Depends(get_db),
+                              user: User = Depends(get_current_user)) -> dict:
+    if user.rank != "administrator":
+        raise HTTPException(status_code=403, detail="Administrator required")
+    if set(body) != {"hidden"} or type(body["hidden"]) is not bool:
+        raise HTTPException(status_code=422, detail="hidden must be a boolean")
+    pool = await db.scalar(select(Pool).where(Pool.pool_id == pool_id).with_for_update(of=Pool))
+    if pool is None:
+        raise HTTPException(status_code=404, detail="Pool not found")
+    if pool.hidden != body["hidden"]:
+        pool.hidden = body["hidden"]
+        pool.version += 1
+    await db.commit()
+    return {"poolId": pool_id, "hidden": body["hidden"]}
+
+
 @router.get("/pool/{pool_id}/tagger-exclude")
 async def get_tagger_exclude(pool_id: int, db: AsyncSession = Depends(get_db)) -> dict:
     """migration 0099。ペア探索スコープ (censor_pair_search_scope) と同じ
@@ -3147,9 +3094,12 @@ async def merge_pools(
     """Merge source pools into a keep pool.
 
     Moves all posts (dedup by (pool_id,post_id)), PRESERVES each dropped pool's
-    external (http) source URLs as non-primary aliases on the keep pool so the
-    merge history / provenance survives, then deletes the dropped pools. Sentinel
-    urls (manual:/legacy:/kura-merge:) are not preserved (they are not sources).
+    source URLs as non-primary aliases on the keep pool so the merge history /
+    provenance survives, then deletes the dropped pools. Every source scheme is
+    kept — http(s) and the adapters' own (provider:<folder>/<path>, …): a pool found
+    by such an alias must still be found after the merge. Only kura's sentinel
+    urls (manual:/legacy:/kura-merge:) are dropped, as they are
+    not sources.
     Reads pool_post directly — no search-index dependency.
     """
     from_ids = body.get("from") or []
@@ -3179,11 +3129,14 @@ async def merge_pools(
             "ON CONFLICT DO NOTHING"
         ), {"k": keep.pool_id, "f": fid})
         moved_posts += r.rowcount or 0
-        # reassign the dropped pool's external urls to keep as non-primary aliases
-        # (url is globally UNIQUE so we move, not copy; skip ones keep already owns)
+        # reassign the dropped pool's source urls to keep as non-primary aliases
+        # (url is globally UNIQUE so we move, not copy; skip ones keep already owns).
+        # Not just http(s): provider:<folder>/<path> aliases were silently deleted with
+        # the pool, so the next import of that share made the duplicate again
+        # (non-HTTP source alias regression, 2026-11-04).
         r2 = await db.execute(text(
             "UPDATE pool_url SET pool_id = :k, is_primary = false "
-            "WHERE pool_id = :f AND url ~ '^https?://' "
+            "WHERE pool_id = :f AND url !~ '^(manual|legacy|kura-merge):' "
             "  AND NOT EXISTS (SELECT 1 FROM pool_url e WHERE e.pool_id = :k AND e.url = pool_url.url)"
         ), {"k": keep.pool_id, "f": fid})
         aliases_preserved += r2.rowcount or 0

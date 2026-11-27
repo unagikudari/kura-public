@@ -32,7 +32,7 @@ KINDS = ("view", "thumb")
 # recipe they were produced with (api/services/media_materialize.py).
 LEGACY_RECIPE = {"view": "webp-cap1600-q82", "thumb": "webp-cap320-q75"}
 
-_EXT = {"image/webp": "webp", "image/jpeg": "jpg", "image/png": "png", "image/gif": "gif"}
+_EXT = {"image/webp": "webp", "image/jpeg": "jpg", "image/png": "png", "image/gif": "gif", "video/mp4": "mp4"}
 
 
 @dataclass(frozen=True)
@@ -95,6 +95,34 @@ def store(data: bytes, root: Path | None = None, sync: bool = True) -> Stored:
         _fsync_dir(path.parent)
     return Stored(sha, mime, len(data), width, height, path)
 
+
+
+def store_video(path: Path, root: Path | None = None) -> Stored:
+    """Publish a validated H.264 MP4 viewing copy; never buffer a video in RAM."""
+    import shutil
+    from api.services.video_view import probe_mp4
+    width, height = probe_mp4(path)
+    h = hashlib.sha256()
+    with path.open('rb') as src:
+        for block in iter(lambda: src.read(1 << 20), b''):
+            h.update(block)
+    sha = h.digest()
+    target = path_for(sha, 'video/mp4', root)
+    if not target.exists() or not verify(target, sha):
+        target.parent.mkdir(parents=True, exist_ok=True)
+        tmp = target.with_name(f'.{target.name}.tmp.{uuid.uuid4().hex}')
+        try:
+            with path.open('rb') as src, tmp.open('xb') as dst:
+                shutil.copyfileobj(src, dst, 1 << 20)
+                dst.flush()
+                os.fsync(dst.fileno())
+            if not verify(tmp, sha):
+                raise ValueError('video changed during publication')
+            os.replace(tmp, target)
+            _fsync_dir(target.parent)
+        finally:
+            tmp.unlink(missing_ok=True)
+    return Stored(sha, 'video/mp4', target.stat().st_size, width, height, target)
 
 def _fsync_dir(d: Path) -> None:
     dfd = os.open(d, os.O_RDONLY)

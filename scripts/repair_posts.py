@@ -17,7 +17,8 @@ anything else is refused and recorded, nothing changed. Then:
   already holds is refused, never merged;
 - view: when the post has no view rendition or no media_location, or its original is animated
   and the view does not keep the motion (or the post is typed image), or a still original sits
-  in an animation post — the same materialize call upload.py makes (animated WebP for more than
+  in an animation post, or the view does not show the original (made from another file under
+  the post's names: its dHash is far from the original's) — the same materialize call upload.py makes (animated WebP for more than
   one frame), the view and thumb renditions attached, type, media_location='pg' and mime set.
 
 Any change bumps post.version so cached responses turn over. Candidates: posts without a view,
@@ -134,8 +135,25 @@ def decide(post: dict, data: bytes, view: bytes | None) -> tuple[dict, bool, boo
         elif animated:
             need = post["type"] != "animation" or not _keeps_motion(im, view)
         else:
-            need = post["type"] == "animation"
+            need = post["type"] == "animation" or not _shows(im, view)
     return changes, need, animated
+
+
+def _dhash(im: Image.Image) -> list[bool]:
+    g = im.convert("L").resize((17, 16), Image.LANCZOS)
+    px = g.tobytes()
+    return [px[r * 17 + c] > px[r * 17 + c + 1] for r in range(16) for c in range(16)]
+
+
+# A view made from ANOTHER file under the post's names (pool 1166, 2026-11-22: a .png of a different
+# picture beside the post's own .jpg; 271 of 541 views showed it) keeps the right checksum and looks like
+# a healthy post. Its 256-bit dHash against the original: same picture 0-19, other picture 100-153.
+SHOWS_MAX_DISTANCE = 40
+
+
+def _shows(original: Image.Image, view: bytes) -> bool:
+    with Image.open(io.BytesIO(view)) as shown:
+        return sum(a != b for a, b in zip(_dhash(original), _dhash(shown))) <= SHOWS_MAX_DISTANCE
 
 
 def _keeps_motion(original: Image.Image, view: bytes) -> bool:

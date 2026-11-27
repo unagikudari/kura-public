@@ -1,47 +1,16 @@
-#!/usr/bin/env python3
-# Description: Promote human-reviewed pool results into the curated GT ledger (kura#64).
-# Kind: oneshot (hand-run on the heads node after a pool is reviewed)
-# Effects: mutating (appends to verified_log.jsonl; PATCHes pool verify-status)
-# Requires: DATABASE_URL in api/env, KTOK in env, TAGGER_HEADS_DATA; runs on the heads node
-# Version: 2.0
-"""Turn a human-reviewed pool into curated ground truth — and prove it was human.
-
-usage: promote_verified.py <pool_id> [<pool_id> ...]
-
-For each (concept, post) a head applied inside the pool, the residency tells the
-direction — the tag is still there (a positive) or a human took it off (a
-negative). Before kura#64 that was the whole story, and it was wrong: the script
-wrote the row whether or not a human had ever looked, then marked the pool
-"verified" itself, so "verified" meant "this script ran", not "a person judged".
-Three tags became fake ground truth that way.
-
-Now every row must be backed by INDEPENDENT human evidence in post_tag_audit, and
-carries it (schema-2 ledger, see verified_ledger):
-
-    negative  requires a human REMOVAL of that tag on that post
-              (actor_type='human', the concept in removed_tags) -> source human_removed
-    positive  requires that a human edited that post at all — they reviewed it and
-              left the tag -> source human_pool_review
-
-A (concept, post) with no human audit is SKIPPED and counted, never written. The
-concepts are not hardcoded: they are whatever the machine applied-log recorded for
-the pool's posts, so this tool follows the heads that actually ran rather than a
-list that drifts.
-"""
+"""Export corroborated, tag-specific human judgments into the heads ledger."""
 from __future__ import annotations
 
-import base64
 import json
 import os
-import ssl
 import sys
-import urllib.request
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from tagger.api_target import api_base  # noqa: E402
-from tagger.heads import verified_ledger as vl  # noqa: E402
+from api.tagger_core.post_exclusion import OPT_OUT_TAG, YOUTH_NAMED_TAGS, YOUTH_TAGS, not_excluded
+from tagger.heads import verified_ledger as vl
+from tagger.heads.canonical_gt import not_evaluation_audit  # noqa: E402
 
 HOME = Path(os.environ.get("TAGGER_HEADS_DATA", os.path.expanduser("~/tagger-heads")))
 KURA_ENV = Path(__file__).resolve().parents[2] / "api" / "env"
@@ -56,160 +25,132 @@ def _dsn_from_env() -> str:
     raise SystemExit(f"DATABASE_URL not found in {KURA_ENV}")
 
 
-def _require_ktok() -> str:
-    tok = os.environ.get("KTOK")
-    if not tok:
-        raise SystemExit(
-            "KTOK is not set. The token is read from the environment only — a secret\n"
-            "reachable by file path is a secret that can be committed. Source it from\n"
-            "your credential store before running (see tagger/heads/README.md).")
-    return tok
+ELIGIBLE = not_excluded("p.id")
+
+EVIDENCE = f"""
+SELECT {ELIGIBLE}, ARRAY(
+    SELECT n.name FROM post_tag pt JOIN tag_name n ON n.tag_id=pt.tag_id
+    WHERE pt.post_id=p.id AND n.name=ANY(%s)
+), p.status, gt.verdict,
+audit.id, CASE WHEN {not_evaluation_audit('audit.id')} THEN audit.actor_type END, audit.actor_id, audit.created_at,
+%s=ANY(audit.added_tags), %s=ANY(audit.removed_tags),
+review.id, review.actor_id, review.actor_name, review.received_at, review.decision,
+CASE WHEN review.id IS NULL THEN false ELSE
+    review.source_context #>> '{{observed,display_sha256}}' =
+    COALESCE(encode(r.sha256,'hex'), CASE WHEN p.media_location='pg' THEN encode(sha256(p.data),'hex') END)
+END
+FROM post p
+JOIN tag_name n ON n.name=%s AND n.ord=0
+LEFT JOIN tagger_gt_label gt ON gt.post_id=p.id AND gt.tag_id=n.tag_id
+LEFT JOIN post_rendition r ON r.post_id=p.id AND r.kind='view'
+LEFT JOIN LATERAL (
+    SELECT a.* FROM post_tag_audit a WHERE a.post_id=p.id
+      AND (%s=ANY(a.added_tags) OR %s=ANY(a.removed_tags))
+    ORDER BY a.created_at DESC,a.id DESC LIMIT 1
+) audit ON true
+LEFT JOIN LATERAL (
+    SELECT e.* FROM tagger_human_review_event e WHERE e.post_id=p.id
+      AND e.source_context #>> '{{observed,tag_id}}'=n.tag_id::text
+      AND e.source_context #>> '{{queue,purpose}}' IN ('training_support','historical_label_recheck')
+      AND e.source_context->>'provenance'='authenticated_explicit_user_response'
+    ORDER BY e.received_at DESC,e.id DESC LIMIT 1
+) review ON true
+WHERE p.id=%s
+"""
 
 
-def applied_by_post(home: Path) -> dict[int, set[str]]:
-    """(post_id -> {concepts a head applied there}). The concept set is derived, not
-    declared — this is what makes the tool follow the heads instead of a fixed list."""
-    out: dict[int, set[str]] = {}
-    af = home / "applied_log.jsonl"
-    if af.exists():
-        for line in af.read_text().splitlines():
-            if not line.strip():
+def decide_evidence(row, machine_at):
+    if row is None:
+        return None, ("post_or_tag_missing",)
+    eligible, tags, status, gt, aid, kind, actor, at, added, removed, rid, uid, name, rt, decision, media_ok = row
+    if not eligible:
+        reasons = []
+        if set(tags).intersection(YOUTH_TAGS + YOUTH_NAMED_TAGS):
+            reasons.append("youth_tag")
+        if OPT_OUT_TAG in tags:
+            reasons.append("training_opt_out")
+        return None, tuple(reasons or ["post_excluded"])
+    if status != "ok":
+        return None, ("post_unavailable",)
+    if rid is not None and (at is None or rt >= at):
+        if not media_ok or decision not in ("present", "absent") or rt <= machine_at:
+            return None, ("review_evidence_unverified",)
+        label = "positive" if decision == "present" else "negative"
+        result = dict(label=label, source="human_review_event", actor=name, actor_id=uid,
+                      at=rt.isoformat(), evidence_id=rid)
+    elif aid is not None and kind == "human" and actor and at > machine_at and bool(added) != bool(removed):
+        label = "positive" if added else "negative"
+        result = dict(label=label, source="human_tag_audit", actor=actor, actor_id=actor,
+                      at=at.isoformat(), evidence_id=aid)
+    else:
+        return None, ("tag_specific_evidence_missing",)
+    if gt is not None and gt != label:
+        return None, ("canonical_gt_conflict",)
+    return result, ()
+
+
+def lookup_evidence(cursor, post_id, concept, machine_at):
+    cursor.execute(EVIDENCE, ((OPT_OUT_TAG,) + YOUTH_TAGS + YOUTH_NAMED_TAGS,
+                              concept, concept, concept, concept, concept, post_id))
+    return decide_evidence(cursor.fetchone(), machine_at)
+
+
+def applied_times(home):
+    from collections import defaultdict
+    entries = defaultdict(dict)
+    for line in (home / "applied_log.jsonl").read_text().splitlines():
+        try:
+            row = json.loads(line)
+            timestamp = datetime.fromisoformat(row["t"])
+            if timestamp.tzinfo is None:
                 continue
-            try:
-                d = json.loads(line)
-                out.setdefault(int(d["pid"]), set()).add(d["c"])
-            except Exception:
-                pass
-    return out
-
-
-def classify(*, present: bool, human_edited_post: bool, human_removed_tag: bool):
-    """The evidence rule, as a pure function so its boundaries are testable.
-
-    Returns (source, label) to write, or None to SKIP (no human evidence).
-        present + a human edited the post -> ("human_pool_review", "positive")
-        not present + a human removed THIS tag -> ("human_removed", "negative")
-        anything else -> None (fail-closed: unproven judgments are not written)
-    """
-    if present and human_edited_post:
-        return ("human_pool_review", "positive")
-    if (not present) and human_removed_tag:
-        return ("human_removed", "negative")
-    return None
-
-
-def _seen(home: Path) -> set[tuple[str, int]]:
-    seen: set[tuple[str, int]] = set()
-    vf = home / "verified_log.jsonl"
-    if vf.exists():
-        for line in vf.read_text().splitlines():
-            if not line.strip():
-                continue
-            try:
-                d = json.loads(line)
-                # tolerate both schema-2 and any legacy leftovers while reading dedup keys
-                seen.add((d.get("concept") or d.get("c"), int(d.get("post_id") or d.get("pid"))))
-            except Exception:
-                pass
-    return seen
+            entries[row["pid"]][row["c"]] = max(timestamp, entries[row["pid"]].get(row["c"], timestamp))
+        except (ValueError, TypeError, KeyError):
+            continue
+    return entries
 
 
 def main() -> int:
+    from collections import Counter
+    import fcntl
     import psycopg2
 
     pools = [int(p) for p in sys.argv[1:]]
     if not pools:
         raise SystemExit("usage: promote_verified.py <pool_id> [<pool_id> ...]")
-
     conn = psycopg2.connect(_dsn_from_env())
-    c = conn.cursor()
-    now = datetime.now(timezone.utc).isoformat()
-    seen = _seen(HOME)
-    applied = applied_by_post(HOME)
-
-    vf = HOME / "verified_log.jsonl"
-    tot_written = tot_skipped = 0
-    with open(vf, "a") as out:
-        for pool_id in pools:
-            c.execute(
-                "SELECT pp.post_id, po.tags FROM pool_post pp "
-                "JOIN post po ON po.id = pp.post_id WHERE pp.pool_id = %s",
-                (pool_id,))
-            rows = c.fetchall()
-            pids = [pid for pid, _ in rows]
-            # One round-trip each: which posts a human edited at all, and which
-            # (post, tag) a human explicitly removed.
-            human_edited: set[int] = set()
-            human_removed: set[tuple[int, str]] = set()
-            if pids:
-                c.execute(
-                    "SELECT DISTINCT post_id FROM post_tag_audit "
-                    "WHERE actor_type = 'human' AND post_id = ANY(%s)", (pids,))
-                human_edited = {r[0] for r in c.fetchall()}
-                c.execute(
-                    "SELECT post_id, unnest(removed_tags) FROM post_tag_audit "
-                    "WHERE actor_type = 'human' AND post_id = ANY(%s)", (pids,))
-                human_removed = {(r[0], r[1]) for r in c.fetchall()}
-
-            npos = nneg = nskip = 0
-            for pid, tags in rows:
-                ts = set(tags or [])
-                for concept in applied.get(pid, set()):
-                    if (concept, pid) in seen:
-                        continue
-                    decided = classify(
-                        present=concept in ts,
-                        human_edited_post=pid in human_edited,
-                        human_removed_tag=(pid, concept) in human_removed)
-                    if decided is None:
-                        nskip += 1
-                        continue
-                    source, label = decided
-                    row = vl.make_row(concept=concept, post_id=pid, label=label,
-                                      source=source, actor=_actor(), at=now, pool=pool_id)
-                    out.write(json.dumps(row, ensure_ascii=False) + "\n")
-                    seen.add((concept, pid))
-                    if label == "positive":
-                        npos += 1
-                    else:
-                        nneg += 1
-            tot_written += npos + nneg
-            tot_skipped += nskip
-            print(f"pool {pool_id}: +{npos} pos, +{nneg} human-neg, {nskip} skipped "
-                  f"(no human evidence — not written)")
-
-    _mark_pools_verified(pools)
-    print(f"TOTAL: {tot_written} written, {tot_skipped} skipped -> {vf.name}")
+    conn.set_session(readonly=True, isolation_level="REPEATABLE READ")
+    applied = applied_times(HOME)
+    reasons = Counter()
+    pending = []
+    with conn, conn.cursor() as cursor:
+        for pool in pools:
+            cursor.execute("SELECT post_id FROM pool_post WHERE pool_id=%s", (pool,))
+            for (pid,) in cursor.fetchall():
+                for concept, timestamp in applied.get(pid, {}).items():
+                    evidence, failures = lookup_evidence(cursor, pid, concept, timestamp)
+                    reasons.update(failures)
+                    if evidence:
+                        pending.append(dict(schema=3, concept=concept, post_id=pid, pool=pool, **evidence))
+    with (HOME / "verified_log.jsonl").open("a+") as ledger:
+        fcntl.flock(ledger, fcntl.LOCK_EX)
+        ledger.seek(0)
+        seen = set()
+        for line in ledger:
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            if vl.is_proven(row):
+                seen.add((row["concept"], row["post_id"], row["source"], row["evidence_id"]))
+        for row in pending:
+            key = (row["concept"], row["post_id"], row["source"], row["evidence_id"])
+            if key not in seen and vl.is_proven(row):
+                ledger.write(json.dumps(row, ensure_ascii=False) + "\n")
+                seen.add(key)
+                reasons["written"] += 1
+    print(json.dumps(reasons, sort_keys=True))
     return 0
-
-
-def _actor() -> str:
-    """Who the human judgments are attributed to. Not hardcoded: the owner of this
-    kura, named once in the environment, so a different deployment attributes to its
-    own owner rather than to a literal baked into this file."""
-    return os.environ.get("KURA_OWNER_USERNAME", "owner")
-
-
-def _mark_pools_verified(pools: list[int]) -> None:
-    """Tell kura the pool is verified so the UI badge flips. This is a CONSEQUENCE
-    of promotion, not its evidence — the evidence was the post_tag_audit human rows
-    checked above, never this call."""
-    ctx = ssl.create_default_context()
-    ctx.check_hostname = False
-    ctx.verify_mode = ssl.CERT_NONE
-    auth = {"Authorization": "Token " + base64.b64encode(
-        f"{_actor()}:{_require_ktok()}".encode()).decode(),
-        "Content-Type": "application/json"}
-    base = api_base()
-    for pool_id in pools:
-        try:
-            req = urllib.request.Request(
-                f"{base}/pools/{pool_id}/verify-status",
-                data=json.dumps({"status": "verified"}).encode(), headers=auth, method="PATCH")
-            urllib.request.urlopen(req, timeout=20, context=ctx)
-            print(f"pool {pool_id} -> verified (kura UI)")
-        except Exception as e:
-            print(f"pool {pool_id} verify-status mark failed: {e}")
 
 
 if __name__ == "__main__":

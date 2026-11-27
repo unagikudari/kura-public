@@ -247,3 +247,21 @@ def test_base_only_bundles_no_veto_heads():
     src = Path(br.__file__).read_text()
     assert "veto_heads = {} if base_only else load_veto_dir(_veto_dir)" in src
     assert "_retired = {} if base_only else _load_retired_gates()" in src
+
+
+def test_an_explicit_revision_keeps_the_base_contract(tmp_path, monkeypatch):
+    """--pin-revision leaves bytes unverified but must not drop the input contract."""
+    timm = pytest.importorskip("timm")
+    import huggingface_hub
+
+    rows = tmp_path / "selected_tags.csv"
+    rows.write_text("tag_id,name,category,count\n" + "".join(f"{i},t{i},0,1\n" for i in range(5)))
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download", lambda *a, **k: str(rows))
+    real = timm.create_model
+    monkeypatch.setattr(timm, "create_model",
+                        lambda *a, **k: real("resnet18", pretrained=False, num_classes=5))
+    br.build_and_save(tmp_path / "out", base_only=True, base="wd-eva02-large-tagger-v3",
+                      pin_revision="f" * 40)
+    ckpt = torch.load(tmp_path / "out" / "wd14-fixed.pt", map_location="cpu", weights_only=False)
+    assert ckpt["preprocessing"] == "wd-v3"
+    assert ckpt["mean"] and ckpt["std"] and ckpt["patched"] == {} and ckpt["veto_heads"] == {}

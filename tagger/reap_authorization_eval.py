@@ -50,6 +50,14 @@ AUTHORIZED_PATH = reap_authority_path()
 API = os.environ.get("KURA_API_LOCAL", "http://127.0.0.1:8001")
 
 
+
+def _not_excluded():
+    from api.tagger_core.post_exclusion import not_excluded
+    return " ".join(not_excluded("post_id").split())  # one line for the psql call
+
+
+_NOT_EXCLUDED = _not_excluded()
+
 def _creds():
     env = (REPO_ROOT / "api" / "env").read_text()
     user = re.search(r"^KURA_USER=(.*)$", env, re.M).group(1).strip()
@@ -131,7 +139,7 @@ def main() -> int:
         AUC/precision is the real head-fixable signal. Returns (auc, prec)."""
         Xp = _pooled(pos_pids)
         neg_pids = [int(x) for x in sql(
-            f"SELECT post_id FROM tagger_gt_label WHERE tag='{t}' AND verdict='negative' "
+            f"SELECT post_id FROM tagger_gt_label WHERE tag='{t}' AND verdict='negative' AND {_NOT_EXCLUDED} "
             "ORDER BY md5(post_id::text) LIMIT 150").split("\n") if x.strip()]
         Xn = _pooled(neg_pids)
         if len(Xp) < args.min_n or len(Xn) < 10:
@@ -162,7 +170,7 @@ def main() -> int:
     prev_auth = set(doc.get("authorized") or [])  # fail-safe: never demote on a failed measurement
     for tag in domain:
         rows = sql("SELECT post_id FROM tagger_gt_label "
-                   f"WHERE tag='{tag}' AND verdict='positive' ORDER BY md5(post_id::text) "
+                   f"WHERE tag='{tag}' AND verdict='positive' AND {_NOT_EXCLUDED} ORDER BY md5(post_id::text) "
                    f"LIMIT {args.sample}")
         pids = [int(x) for x in rows.split("\n") if x.strip()]
         if len(pids) < args.min_n:

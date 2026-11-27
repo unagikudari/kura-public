@@ -55,6 +55,7 @@ first one was actually a "structurally nothing happens" bug.
 """
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import sys
@@ -65,6 +66,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from sqlalchemy import text
 
+from tagger.label_identity import (
+    label_identity, labels_changed, read_label_rows, registration_label_identity,
+)
+
 from api.db.session import async_session
 from api.tagger_core.transitions import (
     DB_HOLD_REASON_CLASSES,
@@ -73,6 +78,7 @@ from api.tagger_core.transitions import (
 )
 from api.tagger_core.config import QUARANTINE_TAGS, is_non_trainable, load_config
 from api.tagger_core.transitions import TransitionError, acquire_lease, record_lifecycle_event, release_lease
+from tagger.exclusive_training import JOINT_REVIEW_PAIR, exclusive_relation
 
 # _reap_approved_without_head's bounds: a tag reopened this many times in 24h is
 # left for a person, and at most this many are reopened per tick.
@@ -220,7 +226,7 @@ async def _last_registration_hold(db, tag: str, config: dict) -> tuple[str, dict
     the candidate on something no amount of labelling fixes.
     """
     row = (await db.execute(text(
-        "SELECT status, rejected_reason, review_class, metrics, gt "
+        "SELECT status, rejected_reason, review_class, metrics, gt, lifecycle_event_id "
         "FROM tagger_registration_request "
         "WHERE tag = :tag ORDER BY requested_at DESC, id DESC LIMIT 1"
     ), {"tag": tag})).mappings().one_or_none()
@@ -275,11 +281,10 @@ async def _release_held(db, min_pos: int, min_neg: int) -> list[str]:
     (vocab_absent_routing, inert_serving_path) stay human-release-only, which is
     the correct behaviour for cum_in_cup -- a routing gap is not solved by labels.
 
-    Runs BEFORE the main loop so a released tag is re-evaluated this same tick
-    (and re-held if still capped). Growth only -- swaps/retractions don't release
-    (they leave the fingerprint's set size). Auto re-evaluation on +GT is allowed
-    (trainer Q4); a human release/dismiss is a separate governed path. Returns
-    released tags."""
+    Runs before the main loop so a released tag is re-evaluated this tick.
+    A known label identity also detects swaps and retractions. Older holds
+    without an identity use the count-growth rule. Human release and dismissal
+    use a separate governed path."""
     rows = (await db.execute(text(
         "SELECT tag, hold_evidence FROM tagger_head_candidate "
         "WHERE status='held' AND hold_reason_class = ANY(:classes)"
@@ -291,8 +296,9 @@ async def _release_held(db, min_pos: int, min_neg: int) -> list[str]:
             continue
         base = hist[-1]  # most recent hold measurement
         base_pos, base_neg = int(base.get("gt_pos") or 0), int(base.get("gt_neg") or 0)
-        gt_pos, gt_neg = await _gt_counts(db, r["tag"])
-        if _gt_grew(base_pos, base_neg, gt_pos, gt_neg, min_pos, min_neg):
+        gt_pos, gt_neg, gt_sha = await _gt_state(db, r["tag"])
+        if (labels_changed(base.get("label_sha256"), gt_sha)
+                or _gt_grew(base_pos, base_neg, gt_pos, gt_neg, min_pos, min_neg)):
             # Both governed fns RETURN the UPDATE's row count (0110/0111,
             # GET DIAGNOSTICS ... ROW_COUNT). Discarding it lets a no-op report as
             # success: each fn's UPDATE is scoped by status, so a row that moved
@@ -301,7 +307,7 @@ async def _release_held(db, min_pos: int, min_neg: int) -> list[str]:
             # a claim in the run summary should mean rows actually changed.
             n = (await db.execute(text(
                 "SELECT tagger_governed_release_head_candidate(:tag, :reason)"
-            ), {"tag": r["tag"], "reason": f"GT grew (pos {base_pos}->{gt_pos} / neg {base_neg}->{gt_neg}) -- re-evaluate"})).scalar()
+            ), {"tag": r["tag"], "reason": f"GT changed (pos {base_pos}->{gt_pos} / neg {base_neg}->{gt_neg}) -- re-evaluate"})).scalar()
             await db.commit()
             (released if n else release_noop).append(r["tag"])
     return released, release_noop
@@ -377,19 +383,12 @@ def _set_grew(base_pos: int, base_neg: int, now_pos: int, now_neg: int) -> bool:
     return (now_pos + now_neg) > (base_pos + base_neg)
 
 
-async def _gt_counts(db, tag: str) -> tuple[int, int]:
-    """Returns (positive, negative) counts from tagger_gt_label -- the
-    structured labels api/tagger_core/gt_sync.py derives from post_tag_audit
-    corrections + verify-pool review (see that module's docstring). This
-    is what lets a dispatch carry real evidence instead of forcing the
-    training node to independently discover "there's no GT for this"
-    (trainer had to do exactly that for chastity_cage, task c53b31bc)."""
-    row = (await db.execute(text(
-        "SELECT count(*) FILTER (WHERE verdict='positive') AS pos, "
-        "count(*) FILTER (WHERE verdict='negative') AS neg "
-        "FROM tagger_gt_label WHERE tag = :tag"
-    ), {"tag": tag})).one()
-    return row.pos, row.neg
+async def _gt_state(db, tag: str) -> tuple[int, int, str]:
+    """Read counts and label identity from the same database statement."""
+    rows = await read_label_rows(db, tag)
+    positive = sum(verdict == "positive" for _, verdict, _ in rows)
+    negative = sum(verdict == "negative" for _, verdict, _ in rows)
+    return positive, negative, label_identity(rows)
 
 
 async def _corpus_positive_count(db, tag: str) -> int:
@@ -442,13 +441,23 @@ HELD_BY_DECISION = ("defer", "dismiss", "block")
 # Tags waiting to be measured: latest event moves to 'training', nothing has
 # registered a result for that event, and no standing decision holds the tag.
 # Oldest first. tagger/learn.py reads this; the reconciler counts it.
-QUEUED_TRAINING_SQL = """
+_JOINT_LEFT, _JOINT_RIGHT = JOINT_REVIEW_PAIR
+QUEUED_TRAINING_SQL = f"""
 WITH latest AS (
   SELECT DISTINCT ON (tag_id) tag_id, tag, id, to_stage, occurred_at
   FROM tagger_lifecycle_event ORDER BY tag_id, occurred_at DESC, id DESC)
 SELECT l.tag, l.id AS event_id, l.occurred_at
 FROM latest l
 WHERE l.to_stage = 'training'
+  AND NOT (
+      l.tag IN ('{_JOINT_LEFT}', '{_JOINT_RIGHT}')
+      AND EXISTS (SELECT 1 FROM tag_relation r
+                  JOIN tag_name a ON a.tag_id=r.a_tag_id AND a.ord=0
+                  JOIN tag_name b ON b.tag_id=r.b_tag_id AND b.ord=0
+                  WHERE r.kind='exclusive' AND
+                    ((a.name='{_JOINT_LEFT}' AND b.name='{_JOINT_RIGHT}') OR
+                     (a.name='{_JOINT_RIGHT}' AND b.name='{_JOINT_LEFT}')))
+  )
   AND NOT EXISTS (SELECT 1 FROM tagger_registration_request r
                   WHERE r.tag_id = l.tag_id AND r.lifecycle_event_id = l.id)
   AND NOT EXISTS (SELECT 1 FROM tagger_candidate_disposition_current d
@@ -601,6 +610,10 @@ async def _reap_approved_without_head(db) -> list[str]:
         # 開いた candidate 行が既にあるなら何もしなくてよい (二重に動かさない)。
         "  AND NOT EXISTS (SELECT 1 FROM tagger_head_candidate hc "
         "                  WHERE hc.tag = e.tag AND hc.status = 'candidate') "
+        # Outside approved, only a promoted row can be reopened by this GC.
+        # Held rows are owned by the hold-release path.
+        "  AND (e.to_stage = 'approved' OR EXISTS (SELECT 1 FROM tagger_head_candidate hc "
+        "       WHERE hc.tag = e.tag AND hc.status = 'promoted')) "
         "ORDER BY e.occurred_at ASC LIMIT :cap"
     ), {"max_reopens": MAX_TRAINING_REOPENS, "cap": MAX_REOPENS_PER_RUN})).all()
     reopened: list[str] = []
@@ -626,12 +639,11 @@ async def _reap_approved_without_head(db) -> list[str]:
                 "SELECT tagger_governed_reopen_headless_candidate(:tag, :why)"
             ), {"tag": r.tag,
                 "why": "approved-without-head GC"})).scalar()
-            if not n:
-                # policy があるか、promoted 行が無い。**黙って成功にしない** —
-                # lifecycle だけ動いた状態は「戻したのに動かない」に見える。
-                print(f"[reconciler] {r.tag}: lifecycle は戻したが head_candidate を "
-                      f"開き直せなかった (promoted 行なし / policy あり)", file=sys.stderr)
             await db.commit()
+            if not n:
+                print(f"[reconciler] {r.tag}: head_candidate を開き直せなかった "
+                      "(promoted 行なし / policy あり)", file=sys.stderr)
+                continue
             reopened.append(r.tag)
         except TransitionError as e:
             print(f"[reconciler] approved-without-head reopen failed for {r.tag}: {e}",
@@ -688,7 +700,13 @@ async def _expire_due_dispositions(db) -> tuple[list[str], list[str]]:
     return expired, errors
 
 
-async def run_reconcile() -> dict:
+async def run_reconcile(*, preview_tag: str | None = None) -> dict:
+    """Normal tick, or a read-only eligibility preview for exactly one tag.
+
+    Preview uses the same gates but never expires decisions, reopens/holds
+    candidates, records events, acquires leases or writes the dashboard snapshot.
+    A caller must separately lease and recheck before an authorized transition.
+    """
     dispatched, skipped, failed, already_approved, gt_insufficient = [], [], [], [], []
     quarantined: list[str] = []  # output-discarded tags -- training would be inert
     non_trainable: list[str] = []  # identity/meta tags -- not a visual concept (Step 5)
@@ -699,6 +717,8 @@ async def run_reconcile() -> dict:
     hold_noop: list[tuple[str, str]] = []
     disp: dict[str, dict] = {}  # per-tag decision snapshot -> reconciler_disposition.json
     async with async_session() as db:
+        if preview_tag is not None:
+            await db.execute(text('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY'))
         # Kill switch (issue #55 census §5-6: `paused` は set 関数だけあって
         # **reconciler 自身が読んでいなかった** dead state — その配線)。行欠落は
         # transitions.py の規約どおり breach = paused 扱い (fail-closed)。
@@ -725,20 +745,36 @@ async def run_reconcile() -> dict:
         backpressure_held: list[str] = []
         # Tags whose measurement was judged go back to 'candidate' BEFORE reading
         # candidates, so the main loop can queue/hold them this same tick.
-        reopened_stale = await settle_judged_training(db)
-        # 終端 (approved) に着いたのに配備できるものが無いタグも戻す。
-        # training の stuck と同じ害で、しかも**終端なので誰も見に来ない**。
-        reopened_stale += await _reap_approved_without_head(db)
-        # Re-admit ceiling-held candidates whose GT has grown (release trigger (a)),
-        # BEFORE reading candidates, so a released tag is re-evaluated this tick.
-        released_held, release_noop = await _release_held(
-            db, int(min_gt_positive), int(min_gt_negative))
-        # issue #55 P1: expire due defers FIRST (満了 event を書く), then read the
-        # fold once — a defer that just expired is dispatchable this same tick
-        # (受入条件 3「満了後に出る」).
-        expired_decisions, expiry_errors = await _expire_due_dispositions(db)
+        reopened_stale, released_held, release_noop = [], [], []
+        expired_decisions, expiry_errors = [], []
+        if preview_tag is None:
+            reopened_stale = await settle_judged_training(db)
+            # 終端 (approved) に着いたのに配備できるものが無いタグも戻す。
+            # training の stuck と同じ害で、しかも**終端なので誰も見に来ない**。
+            reopened_stale += await _reap_approved_without_head(db)
+            # Re-admit ceiling-held candidates whose GT has grown (release trigger (a)),
+            # BEFORE reading candidates, so a released tag is re-evaluated this tick.
+            released_held, release_noop = await _release_held(
+                db, int(min_gt_positive), int(min_gt_negative))
+            # issue #55 P1: expire due defers FIRST (満了 event を書く), then read the
+            # fold once — a defer that just expired is dispatchable this same tick
+            # (受入条件 3「満了後に出る」).
+            expired_decisions, expiry_errors = await _expire_due_dispositions(db)
         decisions = await _current_dispositions(db)
         by_tag = await _open_candidates_by_tag(db)
+        joint_tags = (
+            JOINT_REVIEW_PAIR if any(tag in by_tag for tag in JOINT_REVIEW_PAIR)
+            and await exclusive_relation(db, *JOINT_REVIEW_PAIR) else ()
+        )
+        if preview_tag is not None:
+            by_tag = {preview_tag: by_tag[preview_tag]} if preview_tag in by_tag else {}
+            if not by_tag:
+                disp[preview_tag] = {"disposition": "hold", "reason": "no_open_candidate"}
+            if (await db.execute(text("SELECT 1 FROM tagger_head_candidate "
+                                      "WHERE tag=:tag AND status='held' LIMIT 1"),
+                                 {"tag": preview_tag})).first() is not None:
+                by_tag = {}
+                disp[preview_tag] = {"disposition": "hold", "reason": "held_candidate"}
         for tag, candidates in by_tag.items():
             # Decision gate (issue #55 P1) — a standing human/machine decision
             # outranks every machine gate below. Vocabulary is deliberately
@@ -751,6 +787,9 @@ async def run_reconcile() -> dict:
                              "actor_type": dec["actor_type"],
                              "decision_seq": dec["seq"]}
                 decision_skipped.append(tag)
+                continue
+            if tag in joint_tags:
+                disp[tag] = {"disposition": "hold", "reason": "joint_training_required"}
                 continue
             # Non-trainable exclusion (plan tagger-vnext-deterministic-runner
             # Step 5 / E-M2), FIRST in the loop: identity/meta tags (artist/
@@ -794,7 +833,7 @@ async def run_reconcile() -> dict:
                 disp[tag] = {"disposition": "in_flight", "stage": stage}
                 continue
 
-            gt_pos, gt_neg = await _gt_counts(db, tag)
+            gt_pos, gt_neg, gt_sha = await _gt_state(db, tag)
             # Rejected-registration auto-hold (round8 CRIT respawn, plan rev2 §held).
             # If the tag's most recent registration was REJECTED for a reason a hold
             # absorbs, it would otherwise return to 'candidate' via the stale-training
@@ -832,12 +871,15 @@ async def run_reconcile() -> dict:
                 # cannot answer "is there enough new signal?" differently and bounce
                 # a tag between them, and the same magnitude the established-tag
                 # dispatch gate below demands before spending a training run.
-                if not (_readable and _gt_grew(_lp, _ln, gt_pos, gt_neg,
-                                               int(min_gt_positive), int(min_gt_negative))):
+                baseline_sha = registration_label_identity(tag, ceil)
+                if not (labels_changed(baseline_sha, gt_sha)
+                        or (_readable and _gt_grew(_lp, _ln, gt_pos, gt_neg,
+                                                  int(min_gt_positive), int(min_gt_negative)))):
                     ev = {"reason": hold_class, "rejected_reason": ceil["rejected_reason"],
                           "metrics": ceil["metrics"], "gt_pos": gt_pos, "gt_neg": gt_neg,
                           "baseline_pos": _lp, "baseline_neg": _ln,
                           "baseline_readable": _readable,
+                          "label_sha256": baseline_sha,
                           "gt_growth_releasable": hold_class in GT_GROWTH_RELEASABLE}
                     # The governed fn's UPDATE is `WHERE tag=:tag AND status=
                     # 'candidate'` (0110) and it RETURNS the row count. Discarding
@@ -851,6 +893,9 @@ async def run_reconcile() -> dict:
                     # (splitting them opens a status='candidate' window a tick can
                     # claim). Checking the count is what makes that failure loud
                     # instead of a false success line in the run summary.
+                    if preview_tag is not None:
+                        disp[tag] = {"disposition": "hold", **ev}
+                        continue
                     n = (await db.execute(text(
                         "SELECT tagger_governed_hold_head_candidate(:tag, :rc, CAST(:ev AS jsonb))"
                     ), {"tag": tag, "rc": hold_class, "ev": json.dumps(ev)})).scalar()
@@ -903,7 +948,7 @@ async def run_reconcile() -> dict:
             trigger = "new-candidate"
             # Positive-availability floor: a classifier needs enough positive
             # examples to train. For a non-established (fresh pool) candidate the
-            # only trustworthy positives are verify-pool-derived gt_label rows.
+            # only trustworthy positives are human-confirmed gt_label rows.
             # For an ESTABLISHED tag (already IN the main tagger, user: すでに
             # ポジティブ例を持っている), the tag's LIVE corpus population is a valid
             # positive source too, so an over-detected tag whose humans only
@@ -918,7 +963,7 @@ async def run_reconcile() -> dict:
             pos_available = gt_pos if not established else max(gt_pos, corpus_pos or 0)
             if pos_available < min_gt_positive:
                 gt_insufficient.append((tag, gt_pos, gt_neg))
-                # established=False here => genuinely needs verify-pool positives
+                # established=False here => needs human-confirmed positives from ordinary tag/pin edits
                 # ("＋正例 あとN" is honest). established=True should be impossible
                 # here (corpus rescues the floor) but record faithfully anyway.
                 disp[tag] = {"disposition": "hold", "reason": "need_positives",
@@ -984,7 +1029,13 @@ async def run_reconcile() -> dict:
                     "SELECT 1 FROM tagger_deployable_head "
                     "WHERE tag_id = tagger_tag_id_of(:tag) LIMIT 1"
                 ), {"tag": tag})).one_or_none() is not None
-                if not (pos_grew or neg_grew) and deployable:
+                latest = (await db.execute(text(
+                    "SELECT gt, metrics, lifecycle_event_id FROM tagger_registration_request "
+                    "WHERE tag = :tag ORDER BY requested_at DESC, id DESC LIMIT 1"
+                ), {"tag": tag})).mappings().one_or_none()
+                previous = registration_label_identity(tag, latest) if latest is not None else None
+                corrected = labels_changed(previous, gt_sha)
+                if not (pos_grew or neg_grew or corrected) and deployable:
                     already_approved.append(tag)
                     # established but neither class grew enough since last attempt:
                     # waiting for a bigger correction batch (e.g. FPs < min_gt_negative).
@@ -1000,7 +1051,8 @@ async def run_reconcile() -> dict:
                 # head (gt_pos may be ~0, corpus-rescued -> precision off neg_grew).
                 suffix = "v-next" if is_v_next else "new-head"
                 trigger = (f"recall+precision-{suffix}" if pos_grew and neg_grew
-                           else f"recall-{suffix}" if pos_grew else f"precision-{suffix}")
+                           else f"recall-{suffix}" if pos_grew else f"precision-{suffix}" if neg_grew
+                           else f"label-change-{suffix}" if corrected else f"precision-{suffix}")
             # else: a non-established (pool-only, possibly brand-new) candidate --
             # no growth gate, dispatches once as 'new-candidate' the first time it
             # clears the strict gt_label floor (then becomes 'training').
@@ -1037,6 +1089,9 @@ async def run_reconcile() -> dict:
                          "corpus_pos": corpus_pos, "established": established,
                          "is_v_next": is_v_next}
 
+            if preview_tag is not None:
+                disp[tag]["disposition"] = "eligible"
+                continue
             lease = None
             try:
                 # ONE lease, reused for both writes -- re-acquiring the same
@@ -1062,7 +1117,7 @@ async def run_reconcile() -> dict:
                     # kind, per trg_tagger_lifecycle_event_edge_check).
                     await record_lifecycle_event(
                         db, tag=tag, from_stage=stage, to_stage="candidate",
-                        reason=f"{trigger}: GT grew to positive={gt_pos}/negative={gt_neg} "
+                        reason=f"{trigger}: GT now positive={gt_pos}/negative={gt_neg} "
                                 f"(thresholds +{min_gt_positive:.0f} pos / +{min_gt_negative:.0f} neg "
                                 f"past last registration attempt)",
                         lease=lease,
@@ -1097,6 +1152,10 @@ async def run_reconcile() -> dict:
             disp[tag]["disposition"] = "dispatch"
             dispatched.append(tag)
 
+    if preview_tag is not None:
+        return {"preview": True, "tag": preview_tag, "decisions": disp,
+                "downstream_backlog": downstream_backlog, "dispatched": []}
+
     # Snapshot every candidate tag's decision for the dashboard (single source of
     # truth -- the dashboard renders this, never re-derives the gate). Atomic
     # replace so a mid-write read never sees a truncated file.
@@ -1128,9 +1187,22 @@ async def run_reconcile() -> dict:
              "downstream_backlog": downstream_backlog}
 
 
+async def reconcile_once() -> dict:
+    """Serialize local queue decisions across the learner and the GT timer."""
+    state = Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local/state")
+    lock_dir = state / "kura-tagger"
+    lock_dir.mkdir(parents=True, exist_ok=True)
+    with (lock_dir / "reconcile.lock").open("a") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return {"busy": True, "dispatched": [], "failed": []}
+        return await run_reconcile()
+
+
 def main() -> int:
     import asyncio
-    summary = asyncio.run(run_reconcile())
+    summary = asyncio.run(reconcile_once())
     print(f"[reconciler] {summary}")
     return 0 if not summary["failed"] else 1
 

@@ -7,7 +7,8 @@ set -uo pipefail
 DATA="${TAGGER_HEADS_DATA:-$HOME/tagger-heads}"
 export TAGGER_HEADS_DATA="$DATA"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-cd "$DATA"
+cd "$DATA" || exit 1
+exec 3>&1
 exec >> cycle.log 2>&1
 echo "=== cycle start $(date -Is) ==="
 # GPU 排他は gpu_batch_gate.py (--once --no-wait) に一本化。
@@ -41,9 +42,20 @@ fi
 export KTOK
 PY=${PY:-$HOME/.local/share/comfyui-venv/bin/python3}
 python3 "$HERE/fetch_excluded.py" || fail exclusions
-$PY "$HERE/train_heads.py" || fail train
+"$PY" "$HERE/train_heads.py" | tee >(awk '/^HEADS_(GT|RESULT) / { print; fflush() }' >&3)
+train_rc=${PIPESTATUS[0]}
+if [ "$train_rc" -eq 75 ]; then
+    echo "HEADS_CYCLE_SKIPPED no head was accepted; generation unchanged" | tee /dev/fd/3
+    if [ -r generation ]; then
+        APPLY_SRC="trainer-head-g$(cat generation)" "$PY" "$HERE/auto_apply.py" || fail apply
+    else
+        "$PY" "$HERE/auto_apply.py" || fail apply
+    fi
+    exit 0
+fi
+[ "$train_rc" -eq 0 ] || fail train
 GEN=$(( $(cat generation 2>/dev/null || echo 0) + 1 )); echo $GEN > generation
-APPLY_SRC="trainer-head-g$GEN" $PY "$HERE/auto_apply.py" || fail apply
+APPLY_SRC="trainer-head-g$GEN" "$PY" "$HERE/auto_apply.py" || fail apply
 python3 "$HERE/retire_pools.py" --generations 3 || echo "retire skipped"
 python3 "$HERE/record_generation.py" || echo "gen record skipped"
 # ダッシュボード生成・push は退役 (2026-07-20, primary-cc-2 依頼)。

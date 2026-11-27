@@ -1,0 +1,81 @@
+{
+  "reviewer": "Codex（実装者）",
+  "reviewed_revision": "b0c8f3a196057594666bf1944a9cc36fe29acbcf",
+  "method": "実装者の自己評価。独立レビューではない。Codex: 上記2名の指摘をコードと実画面で照合。修正前の評価。 2026-11-17。根拠と改善案は原文からCodexが要約。",
+  "criteria": [
+    {
+      "id": "situation",
+      "verdict": "fail",
+      "assessment": "fail",
+      "evidence": "処理・停止・品質保留が比較セットより下に埋もれる。",
+      "nextfix": "稼働・保留・次の処理を先頭にまとめる"
+    },
+    {
+      "id": "consistency",
+      "verdict": "partial",
+      "assessment": "partial",
+      "evidence": "固定スコアと現在の学習、未公開候補と本番が判別しにくい。",
+      "nextfix": "採用状態を本番の記録から明示する"
+    },
+    {
+      "id": "duplication",
+      "verdict": "fail",
+      "assessment": "fail",
+      "evidence": "同じ説明が3回、受領済みと比較が別カードになる。",
+      "nextfix": "共通説明を1回にまとめる"
+    },
+    {
+      "id": "completeness",
+      "verdict": "fail",
+      "assessment": "fail",
+      "evidence": "対象ごとの理由・担当・次の処理・時刻が揃わない。",
+      "nextfix": "1行に必要な状態情報を揃える"
+    },
+    {
+      "id": "brevity",
+      "verdict": "fail",
+      "assessment": "fail",
+      "evidence": "3つの依頼カードと3つの比較カードで対象画像が下に埋もれる。",
+      "nextfix": "空状態は1行、内部識別子は詳細へ"
+    },
+    {
+      "id": "actionability",
+      "verdict": "partial",
+      "assessment": "partial",
+      "evidence": "任意セットの未判定URLが概要では使われず、別画面へ戻される。",
+      "nextfix": "未判定と不一致の画像へ直接リンクする"
+    },
+    {
+      "id": "exploration",
+      "verdict": "fail",
+      "assessment": "fail",
+      "evidence": "確認セットの絞り込み・ソートがない。",
+      "nextfix": "不一致・未判定・タグの絞り込みを付ける"
+    },
+    {
+      "id": "graphics",
+      "verdict": "fail",
+      "assessment": "fail",
+      "evidence": "37/300枚しか比較していない棒が全面緑で完了に見える。",
+      "nextfix": "全セット枚数を分母にし未比較を灰色で示す"
+    },
+    {
+      "id": "freshness",
+      "verdict": "partial",
+      "assessment": "partial",
+      "evidence": "比較の取得時刻がなく、学習の観測時刻と混同する。",
+      "nextfix": "取得時刻と固定スコアの性質を分けて示す"
+    },
+    {
+      "id": "accessibility",
+      "verdict": "partial",
+      "assessment": "partial",
+      "evidence": "色の説明はあるが操作未検証、タップ領域は小さい。",
+      "nextfix": "44pxの操作領域とキーボード操作を検証する"
+    }
+  ],
+  "limitations": [
+    "修正前b0c8f3a1の評価。今回の修正やモデル品質を合格としたものではない。",
+    "操作を伴う全画面ユーザーテスト未実施。"
+  ]
+}

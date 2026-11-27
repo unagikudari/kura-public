@@ -1,0 +1,81 @@
+{
+  "reviewer": "Gemini",
+  "reviewed_revision": "58475c381e5501ea50f151ceb3faa83352e84007",
+  "method": "Gemini CLI: 本文とソース。画像・実操作なし。2026-11-17。",
+  "criteria": [
+    {
+      "id": "situation",
+      "verdict": "partial",
+      "assessment": "partial",
+      "evidence": "341枚依頼は先頭だが稼働・停止・過去記録の区別が未確認表現に埋もれる。",
+      "nextfix": "人の判定待ちと機械の記録を図式化"
+    },
+    {
+      "id": "consistency",
+      "verdict": "pass",
+      "assessment": "pass",
+      "evidence": "本番release15・4タグの停止・新候補・過去報告は分離。",
+      "nextfix": "分離を維持"
+    },
+    {
+      "id": "duplication",
+      "verdict": "partial",
+      "assessment": "partial",
+      "evidence": "依頼と一覧の同じ対象、更新ボタンが複数ある。",
+      "nextfix": "概要の説明を集約"
+    },
+    {
+      "id": "completeness",
+      "verdict": "partial",
+      "assessment": "partial",
+      "evidence": "341枚の理由と判定後の次工程が不足。",
+      "nextfix": "新候補用の確認と次工程を明示"
+    },
+    {
+      "id": "brevity",
+      "verdict": "partial",
+      "assessment": "partial",
+      "evidence": "注意書きと全5セットの初期表示が多い。",
+      "nextfix": "注意を詳細へ整理"
+    },
+    {
+      "id": "actionability",
+      "verdict": "partial",
+      "assessment": "partial",
+      "evidence": "人が判定を終えた後に何をするか不明。",
+      "nextfix": "集計と改善・配備審査への接続を説明"
+    },
+    {
+      "id": "exploration",
+      "verdict": "partial",
+      "assessment": "partial",
+      "evidence": "検索・ソート・フィルターはあるが受領済み単独フィルターがない。",
+      "nextfix": "必要な探索条件を追加"
+    },
+    {
+      "id": "graphics",
+      "verdict": "partial",
+      "assessment": "partial",
+      "evidence": "未判定を0%扱いしないが描画は未確認。",
+      "nextfix": "依頼の判定進捗を図に"
+    },
+    {
+      "id": "freshness",
+      "verdict": "partial",
+      "assessment": "partial",
+      "evidence": "取得時刻はあるが集計の時点を判断しにくい。",
+      "nextfix": "集計の読み取り経路と鮮度を説明"
+    },
+    {
+      "id": "accessibility",
+      "verdict": "unverified",
+      "assessment": "unverified",
+      "evidence": "画像・実操作なし。コードだけでは実機の読みやすさは未確認。",
+      "nextfix": "実画面とキーボードを別に検証"
+    }
+  ],
+  "limitations": [
+    "58475c38概要の親画面のみ。今回の修正・埋め込み画面・モデル品質の合格ではない。",
+    "原文から実装者が要約。原文保存。Geminiの「判定数は5分前」は誤認：表示数はAPIがその都度DBを読む。別の5分observerは証跡用。"
+  ]
+}

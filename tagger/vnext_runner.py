@@ -48,6 +48,7 @@ KURA_API = api_base(required=False)
 # 置いた node だけが持つ GPU arbiter (trainer の gpu_batch_gate.py)。名前が無ければ
 # 測定は止めない — 1 台の install に GPU を取り合う相手はいない。
 GPU_GATE = os.environ.get("KURA_GPU_GATE", "")
+REVIEW_ONLY = False  # explicit manual trial: keep artifacts local, never upload
 GPU_HOLD_EXIT = 75              # gate が「今は走るな」と言うときの exit code
 STATE_DIR = Path(os.environ.get("VNEXT_STATE_DIR") or Path(
     os.environ.get("XDG_STATE_HOME") or Path.home() / ".local" / "state") / "kura-tagger" / "vnext")
@@ -414,13 +415,16 @@ def submit_registration(tag: str, result: Mapping[str, Any], artifact_ref: str,
         # 判定は移らない** — dark_anus は max_f1 で +577、P>=0.90 なら −6,630。
         # ここに残しておけば、後から「どの点での話だったか」を突き合わせられる。
         "classification": result.get("classification"),
+        "feature_contract": result.get("feature_contract"),
+        "requires_preprocessing_review": result.get("requires_preprocessing_review", False),
     }
     # **bytes を先に送る。** artifact が primary に無ければ、昇格側は policy を
     # 書けない (content_sha256 は tagger_artifact への FK) し、他ノードは
     # head を取りに行く先が無い。ここで送らないと head は学習ノードの
     # ローカルディスクに留まり続ける — 「配布は未自動化」と docstring に
     # 書かれていた穴がこれ。
-    _upload_artifact(artifact_sha256, artifact_ref)
+    if not REVIEW_ONLY:
+        _upload_artifact(artifact_sha256, artifact_ref)
     return _register({
         "tag": tag, "source_host": AGENT_HOST,
         "artifact_ref": artifact_ref, "artifact_sha256": artifact_sha256,
@@ -645,8 +649,11 @@ def _current_gt(tag: str) -> dict[str, int] | None:
         return None
     try:
         cur = conn.cursor()
-        cur.execute("select verdict, count(*) from tagger_gt_label "
-                    "where tag=%s group by 1", (tag,))
+        from api.tagger_core.post_exclusion import training_label
+        # The same rows the registration snapshot counts (excluded posts and
+        # evaluation answers dropped), so an unchanged GT reads as unchanged.
+        cur.execute("select verdict, count(*) from tagger_gt_label g "
+                    "where tag=%s and " + training_label("g") + " group by 1", (tag,))
         got = {r[0]: int(r[1]) for r in cur.fetchall()}
         return {"positive": got.get("positive", 0), "negative": got.get("negative", 0)}
     except Exception:  # noqa: BLE001
@@ -730,12 +737,15 @@ def _extract_tag(task: Mapping[str, Any]) -> tuple[str | None, int]:
 
 
 def main() -> int:
+    global REVIEW_ONLY
     ap = argparse.ArgumentParser(
         description="1 タグを測り、登録 payload を JSON 1 行で stdout に出す (tagger/learn.py が呼ぶ)")
     ap.add_argument("--tag", required=True)
     ap.add_argument("--event", type=int, required=True,
                     help="learn.py が lease を取って確かめた lifecycle event id (→ training)")
+    ap.add_argument("--review-only", action="store_true", help="keep artifacts local; return an unregistered payload for human review")
     args = ap.parse_args()
+    REVIEW_ONLY = args.review_only
     if not KURA_API:
         log("configuration-required", fix="set KURA_URL or KURA_API to the canonical Kura endpoint")
         return 2

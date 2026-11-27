@@ -62,7 +62,7 @@ def run():
    try:urllib.request.urlopen(ORIGIN+'/login',timeout=1);break
    except Exception:time.sleep(.2)
   with sync_playwright() as p:
-   browser=p.chromium.launch(channel=os.environ.get('KURA_UI_BROWSER_CHANNEL') or None,args=['--no-sandbox','--disable-gpu','--disable-dev-shm-usage'])
+   browser=p.chromium.launch(executable_path=os.environ.get('CHROMIUM') or None,channel=os.environ.get('KURA_UI_BROWSER_CHANNEL') or None,args=['--no-sandbox','--disable-gpu','--disable-dev-shm-usage'])
    ctx=browser.new_context(viewport={'width':1400,'height':1000})
    enc=lambda b:base64.urlsafe_b64encode(b).rstrip(b'=').decode()
    payload=enc(json.dumps({'u':'synthetic','t':'synthetic','e':'','exp':int(time.time())+3600}).encode());sig=enc(hmac.new(SECRET.encode(),payload.encode(),hashlib.sha256).digest())
@@ -70,6 +70,8 @@ def run():
    def intercept(route):
     req=route.request;u=urlparse(req.url)
     if u.hostname=='127.0.0.1' and mode['mutation']==(req.method,u.path):pending.append(route);return
+    if u.hostname=='127.0.0.1' and req.method=='POST' and u.path=='/m/client-timing':
+     route.fulfill(status=204);return
     if req.method not in ('GET','HEAD'):
      violations.append(req.method+' '+u.path);route.abort();return
     if u.hostname!='127.0.0.1':violations.append('external '+u.hostname);route.abort();return
@@ -90,15 +92,25 @@ def run():
    ctx.route('**/*',intercept);page=ctx.new_page();page.set_default_timeout(7000);errors=[];page.on('pageerror',lambda e:errors.append(str(e)))
    def go(path):page.goto(ORIGIN+path,wait_until='domcontentloaded');page.wait_for_timeout(900)
    def test(name,fn):
+    nonlocal ctx,page
     if os.environ.get('KURA_UI_CASES') and name not in os.environ['KURA_UI_CASES'].split(','):return
-    try:results[name]=fn()
+    try:
+     ctx.close()
+     ctx=browser.new_context(viewport={'width':1400,'height':1000})
+     ctx.add_cookies([dict(name='kura_session',value=payload+'.'+sig,url=ORIGIN)])
+     ctx.route('**/*',intercept);page=ctx.new_page();page.set_default_timeout(7000)
+     page.on('pageerror',lambda e:errors.append(str(e)));go('/login')
+     results[name]=fn()
     except Exception as e:results[name]={'pass_':False,'error':str(e)[:600]}
     finally:
-     mode['hold_pools']=False;mode['hold_pair']=False;mode['mutation']=None;FIXTURE['pool_shift']=0;FIXTURE['rich']=False;FIXTURE['large']=False
+     for key in mode:mode[key]=None if key=='mutation' else False
+     FIXTURE['pool_shift']=0;FIXTURE['rich']=False;FIXTURE['large']=False
      for r in pending[:]:
       try:r.fulfill(json=response(r.request.url))
       except Exception:pass
       pending.remove(r)
+    if not results[name].get('pass_'):
+     page.screenshot(path='/tmp/kura-ui-failure-'+name+'.png')
     print(json.dumps({'case':name,**results[name]}),flush=True)
    def empty():
     counts.clear();go('/?mode=pools&q=none');page.wait_for_timeout(1000);a=counts.get('/api/pools',0);page.wait_for_timeout(800);b=counts.get('/api/pools',0)
@@ -116,6 +128,7 @@ def run():
     return dict(pass_=held>0 and bool(before) and bool(after) and all('older' not in x for x in after),held_requests=held,before=before,after=after)
    test('autocomplete_latest_only',stale)
    def ime():
+    go('/?q=none')
     inp=page.locator('header input[type=search]');inp.fill('compose');page.wait_for_timeout(350);inp.press('ArrowDown');before=inp.input_value()
     inp.evaluate("el=>el.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',code:'Enter',isComposing:true,bubbles:true,cancelable:true}))")
     after=inp.input_value();return dict(pass_=before==after,before=before,after=after)
@@ -134,7 +147,7 @@ def run():
     observed=page.evaluate('window.auditTotals');normalize=lambda values:[re.sub(r'[^0-9]', '', x or '') for x in values];return dict(pass_=held>0 and '160' not in normalize(observed) and normalize(total)==['1'] and not any(x.startswith('#10') for x in ids),held_requests=held,total=total,transient_totals=observed,ids=ids[:10])
    test('old_query_response_rejected',oldquery)
    def mobile():
-    page.set_viewport_size({'width':390,'height':844});go('/post/1000?q=old');page.locator('button.gear-btn').click();page.locator('.menu-cols button').filter(has_text='3').click();page.wait_for_timeout(500)
+    page.set_viewport_size({'width':390,'height':844});go('/post/1000?q=old');page.locator('button.gear-btn').click();page.get_by_role('combobox',name='表示方法',exact=True).select_option('grid');page.wait_for_function("location.pathname==='/'");page.locator('button.gear-btn').click();page.get_by_role('combobox',name='一覧の列数',exact=True).select_option('3');page.wait_for_timeout(500)
     return dict(pass_=urlparse(page.url).path=='/',actual_path=urlparse(page.url).path)
    test('mobile_viewer_column_returns_grid',mobile)
    def status():
@@ -306,16 +319,22 @@ def run():
    def mutation_identity(kind):
     page.set_viewport_size({'width':1400,'height':1000});go('/?q=old&lb=1000');page.wait_for_selector('.lb-id')
     mode['mutation']=('POST','/m/post/1000/favorite') if kind=='favorite' else ('PATCH','/m/post/1000')
-    page.locator('.lb-fav').first.click() if kind=='favorite' else page.locator('.lb-save').click()
+    if kind=='favorite':page.locator('.lb-fav').first.click()
+    else:
+     tag=page.locator('.lb-tag-sidebar input');tag.fill('updated-a');tag.press('Enter');tag.blur()
+     page.locator('.lb-save').click()
     page.wait_for_timeout(200);held=list(pending);assert len(held)==1,len(held)
     page.keyboard.press('ArrowRight');page.wait_for_timeout(200)
+    during=page.locator('.lb-id').inner_text()
+    assert during==('#1000' if kind=='tags' else '#1001'),during
     updated=post(1000);updated.update(ownFavorite=True,version=2,tags=[dict(names=['updated-a'],category='default',usages=1)])
     held[0].fulfill(json=updated);pending.remove(held[0]);mode['mutation']=None;page.wait_for_timeout(200)
-    shown=page.locator('.lb-id').inner_text();tags=page.locator('.lb-tagbar').inner_text()
+    if kind=='tags':page.keyboard.press('ArrowRight');page.wait_for_timeout(200)
+    shown=page.locator('.lb-id').inner_text();tags=page.locator('.lb-tag-sidebar').inner_text()
     page.keyboard.press('ArrowLeft');page.wait_for_timeout(200);back=page.locator('.lb-id').inner_text()
-    return dict(pass_=shown=='#1001' and 'updated-a' not in tags and back=='#1000',shown_after_response=shown,back=back)
+    return dict(pass_=shown=='#1001' and 'updated-a' not in tags and back=='#1000',shown_after_response=shown,back=back,during_save=during)
    test('unified_favorite_response_identity',lambda:mutation_identity('favorite'))
-   test('unified_tag_response_identity',lambda:mutation_identity('tags'))
+   test('unified_tag_save_blocks_navigation',lambda:mutation_identity('tags'))
    def pair_response_order():
     page.set_viewport_size({'width':1400,'height':1000});go('/login');page.evaluate("localStorage.setItem('kura_show_pair','1')")
     mode['hold_pair']=True
@@ -339,24 +358,24 @@ def run():
    def retained_tools():
     page.set_viewport_size({'width':390,'height':844});FIXTURE['rich']=True;go('/login');page.evaluate("localStorage.setItem('kura_tag_overlay','0');localStorage.setItem('kura_verify_target','fixture-artist');localStorage.setItem('kura_show_pair','0')")
     go('/post/1000?q=pool:8515&idx=0');page.wait_for_selector('.pool-title-name');page.wait_for_selector('.viewer-target.has')
-    page.keyboard.press('t');page.wait_for_selector('.vto');assert 'fixture-artist' in page.locator('.vto').inner_text()
+    page.keyboard.press('t');page.wait_for_selector('.lb-tag-sidebar');assert 'fixture-artist' in page.locator('.lb-tag-sidebar').inner_text()
     page.get_by_role('button',name='原寸',exact=True).click();page.wait_for_function("document.querySelector('.lb-img-wrap')?.getBoundingClientRect().width===80")
     page.get_by_role('button',name='詳細',exact=True).click();details=page.locator('.image-details');assert 'fixture-tagger' in details.inner_text();assert details.locator('a[href="https://example.test/source"]').count()==1;page.wait_for_selector('.related-images a')
     page.get_by_role('button',name='詳細',exact=True).click()
-    page.locator('.lb-tagbar button[aria-label="remove"]').click();assert 'fixture-artist' not in page.locator('.vto').inner_text()
-    page.keyboard.press('Escape');go('/?q=old&lb=1000');page.wait_for_selector('.lb-tagbar .tc-name')
-    mode['mutation']=('PUT','/m/post/1000/tag-pin');page.locator('.lb-tagbar button[aria-label="lock"]').click();page.wait_for_timeout(150);assert len(pending)==1
-    r=pending.pop();assert r.request.post_data_json['state']=='present';r.fulfill(json=dict(post_id=1000,tag='fixture-artist',pinned='present'));page.wait_for_selector('.lb-tagbar .tc-pinned')
-    page.keyboard.press('ArrowRight');page.wait_for_timeout(150);page.keyboard.press('ArrowLeft');page.wait_for_selector('.lb-tagbar .tc-pinned')
-    page.locator('.lb-tagbar button[aria-label="lock"]').click();page.wait_for_timeout(150);assert len(pending)==1
+    page.locator('.lb-tag-sidebar button[aria-label="remove"]').click();assert page.locator('.lb-tag-sidebar .tc-name').count()==0;page.locator('.lb-undo').click()
+    page.keyboard.press('Escape');go('/?q=old&lb=1000');page.get_by_role('button',name='タグ',exact=True).click();page.wait_for_selector('.lb-tag-sidebar .tc-name')
+    mode['mutation']=('PUT','/m/post/1000/tag-pin');page.locator('.lb-tag-sidebar button[aria-label="lock"]').click();page.wait_for_timeout(150);assert len(pending)==1
+    r=pending.pop();assert r.request.post_data_json['state']=='present';r.fulfill(json=dict(post_id=1000,tag='fixture-artist',pinned='present'));page.wait_for_selector('.lb-tag-sidebar .tc-pinned')
+    page.keyboard.press('ArrowRight');page.wait_for_timeout(150);page.keyboard.press('ArrowLeft');page.wait_for_selector('.lb-tag-sidebar .tc-pinned')
+    page.locator('.lb-tag-sidebar button[aria-label="lock"]').click();page.wait_for_timeout(150);assert len(pending)==1
     r=pending.pop();assert r.request.post_data_json['state'] is None;r.fulfill(json=dict(post_id=1000,tag='fixture-artist',pinned=None));mode['mutation']=None
-    page.locator('.lb-tagbar button.tc-name').click();page.wait_for_url('**/?q=fixture-artist')
+    page.locator('.lb-tag-sidebar button.tc-name').click();page.wait_for_url('**/?q=fixture-artist')
     return dict(pass_=True,pool_toolbar=True,pending_overlay=True,natural_size=80,pin_roundtrip=True,tag_filter=page.url)
    test('unified_retained_single_tools',retained_tools)
    def input_ownership():
     page.set_viewport_size({'width':390,'height':844});FIXTURE['rich']=True;FIXTURE['large']=True
     go('/login');page.evaluate("localStorage.setItem('kura_show_pair','0');localStorage.setItem('kura_tag_overlay','0')");go('/?q=old&lb=1000');page.wait_for_selector('.lb-id')
-    for label,selector in [('詳細','.image-details'),('タグ','.vto')]:
+    for label,selector in [('詳細','.image-details'),('タグ','.lb-tag-sidebar')]:
      button=page.get_by_role('button',name=label,exact=True);button.focus();page.keyboard.press('Space');page.wait_for_selector(selector);assert page.locator('.lb-id').inner_text()=='#1000'
      page.keyboard.press('Space');page.wait_for_selector(selector,state='hidden')
     page.get_by_role('button',name='原寸',exact=True).focus();page.keyboard.press('Space');page.wait_for_selector('.lb-backdrop.zoomed')
@@ -401,7 +420,8 @@ def run():
          overlap:e!==close&&r.left<c.right&&r.right>c.left&&r.top<c.bottom&&r.bottom>c.top};
        });
       }""")
-      assert all(not c['overlap'] and c['hit'] and c['x']>=0 and c['x']+c['w']<=width-inset and c['h']>=44 for c in controls),controls
+      # ui-theme.md and control-tokens.css specify 30px coarse-pointer controls.
+      assert all(not c['overlap'] and c['hit'] and c['x']>=0 and c['x']+c['w']<=width-inset and c['h']>=30 for c in controls),controls
       page.locator('.lb-close').click();page.wait_for_selector('.lb-backdrop',state='hidden')
       cases.append(dict(width=width,height=height,simulated_right_inset=inset,controls=controls))
     finally:

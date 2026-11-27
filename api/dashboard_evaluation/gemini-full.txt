@@ -1,0 +1,83 @@
+{
+  "reviewer": "Gemini（独立・テキスト検査）",
+  "reviewed_revision": "4588fbd5adfd7014ac228da5777de0890487b349",
+  "method": "提供されたSvelteコンポーネント5件およびTypeScriptモジュール1件のソースコードに対する静的テキスト検査（実ブラウザ描画・スクリーンリーダー・実API通信の確認を含まない独立コードレビュー）",
+  "criteria": [
+    {
+      "id": "situation",
+      "verdict": "pass",
+      "assessment": "partial",
+      "evidence": "RuntimeSummary.svelteで「本番の選択」「機械による付与停止」「実験（稼働中または過去記録）」「自動学習の記録」を区別して表示し、ReviewActions.svelteで「あなたの確認待ち（requests）」を先頭セクションに切り出している。また、取得失敗時やデータ欠落時に「『作業なし』とは判断できません」「稼働の有無は未確認です」と明示している。ただし、ReviewActionsのテーブル内では`q.request_unavailable`時に「依頼状況不明」と出る一方、上部の依頼サマリでは汎用の「追加の確認依頼を読み込めません」というアラートに留まり、どのタグの依頼状況が不明か一目で紐づかない。",
+      "nextfix": "ReviewActions.svelteの上部アラート（requestUnavailable時）でも、`queues.filter(q => q.request_unavailable).map(q => q.tag)`を列挙し、どのタグの依頼判定が保留・不明なのかを上部の「あなたへの確認依頼」だけで把握できるようにする。"
+    },
+    {
+      "id": "consistency",
+      "verdict": "pass",
+      "assessment": "pass",
+      "evidence": "RuntimeSummary.svelteで本番releaseと未公開の実験（published: falseの検証付き）やqualifying（「メモリ・速度を確認中（品質評価とは別）」）を明確に分離している。ReviewActions.svelte、ReviewQueues.svelte、TrainingReadiness.svelte全体で「回答完了は品質合格ではありません」「学習に必要な支援の成立を意味しません」「独立グループ数：未計測」と一貫して説明し、候補評価・学習用確認・本番反映を混同していない。",
+      "nextfix": "ReviewActions.svelteとReviewQueues.svelteでpurposeのラベル定義が分散しているため（`purposeLabel`関数と`ReviewQueues.svelte`内の`purposes`定数）、共通のヘルパー関数に統一して文言のズレが将来発生しないようにする。"
+    },
+    {
+      "id": "duplication",
+      "verdict": "partial",
+      "assessment": "partial",
+      "evidence": "ReviewActions.svelteとReviewQueues.svelteが共に同一エンドポイント（`/api/tagger-dashboard/review-queues`）を個別にフェッチし、同じ確認セット一覧・残り枚数・ステータス・確認リンクを重複して実装している。さらに、免責事項（「回答完了は品質合格ではありません」「判別できない…はなしには数えず…」など）が各行のセル、カード本文、details内、セクション末尾に繰り返し出現し、詳細の参照先が一つに集約されていない。",
+      "nextfix": "対象セットごとの共通ルール・免責事項は上部の`<details class=\"review-rules\">`1箇所に集約し、各行・各カードでの繰り返し表示を削る。また、ReviewActions（一覧・比較）とReviewQueues（カード詳細・TrainingReadiness）の役割分担を整理するか、ストアを共有して二重フェッチと二重管理を解消する。"
+    },
+    {
+      "id": "completeness",
+      "verdict": "partial",
+      "assessment": "partial",
+      "evidence": "対象タグ（tag）、状態（確認依頼・未判定枚数・フェーズ）、理由（purpose、停止理由）、最終更新（fetchedAt、observed_at）は表示されている。しかし、「担当」と「次の処理」が一貫して同じ場所で揃わない。 예를 들어 `unavailable_queues`では「担当者が確認」、`candidate_evaluation`では「担当エージェントが進めます」とあるが、`machine_output_holds`（付与停止）や`stopped`実験、通常の`training_support`完了後において「誰が（ユーザー・担当者・自動ジョブのどれが）」「次に何をするか」が各行・各項目に明示されていない。また、`ExplicitRequest.requested_at`（依頼日時）が型定義とバリデーションにあるのに画面に表示されていない。",
+      "nextfix": "各確認セットおよびRuntimeSummaryの各項目（付与停止・停止実験を含む）に「現在の担当（あなた / 担当エージェント / 管理者）」と「次の処理（例：〇枚の回答 / グループ数計測待ち / 原因調査）」のフィールドを統一して表示し、`q.request?.requested_at`も依頼カードに併記する。"
+    },
+    {
+      "id": "brevity",
+      "verdict": "partial",
+      "assessment": "partial",
+      "evidence": "SHA256ダイジェストや採点閾値、学習ルールなどを`<details>`に格納している点は良い。しかし初期表示の段階で、unavailable時の警告に「canonical APIと再確認台帳の適用状態」という内部実装用語が露出しており、ReviewActionsのテーブル各行にも毎回「判別できない X件 · 回答完了は品質合格ではありません」という説明文が展開されているため、初期表示の情報量が多く視認性を損ねている。",
+      "nextfix": "エラー表示の「canonical APIと再確認台帳」を平易な表現（例：「確認データの連携状態」）に置き換え、内部識別名は`<details>`内に移す。テーブル各行の定型注意書きはバッジ（「品質未確定」等）のみに留め、説明文は上部または詳細セクションへ移動する。"
+    },
+    {
+      "id": "actionability",
+      "verdict": "partial",
+      "assessment": "partial",
+      "evidence": "ユーザーが回答すべきセットには`unjudged_url`への明確なリンク（「このX枚を確認」）があり、不一致がある場合は`disagreementLink`への入口がある。一方、学習用セット（`training_support`）で回答が完了した際、TrainingReadiness.svelteで「独立グループ数：未計測」「学習開始の判定は別です」と出るものの、どうすればグループ数計測や学習開始に進むのか（自動反映待ちなのか、担当者がコマンドを実行するのか）の条件と入口が示されていない。また、`machine_output_holds`の「解除には修正版の品質確認が必要です」から該当タグの確認セットへ移動する導線がない。",
+      "nextfix": "TrainingReadinessで回答完了時に「次に進む条件（例：担当エージェントによる独立グループ数の計測と基準達成）」を明記する。また、RuntimeSummaryの`machine_output_holds`の各タグ名から、該当タグの確認セットやフィルタ状態へ直接ジャンプできるリンクを追加する。"
+    },
+    {
+      "id": "exploration",
+      "verdict": "partial",
+      "assessment": "partial",
+      "evidence": "ReviewActions.svelteには状況別フィルター（全セット・確認依頼・不一致あり・未判定あり）、タグ検索、並び替え（依頼先頭・未判定順・不一致順・タグ名順）、件数表示（`visible.length/queues.length`）、リセットボタンが揃っている。しかし、ReviewQueues.svelte側には「状況別フィルター」と「不一致順ソート」がなく、表示件数（`visible.length / data.queues.length`）も表示されない。また、ReviewQueuesの検索解除ボタンは`!visible.length`（0件ヒット時）にしか表示されず、1件以上ヒットしている状態ではワンクリックで解除できない。",
+      "nextfix": "ReviewQueues.svelteのコントロールにも状況別フィルター、件数表示（`{visible.length}/{data.queues.length}セット`）、および`filter !== '' || sort !== 'priority'`で常時使える「表示をリセット」ボタンを追加し、検索も`toLowerCase()`による大文字小文字無視に統一する。"
+    },
+    {
+      "id": "graphics",
+      "verdict": "pass",
+      "assessment": "pass",
+      "evidence": "progress要素やReviewComparisonの比率バーにおいて、単位（「枚」「epoch」「工程」）と母数（`total`）が明記されている。未測定・比較不能なケースは0扱いせず「未測定」「比較は未集計」「独立グループ数：未計測」とテキストで区別しており、`compared === 0`のときはバーを描画せず「まだ比較できる判定がありません」と分岐している。また、精度・件数・進捗を混同しない注意書きと構造が一貫している。",
+      "nextfix": "ReviewComparison.svelteの比率バー（`.bar`）で、0枚のセグメント（`flex: 0`）もDOMに出力されているため、`parts.filter(p => p.value > 0)`で描画するか、視覚的な区切り線・ツールチップを補って小数枚時の視認性を高める。"
+    },
+    {
+      "id": "freshness",
+      "verdict": "pass",
+      "assessment": "pass",
+      "evidence": "RuntimeSummary.svelteで`experimentLive`（`fresh`かつ経過120秒以内）と`snapshotOld`（120秒超）を判定し、古い場合は「状況の観測が古くなっています」「最後の報告: ...（過去）・現在の稼働は未確認」と明示してプログレスバーを隠している。また、`completed`フェーズでは「当時の実行環境（申告）」「記録日時」と表記を変え、現在の稼働と誤認させない設計になっている。通信エラー時も前回取得データであることを警告付きで明示している。",
+      "nextfix": "ReviewQueues.svelteでは手動更新のみで`toLocaleTimeString()`（日付なし）しか出ず、古い状態のまま放置された場合の劣化警告もないため、ReviewActionsやRuntimeSummaryと同様に`toLocaleString('ja-JP')`で日時を表示し、一定時間経過時に再取得を促す表示または自動更新を入れる。"
+    },
+    {
+      "id": "accessibility",
+      "verdict": "unverified",
+      "assessment": "partial",
+      "evidence": "テキスト検査の範囲では、`min-height: 44px`（ReviewQueuesの一部は40px）、`focus-visible`のアウトライン定義、色だけに依存しないテキスト併記（ReviewComparisonの凡例に枚数とラベルを出力）、700px以下でのテーブルのブロック化と`data-label`付与など配慮が見られる。しかし、実機・ブラウザ・支援技術による検証は未実施（unverified）。さらにコード上の懸念として、ReviewActions.svelteで700px以下のモバイル表示時に`table, tbody, tr, th, td { display: block }`を適用しながらHTML属性で`role=\"table\"` `role=\"row\"` `role=\"cell\"`をハードコードしているため、CSSによるセマンティクス解除が効かず支援技術での読み上げ構造が破綻する恐れがある。また、`.controls input { width: 130px }`等の固定幅や、ReviewQueues.svelteのコントロール高さ40px（他は44px）といった不整合がある。",
+      "nextfix": "ReviewActions.svelteの`<table>`等から冗長な明示的ARIAロール（`role=\"table\"`等）を削除してネイティブ要素に任せるか、モバイル時のレイアウト手法を見直す。また、ReviewQueues.svelteの`input, select, button`の`min-height`を44pxに統一し、実ブラウザ・キーボード・スクリーンリーダーでの検証を実施する。"
+    }
+  ],
+  "limitations": [
+    "ソースコード（Svelte/TypeScript）の静的テキスト検査のみであり、実ブラウザでのレンダリング結果、CSS変数（--accent, --surface, --text等）の実コントラスト比、390px/1280px等の各ビューポート幅での実際の折り返しやオーバーフローは未検証（unverified）。",
+    "スクリーンリーダー（NVDA、VoiceOver等）や実機キーボード・タッチ端末によるフォーカス移動、ARIA属性の実際の読み上げ挙動は未検証。",
+    "バックエンドAPI（/api/tagger-dashboard/*）の実レスポンスや、提供された前提情報（341枚の品質確認セット、30枚の学習セット、12枚の過去再確認リンク等の実データ挙動）はコード外のため直接観測していない。",
+    "インポート先の外部モジュール（#lib/tagger/reviewComparison、../tagger/trainingReadiness、親ページやグローバルCSS）の実装詳細は提供されたソースに含まれないため検査対象外。"
+  ]
+}

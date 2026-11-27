@@ -21,7 +21,7 @@ const RECOVERY_GAP_MS = 2_000;
 const RECOVERED_EVENT = 'kura:thumbnail-recovered';
 export const THUMBNAIL_STATE_EVENT = 'kura:thumbnail-state';
 export const THUMBNAIL_RETRY_EVENT = 'kura:thumbnail-retry';
-export type ThumbnailState = 'loading' | 'retrying' | 'loaded' | 'failed' | 'offline' | 'removed';
+export type ThumbnailState = 'loading' | 'retrying' | 'loaded' | 'failed' | 'offline' | 'unavailable' | 'removed';
 const visibility = new Map<HTMLImageElement, (visible: boolean) => void>();
 let observer: IntersectionObserver | null = null;
 let sequence = 0;
@@ -56,6 +56,7 @@ export const thumbnailLoader: Action<HTMLImageElement, string> = (node, initialS
   let retries = 0;
   let stalled = false;   // the last attempt ended by the stall timer, not by an error event
   let destroyed = false;
+  let errorProbe: AbortController | null = null;
   let state: ThumbnailState | undefined;
   let timer: ReturnType<typeof setTimeout> | null = null;
   const clear = () => { if (timer) clearTimeout(timer); timer = null; };
@@ -87,7 +88,7 @@ export const thumbnailLoader: Action<HTMLImageElement, string> = (node, initialS
   function restart() { stalled = false; retries = 0; retry(); }
   function arm(delay = stallFor(retries), then: () => void = stall) {
     clear();
-    if (destroyed || !source || !visible || ready()) return;
+    if (destroyed || !source || !visible || ready() || state === 'unavailable' || errorProbe) return;
     if (!navigator.onLine) { publish('offline'); return; }
     // The last attempt also needs a watchdog: otherwise a final stalled request
     // has neither an error event nor a timer, leaving an eternal blank tile.
@@ -105,8 +106,32 @@ export const thumbnailLoader: Action<HTMLImageElement, string> = (node, initialS
     settle();
     announceRecovery();   // only a load event: an image already held when it scrolls in proves nothing
   };
-  const failed = () => {
-    if (destroyed) return;
+  const failed = async () => {
+    if (destroyed || errorProbe || state === 'unavailable') return;
+    clear();
+    const url = node.currentSrc || node.src;
+    const timings = performance.getEntriesByName(url, 'resource') as PerformanceResourceTiming[];
+    let status = timings.at(-1)?.responseStatus;
+    // Image error events do not carry an HTTP status. Browsers that do not
+    // expose it in Resource Timing need one bounded, same-origin check.
+    if (!status && url && new URL(url).origin === location.origin && navigator.onLine) {
+      const probe = errorProbe = new AbortController();
+      try {
+        const response = await fetch(url, { signal: AbortSignal.any([probe.signal, AbortSignal.timeout(2500)]) });
+        status = response.status;
+        void response.body?.cancel();
+      } catch {
+        // Keep bounded recovery for transport failures.
+      } finally {
+        if (errorProbe === probe) errorProbe = null;
+      }
+      if (probe.signal.aborted || destroyed || url !== (node.currentSrc || node.src)) return;
+    }
+    if (status === 404 || status === 410) {
+      stalled = false;
+      publish('unavailable');
+      return;
+    }
     stalled = false;
     if (!navigator.onLine) { clear(); publish('offline'); return; }
     if (retries >= MAX_RETRIES || !source) { clear(); publish('failed'); }
@@ -126,7 +151,7 @@ export const thumbnailLoader: Action<HTMLImageElement, string> = (node, initialS
     restart();
   };
   const online = () => { if (visible && state === 'offline') manual(); };
-  const offline = () => { if (!ready() && state !== 'failed') { clear(); publish('offline'); } };
+  const offline = () => { if (!ready() && state !== 'failed' && state !== 'unavailable') { clear(); publish('offline'); } };
   node.addEventListener('load', loaded);
   node.addEventListener('error', failed);
   node.addEventListener(THUMBNAIL_RETRY_EVENT, manual);
@@ -138,19 +163,23 @@ export const thumbnailLoader: Action<HTMLImageElement, string> = (node, initialS
     visible = value;
     if (!visible) { clear(); return; }
     if (ready()) { settle(); return; }
+    if (state === 'unavailable') return;
     if (state === 'failed') { clear(); slowRetry(); return; }
     if (state === 'offline' && navigator.onLine) { manual(); return; }
-    arm(node.complete && !node.naturalWidth ? 500 : stallFor(retries));
+    if (source && node.complete && !node.naturalWidth) void failed();
+    else arm();
   });
   return {
     update(nextSource) {
       if (nextSource === source) return;
+      errorProbe?.abort(); errorProbe = null;
       clear(); source = nextSource; retries = 0; stalled = false;
       publish(source ? (ready() ? 'loaded' : 'loading') : 'failed');
       arm();
     },
     destroy() {
       destroyed = true;
+      errorProbe?.abort(); errorProbe = null;
       clear(); stop(); publish('removed');
       node.removeEventListener('load', loaded);
       node.removeEventListener('error', failed);

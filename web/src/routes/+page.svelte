@@ -1,5 +1,6 @@
 <script lang="ts">
   import { rememberWindow, recallWindow } from '#lib/historyWindow.ts';
+  import { hoverPreviewMs } from '#lib/hoverPreview.ts';
   import { legacyGridSettings, gridScope, gridCookie, type GridSettings } from '#lib/gridSettings.ts';
   import { assertCompletePage } from '#lib/gridPage.ts';
   import { POSTS_ADDED_EVENT } from '#lib/dropImport.ts';
@@ -7,7 +8,7 @@
   import { extensionNav, poolBadges, poolExpected } from '#lib/extensions.ts';
   import { thumbnailLoader, THUMBNAIL_STATE_EVENT, THUMBNAIL_RETRY_EVENT, type ThumbnailState } from '#lib/thumbnailLoader.ts';
   import { goto, afterNavigate, beforeNavigate, pushState, replaceState } from '$app/navigation';
-  import { page, navigating } from '$app/state';
+  import { page, navigating, updated } from '$app/state';
   import { tick, untrack, onDestroy, onMount } from 'svelte';
   import Header from '#lib/components/Header.svelte';
   import { t } from '#lib/i18n/index.ts';
@@ -15,14 +16,14 @@
   import ImageViewer from '#lib/components/ImageViewer.svelte';
   import BulkTagBar from '#lib/components/BulkTagBar.svelte';
   import PoolTitleBar, { poolIdFromQuery } from '#lib/components/PoolTitleBar.svelte';
-  import PoolVerifyBadge from '#lib/components/PoolVerifyBadge.svelte';
+  import PoolSourceBadge from '#lib/components/PoolSourceBadge.svelte';
   import { poolDisplayName } from '#lib/site.ts';
   import { readHideVerify, writeHideVerify } from '#lib/hideVerify.ts';
-  import { fetchPosts, fetchPools, fetchPost, fetchTagDetail, mediaUrl, patchPost, putTagPin, putTagPinBulk, fetchPostPinStates, toggleFavorite, setPoolCover, reorderPoolPosts, fetchCensorStatus, createVerifyPoolFromPosts, removeTagBulk } from '#lib/api.ts';
+  import { fetchPosts, fetchPools, fetchPost, fetchTagDetail, mediaUrl, patchPost, putTagPin, putTagPinBulk, fetchPostPinStates, toggleFavorite, setPoolCover, reorderPoolPosts, fetchCensorStatus, createPoolFromPosts, removeTagBulk } from '#lib/api.ts';
   import { applyBulkTag, frameState, toggleAll, toggleCandidate, type BulkApplyResult } from '#lib/bulkTag.ts';
   import ThumbCategoryTags from '#lib/components/ThumbCategoryTags.svelte';
   import IdleMount from '#lib/components/IdleMount.svelte';
-  import { postHasTag as postHasTagByName, verifyTarget, verifyHeaderOn, verifyFocusTags } from '#lib/verify.ts';
+  import { postHasTag as postHasTagByName, verifyTarget, verifyHeaderOn, verifyFocusTags, bulkTagHistory } from '#lib/verify.ts';
   import { get } from 'svelte/store';
   import { reorderActive } from '#lib/stores.ts';
   import type { Post, PoolSummary } from '#lib/types.ts';
@@ -386,7 +387,14 @@
     if (data.bulk) bulkMode = true;
     // タグ検証ボタン経由の着地: 一括編集の target を検証対象タグでプリセット
     // (POST /pools/from-tag の 303 が ?bulk=1&bulkTag=<tag> を付ける)。
-    if (data.bulk && (data as any).bulkTag) bulkTag = (data as any).bulkTag;
+    // URL のタグはタグモードでしか意味を持たない — ★/プールのまま着地すると、
+    // タグモードへ切り替えたとき保存済みの別タグに黙って差し替わる。
+    if (data.bulk && (data as any).bulkTag) {
+      bulkSubMode = 'tag';
+      bulkTag = (data as any).bulkTag;
+    } else if (data.bulk) {
+      untrack(() => { if (bulkSubMode === 'tag') resumeTagSession(); });
+    }
     queuePinFetch(data.posts.results.map((p: Post) => p.id));
     // pool listing も query 変化でリセット (新クエリで再フェッチ)
     for (const key of Object.keys(poolsCaches)) delete poolsCaches[key];
@@ -590,9 +598,31 @@
   // preloadImage をスキップして、素通りではなく実際に静止して狙ったホバー
   // だけを prefetch 対象にする。
   let isScrolling = $state(false);
+
+  // 長押しホバーで元画像 (owner 2026-11-22: 「マウスオーバーが５秒続くと元画像を今のマウスと重ならないように」、
+  // 秒数は設定画面で変える — #lib/hoverPreview.ts、既定 3 秒、0 = オフ)。
+  // 元画像はホバー開始時に preloadImage が先読み済みなので、5 秒後は読み込み済みの画像を出すだけ。
+  // マウスのいる側と反対の半画面に、操作を奪わない (pointer-events:none) 固定表示。動画・PDF は対象外。
+  let hoverPreview = $state<{ url: string; side: 'left' | 'right' } | null>(null);
+  let hoverPreviewTimer = 0;
+  let hoverMouseX = 0;
+  function startHoverPreview(post: Post, e: MouseEvent) {
+    clearTimeout(hoverPreviewTimer);
+    hoverMouseX = e.clientX;
+    if ((post.type !== 'image' && post.type !== 'animation') || !$hoverPreviewMs) return;
+    hoverPreviewTimer = window.setTimeout(() => {
+      if (isScrolling || lightboxIdx !== null) return;
+      hoverPreview = { url: mediaUrl(post.contentUrl), side: hoverMouseX > window.innerWidth / 2 ? 'left' : 'right' };
+    }, $hoverPreviewMs);
+  }
+  function hideHoverPreview() {
+    clearTimeout(hoverPreviewTimer);
+    hoverPreview = null;
+  }
   let scrollIdleTimer = 0;
   function markScrolling() {
     isScrolling = true;
+    hideHoverPreview();
     clearTimeout(scrollIdleTimer);
     scrollIdleTimer = window.setTimeout(() => { isScrolling = false; }, 400);
   }
@@ -776,6 +806,20 @@
 
   // ── Pool ビュー ───────────────────────────────────────────
   const poolMode = $derived(data.mode === 'pools');
+  $effect(() => {
+    if (!poolMode) return;
+    const checkVersion = () => {
+      if (document.visibilityState === 'visible') void updated.check().catch(() => {});
+    };
+    checkVersion();
+    document.addEventListener('visibilitychange', checkVersion);
+    return () => document.removeEventListener('visibilitychange', checkVersion);
+  });
+  $effect(() => {
+    // Reload only the pool grid; other pages may have an answer or edit in flight.
+    // The new document starts with empty in-memory pool and history windows.
+    if (poolMode && updated.current && !reorderMode) location.reload();
+  });
   let poolSort = $state<'id' | 'updated'>(untrack(() => data.sort === 'updated' ? 'updated' : 'id'));
   let poolSortDir = $state<'asc' | 'desc'>(untrack(() => data.dir === 'asc' ? 'asc' : 'desc'));
   let poolShowEmpty = $state(untrack(() => data.showEmpty));
@@ -998,11 +1042,6 @@
     return badgeFor(pool.domain);
   }
 
-  // 検証/correction 作業 pool(自動タガー更新ループの HEADVERIFY 等)。
-  // server の VERIFY_POOL_NAME_RE (api/routers/pools.py) と同期を保つこと。
-  const VERIFY_POOL_RE = /HEADVERIFY|検証|判定|seed|SWEEP|audit|要人手|教師|版比較|FP-audit|pigment|wrinkled/i;
-  function isVerifyPool(pool: PoolSummary): boolean { return VERIFY_POOL_RE.test(pool.name ?? ''); }
-
   // 検証用 pool 非表示 (cookie 永続、server 側 hide_verify filter に渡す —
   // 仮想スクロールの sparse cache を壊さないため client filter はしない)。
   // cookie 読み書きは lib/hideVerify.ts (単一実装) に委譲。
@@ -1094,11 +1133,11 @@
     window?: string | null; version: 1; query: string; pools: boolean; safe: boolean; total: number;
     index: number; id: number | null; offset: number; scrollTop: number;
     columns: number; poolSort: 'id' | 'updated'; poolDir: 'asc' | 'desc';
-    empty: boolean; hideVerify: boolean; postSort: typeof postSort; postDir: 'asc' | 'desc';
+    empty: boolean; hideVerify: boolean; hidden?: boolean; postSort: typeof postSort; postDir: 'asc' | 'desc';
   };
   function historyWindowKey(value: ListPosition) {
     return JSON.stringify([data.user?.name, data.user?.email, data.tagLocale, value.query, value.pools, value.safe, value.poolSort, value.poolDir,
-      value.empty, value.hideVerify, value.postSort, value.postDir]);
+      value.empty, value.hideVerify, value.hidden ?? false, value.postSort, value.postDir]);
   }
   let historyEpoch = 0;
   let restoredHistoryEpoch: number | null = null;
@@ -1139,6 +1178,7 @@
     },
     restore: value => {
       if (!value || value.version !== 1 || value.query !== data.query
+        || value.hidden
         || value.pools !== poolMode || value.safe !== safeMode || data.scrollTo) return;
       cancelHistoryRestore();
       const epoch = historyEpoch;
@@ -1191,8 +1231,10 @@
         const requests: Promise<void>[] = [];
         for (let off = firstChunk; off < endChunk; off += LIMIT)
           requests.push(poolMode ? loadPoolChunk(off, !!saved) : loadChunk(off, !!saved));
-        // Revalidate in the background; a slow API must not hide cached cards.
-        if (!saved) await Promise.race([
+        // Cached cards are already visible at the saved position. Reconcile
+        // identity after revalidation too: inserted rows can move that item.
+        // Keep the wait bounded, and let user input cancel it via historyEpoch.
+        await Promise.race([
           Promise.all(requests),
           new Promise<void>(resolve => { finishHistoryWait = resolve; historyTimer = setTimeout(resolve, 1500); })
         ]);
@@ -1306,13 +1348,24 @@
     requestAnimationFrame(checkAndLoad);
   });
 
-  function openPost(post: Post, absoluteIdx: number, manga = false) {
-    // グリッドの表示順 (sort/dir) をビューアへ運ぶ。これを落とすとビューアの
-    // nearby 窓が別の並び順で組まれ、idx がずれて「開く位置がずれる」。
+  // グリッドの表示順 (sort/dir) をビューアへ運ぶ。これを落とすとビューアの
+  // nearby 窓が別の並び順で組まれ、idx がずれて「開く位置がずれる」。
+  function postHref(post: Post, absoluteIdx: number, manga = false): string {
     let url = `/post/${post.id}?q=${encodeURIComponent(query)}&idx=${absoluteIdx}`;
     if (postSort) url += `&sort=${encodeURIComponent(postSort)}&dir=${postSortDir}`;
     if (manga) url += `&mode=manga`;
-    goto(url);
+    return url;
+  }
+  function openPost(post: Post, absoluteIdx: number, manga = false) {
+    goto(postHref(post, absoluteIdx, manga));
+  }
+  // サムネはリンク (owner 2026-11-22: 右クリック「新しいタブで開く」がサムネ画像だけを開いていた — <button> 内の
+  // <img> しか右クリックの対象がなかった)。素の左クリックは従来どおり handleThumbClick (ライトボックス/一括編集)、
+  // Ctrl/⌘/Shift/中クリックと右クリックメニューはブラウザのリンク操作 = 投稿ページを新しいタブで開く。
+  function onThumbLinkClick(e: MouseEvent, post: Post, absoluteIdx: number) {
+    if (e.button !== 0 || e.ctrlKey || e.metaKey || e.shiftKey || e.altKey) return;
+    e.preventDefault();
+    handleThumbClick(post, absoluteIdx);
   }
 
   // Preload full-size image on hover for faster post page load
@@ -1347,7 +1400,12 @@
   // 初期復元は init で 1 回、書き戻しは $effect — 復元と書き戻しを同一 effect に
   // 入れると初回 run が bulkTag を読まず依存追跡から漏れる (runes の実行時追跡)。
   let bulkTag = $state<string | null>(get(verifyTarget) || null);
-  $effect(() => { verifyTarget.set(bulkTag ?? ''); });
+  // 書き戻しはタグモードが開いている間だけ。閉じる/★・プールへの切替で bulkTag を
+  // null にしても保存値は消さない — 次に開いたとき同じタグとフォーカスで再開する
+  // (owner 2026-11-24「開閉しただけで全部最初からなのはつらい」)。
+  // 空は書かない: タグモードで target を消す操作は無く、空が来るのは閉じた/切り替えた
+  // 直後か、閉じたまま ?bulk=1 で開き直した瞬間だけ (そこで保存値を消すと再開できない)。
+  $effect(() => { if (bulkMode && bulkSubMode === 'tag' && bulkTag) verifyTarget.set(bulkTag); });
   // target タグのカテゴリ (サムネ内同カテゴリタグ表示用、2026-07-20)。
   // ロード済み post のタグから即時解決し、見つからなければ TagDetail を引く。
   // pin 来歴 {post_id: {tag: state}} — 帯 (ThumbCategoryTags) の鍵表示用。
@@ -1459,6 +1517,34 @@
     }
     applying = false;
   }
+  // 「未付与を『無い』と確定」(owner 2026-11-15): それまで人が負例にできたのは
+  // タガーが誤って付けたタグ (外す = absent pin) だけで、タガーが付けなかった画像を
+  // 「見た、無い」と残す手段が無かった — 負例がタガーの誤検知に偏る。対象は
+  // ロード済みの**未付与・追加候補でない**もの (緑は「付ける」つもりなので除く)。
+  // 青の施錠と対称の操作で、同じく確認 + undo (解錠 = pin 削除 + GT 撤回)。
+  async function assertAbsent() {
+    if (!bulkTag || applying) return;
+    const t = bulkTag;
+    const targets = (postsArr.filter(Boolean) as Post[])
+      .filter(p => !postHasTag(p) && !addIds.has(p.id) && pinStates[p.id]?.[t] !== 'absent')
+      .map(p => p.id);
+    if (!targets.length) { applyResult = { added: 0, removed: 0, locked: 0, absent: 0, fail: 0 }; return; }
+    if (!window.confirm(m.home.grid.confirmAssertAbsent(targets.length, t))) return;
+    applying = true; applyResult = null;
+    try {
+      let done = 0;
+      for (let i = 0; i < targets.length; i += 1000) {          // server の上限に合わせる
+        const r = await putTagPinBulk(t, 'absent', targets.slice(i, i + 1000));
+        done += r.absent ?? 0;
+      }
+      for (const id of targets) pinStates[id] = { ...(pinStates[id] ?? {}), [t]: 'absent' };
+      lastBulkLock = { tag: t, ids: targets };
+      applyResult = { added: 0, removed: 0, locked: 0, absent: done, fail: 0 };
+    } catch (e) {
+      applyResult = { added: 0, removed: 0, locked: 0, fail: targets.length, lastError: String(e) };
+    }
+    applying = false;
+  }
   // 適用時に追加分をそのまま施錠 (user 2026-08-02「一括割り当てしたときに同時に
   // ロックをかけるオプション」)。人間が選んで付けた = 目視確定なので、正例 GT 化
   // までを 1 操作に短縮する。設定はセッションを跨いで保持。
@@ -1497,7 +1583,7 @@
   // リロードやページ移動でも残るように」)。SoT は #lib/verify の localStorage
   // バック store (kura_focus_tags) — bulkTag↔verifyTarget と同じ流儀。
   let focusTags = $state<string[]>(get(verifyFocusTags).slice(-MAX_FOCUS));
-  $effect(() => { verifyFocusTags.set(focusTags); });
+  $effect(() => { if (bulkMode && bulkSubMode === 'tag' && bulkTag) verifyFocusTags.set(focusTags); });
   // タグ → カテゴリ。帯はカテゴリ単位で束ねる (行為と対象が同カテゴリなら 1 本)。
   let focusCategory = $state<Record<string, string>>({});
   const focusBands = $derived.by(() => {
@@ -1602,13 +1688,13 @@
     if (next.has(post.id)) next.delete(post.id); else next.add(post.id);
     poolSelectIds = next;
   }
-  async function createVerifyPool() {
+  async function createPool() {
     const name = poolNameInput.trim();
     if (!name || poolSelectIds.size === 0 || poolCreating) return;
     poolCreating = true;
     poolCreateError = null;
     try {
-      const pool = await createVerifyPoolFromPosts(name, [...poolSelectIds]);
+      const pool = await createPoolFromPosts(name, [...poolSelectIds]);
       goto(`/?q=pool:${pool.id}`);
     } catch (e: any) {
       poolCreateError = e?.message ?? String(e);
@@ -1632,9 +1718,8 @@
   function toggleBulkMode() {
     bulkMode = !bulkMode;
     if (bulkMode) {
-      // バー再開時は永続 target を復元 (リロード/再入場でも帯が即出る)
-      const t = $verifyTarget;
-      if (t && !bulkTag) bulkTag = t;
+      // バー再開時は永続 target とフォーカスを復元 (リロード/再入場でも帯が即出る)
+      if (bulkSubMode === 'tag') resumeTagSession();
     }
     if (!bulkMode) {
       bulkSubMode = 'tag';
@@ -1652,6 +1737,15 @@
     }
   }
 
+  /** 閉じる前の target とフォーカスへ戻す (保存値はタグモード中にしか書かれない)。 */
+  function resumeTagSession() {
+    const t = $verifyTarget;
+    if (!t || bulkTag) return;
+    focusTags = get(verifyFocusTags).slice(-MAX_FOCUS);
+    bulkTag = t;
+    bulkInput = t;
+  }
+
   function switchBulkSubMode(mode: 'tag' | 'fav' | 'pool') {
     if (bulkSubMode === mode) return;
     bulkSubMode = mode;
@@ -1665,6 +1759,7 @@
     poolNameInput = '';
     poolCreateError = null;
     applyResult = null;
+    if (mode === 'tag') resumeTagSession();
   }
 
   function postHasTag(post: Post) {
@@ -1989,7 +2084,7 @@
 
 {#if bulkMode}
   {#if bulkSubMode === 'pool'}
-    <!-- プールモード: 検索結果/既存プールから選んだ post を新規検証プールへ束ねる
+    <!-- プールモード: 検索結果/既存プールから選んだ post を通常のプールへ束ねる
          (2026-07-20 user 要望)。BulkTagBar はタグ検索 UI 前提で流用不可なため
          専用の軽量バー — 見た目は .btb.g と揃えて違和感を出さない。 -->
     <div class="btb g pool-bar">
@@ -1997,13 +2092,13 @@
         {@render bulkTabs()}
         <input class="pool-name-input" type="text" bind:value={poolNameInput}
           placeholder={m.home.grid.newPoolName} disabled={poolCreating}
-          onkeydown={(e) => { if (e.key === 'Enter') createVerifyPool(); }} />
+          onkeydown={(e) => { if (e.key === 'Enter') createPool(); }} />
         <button class="sel" onclick={() => (poolSelectIds = new Set())}
           disabled={poolSelectIds.size === 0} title={m.home.grid.poolClearTitle}>{m.home.bulk.clearSelection}</button>
         <span class="count"><span class="count-add">{m.home.grid.nSelected(poolSelectIds.size)}</span></span>
-        <button class="apply" onclick={createVerifyPool}
+        <button class="apply" onclick={createPool}
           disabled={poolSelectIds.size === 0 || !poolNameInput.trim() || poolCreating}>
-          {poolCreating ? m.home.grid.creating : m.home.grid.createVerifyPool}
+          {poolCreating ? m.home.grid.creating : m.home.grid.createPool}
         </button>
         {#if poolCreateError}<span class="error" title={poolCreateError}>⚠ {poolCreateError}</span>{/if}
       </div>
@@ -2023,6 +2118,7 @@
       applying={applying}
       result={applyResult}
       onLockSelected={bulkSubMode === 'tag' ? lockSelected : undefined}
+      onAssertAbsent={bulkSubMode === 'tag' ? assertAbsent : undefined}
       onUndoLock={lastBulkLock ? undoBulkLock : undefined}
       focusTags={focusTags}
       focusCategory={bulkTag && bulkTagCategory ? { ...focusCategory, [bulkTag]: bulkTagCategory } : focusCategory}
@@ -2040,6 +2136,8 @@
         ? m.home.grid.clearTagTitle
         : m.home.grid.clearFavTitle}
       onSelectTarget={selectBulkTag}
+      recentTags={$bulkTagHistory}
+      onPickRecent={selectBulkTag}
       onSelectAll={selectAllVisible}
       onDeselectAll={bulkSubMode === 'tag' ? deselectAllVisible : favDeselectAllVisible}
       onClear={clearAllSelections}
@@ -2109,7 +2207,7 @@
     {@const poolPadBottom = itemH > 0 ? Math.ceil(poolItemsBelow / columnsPerRow) * itemH : 0}
     <div class="grid" style="--cols:{columnsPerRow}; padding-top:{poolPadTop}px; padding-bottom:{poolPadBottom}px">
       {#each poolsArr.slice(renderStart, renderEnd + 1) as pool, i (pool ? `p${pool.id}` : `sk-${renderStart + i}`)}
-        {#if pool}
+        {#if pool && !pool.hidden}
           {@const badge = poolSourceBadge(pool)}
           <!-- count = ACTUAL displayable members (postCount), what you see when
               you open the pool — NOT the pool URL's observed count, which counts uploaded-
@@ -2139,9 +2237,8 @@
               {/if}
             </div>
             <!-- verify > domain > 名前 heuristic の badge 優先順位は
-                 PoolVerifyBadge (card variant) が一元化 -->
-            <PoolVerifyBadge variant="card" status={pool.verifyStatus ?? null}
-              taggerSource={pool.taggerSource} domain={badge} heuristic={isVerifyPool(pool)} />
+                 PoolSourceBadge (card variant) が一元化 -->
+            <PoolSourceBadge domain={badge} />
             {#each poolBadges(pool) as badge (badge.text)}
               <span class="pool-kind-badge {badge.className}" title={badge.title}>{badge.text}</span>
             {/each}
@@ -2150,7 +2247,7 @@
               <span class="pool-name">{poolDisplayName(pool.name)}</span>
             </div>
           </a>
-        {:else}
+        {:else if !pool}
           {@const failed = poolFailures[poolDatasetKey()]?.[Math.floor((renderStart + i) / LIMIT) * LIMIT]}
           {#if failed?.terminal}<button class="thumb pool-skeleton missing-slot" onclick={retryPools}>{m.home.grid.listFetchFailed}<br />{m.home.grid.retry}</button>
           {:else}<div class="thumb pool-skeleton missing-slot" role="img" aria-label={failed ? m.home.grid.listReloading : m.home.grid.listLoading}><span class="loading-spinner" aria-hidden="true"></span></div>{/if}
@@ -2233,7 +2330,7 @@
             {@const isCover = !!activePoolId && absoluteIdx === 0}
             {@const fname = post.originalFilename ?? (post.source ? post.source.split('?')[0].split('/').pop() : null)}
             <div class="thumb-cell">
-            <button
+            <a
               id="post-{post.id}"
               data-history-index={absoluteIdx} data-history-id={post.id}
               class="thumb"
@@ -2248,10 +2345,12 @@
                 || (bulkMode && bulkSubMode === 'pool' && !poolSelectIds.has(post.id))}
               class:fav-hover={bulkMode && bulkSubMode === 'fav' && !isFavAdding && !isFavRemoving}
               title={bulkTagOn && st !== 'has' ? m.home.grid.dblClickAdd(bulkTag) : undefined}
-              onclick={() => handleThumbClick(post, absoluteIdx)}
+              href={postHref(post, absoluteIdx, openMode === 'manga')}
+              onclick={(e) => { hideHoverPreview(); onThumbLinkClick(e, post, absoluteIdx); }}
               ondblclick={() => handleThumbDblClick(post)}
-              onmouseenter={() => { if (isScrolling) return; preloadImage(post); if (post.type === 'video') hoverVideoId = post.id; }}
-              onmouseleave={() => { if (hoverVideoId === post.id) hoverVideoId = null; }}
+              onmouseenter={(e) => { if (isScrolling) return; preloadImage(post); startHoverPreview(post, e); if (post.type === 'video') hoverVideoId = post.id; }}
+              onmousemove={(e) => { hoverMouseX = e.clientX; }}
+              onmouseleave={() => { hideHoverPreview(); if (hoverVideoId === post.id) hoverVideoId = null; }}
             >
               {#if (post.type === 'video') && hoverVideoId === post.id}
                 <video src={mediaUrl(post.contentUrl)} autoplay muted loop playsinline class="thumb-video"></video>
@@ -2330,7 +2429,7 @@
                 <button
                   class="cover-btn"
                   class:setting={coverSettingId === post.id}
-                  onclick={(e) => { e.stopPropagation(); handleSetCover(post); }}
+                  onclick={(e) => { e.preventDefault(); e.stopPropagation(); handleSetCover(post); }}
                   title={m.home.grid.setCoverTitle}
                 >{m.home.grid.cover}</button>
               {/if}
@@ -2344,7 +2443,7 @@
                   onpointerdown={(e) => e.stopPropagation()}
                   onclick={(e) => { e.stopPropagation(); e.preventDefault(); handleToggleFav(post, absoluteIdx); }}>&#9733;</span>
               {/if}
-            </button>
+            </a>
             </div>
           {:else}
             {@const failure = chunkFailures.get(Math.floor(absoluteIdx / LIMIT) * LIMIT)}
@@ -2365,6 +2464,12 @@
 </main>
 </div><!-- .vscroll -->
 </div><!-- .page-col -->
+
+{#if hoverPreview}
+  <div class="hover-preview" class:left={hoverPreview.side === 'left'} class:right={hoverPreview.side === 'right'} aria-hidden="true">
+    <img src={hoverPreview.url} alt="" />
+  </div>
+{/if}
 
 {#if lightboxIdx !== null && lightboxKind === 'grid' && !poolMode}
   <ImageViewer
@@ -2452,6 +2557,8 @@
     user-select: none;
     -webkit-user-select: none;
     display: block;
+    color: inherit;            /* the thumb is a link (a): no link colour or underline on its labels */
+    text-decoration: none;
     aspect-ratio: 1;
     overflow: hidden;
     background: var(--surface);
@@ -2588,6 +2695,9 @@
     .thumb:has(:global(img[data-thumbnail-state="loading"]))::before,
     .thumb:has(:global(img[data-thumbnail-state="retrying"]))::before { animation: none; }
   }
+  .pool-card :global(img[data-thumbnail-state="unavailable"]) { visibility: hidden; }
+  .thumb:not(.pool-card):has(:global(img[data-thumbnail-state="unavailable"])),
+  .thumb-cell:has(:global(img[data-thumbnail-state="unavailable"])) { display: none; }
   .thumb:has(:global(img[data-thumbnail-state="offline"]))::before,
   .thumb:has(:global(img[data-thumbnail-state="failed"]))::before {
     content: var(--thumb-offline-msg); position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
@@ -2683,7 +2793,7 @@
   }
   .pool-name:hover { color: var(--accent); }
   .loading-more { text-align: center; color: var(--muted); padding: 1rem; font-size: 0.85rem; }
-  /* .pool-source-badge / .badge-* (domain + verify) は PoolVerifyBadge.svelte
+  /* .pool-source-badge / .badge-* (domain + verify) は PoolSourceBadge.svelte
      (card variant) へ移設 — 優先順位分岐ごと単一実装化。 */
   /* 関連タグ帯 (ThumbCategoryTags, stacked) は excl-toggle (左上, z4, 透明でも
      pointer を奪う) の下から始める — 重なると chip の hover/click を奪われる。
@@ -2910,4 +3020,12 @@
     main:not(.editing) .cover-badge { display: none; }
   }
 
+  .hover-preview {
+    position: fixed; top: 0; bottom: 0; width: 50vw; z-index: 900;
+    display: flex; align-items: center; justify-content: center;
+    background: rgba(0, 0, 0, 0.82); pointer-events: none;
+  }
+  .hover-preview.left { left: 0; }
+  .hover-preview.right { right: 0; }
+  .hover-preview img { max-width: 100%; max-height: 100%; object-fit: contain; }
 </style>

@@ -44,6 +44,7 @@ _VETO_HEADS_DIR = Path(
 
 
 class TaggerReleaseMeta(BaseModel):
+    character_component: dict | None = None
     id: int
     commit_sha: str
     base_model_repo: str
@@ -101,8 +102,31 @@ async def get_active_release(db: AsyncSession = Depends(get_db)):
         # Should be unreachable (no delete path exists on tagger_release), but
         # fail loudly rather than serve a wrong release if it ever happens.
         raise HTTPException(status_code=500, detail="active release_id has no matching row")
-    return TaggerReleaseMeta.model_validate(row, from_attributes=True)
+    result = TaggerReleaseMeta.model_validate(row, from_attributes=True)
+    result.character_component = await _release_character_component(db, int(active))
+    return result
 
+
+
+async def _release_character_component(db, release_id):
+    """Serve metadata only, anchored to this release, never gated model bytes."""
+    rows = (await db.execute(text(
+        "SELECT m.release_digest,c.role,c.ordinal,c.content_sha256,c.deriver_sha256,c.params "
+        "FROM tagger_release_manifest m JOIN tagger_release_component c USING(release_digest) "
+        "WHERE m.release_id=:id AND c.role='character_base' ORDER BY c.ordinal"
+    ), {'id':release_id})).mappings().all()
+    if not rows:
+        return None
+    digests = {row['release_digest'] for row in rows}
+    if len(digests) != 1:
+        # Character workers reject this explicit invalid policy; metadata remains
+        # available to diagnostics and unrelated/legacy readers.
+        return {'error':'character_manifest_ambiguous'}
+    params = rows[0]['params'] if isinstance(rows[0]['params'], dict) else {}
+    return dict(release_digest=next(iter(digests)),description=dict(
+        components=[{key:row[key] for key in ('role','ordinal','content_sha256','deriver_sha256','params')} for row in rows],
+        threshold_row=dict(producer=params.get('producer'), category=params.get('category'),
+                           threshold=params.get('threshold'), evidence=params.get('threshold_evidence'))))
 
 @router.get("/release/{release_id}/data")
 async def get_release_data(release_id: int, part: str = "model", db: AsyncSession = Depends(get_db)):
@@ -137,14 +161,8 @@ class HeadPolicyOut(BaseModel):
     operating_point: str
 
 
-@router.get("/head-policies", response_model=list[HeadPolicyOut])
-async def list_head_policies(db: AsyncSession = Depends(get_db)):
-    """配備中の head と**その当て方**を返す。
-
-    タグ名で分岐するコードを worker から無くすための窓口。行が無ければ空 —
-    「既定で全部当てる」にはしない (policy の無い head は適用しない)。
-    """
-    rows = (await db.execute(text(
+async def read_head_policy_rows(db):
+    return (await db.execute(text(
         "SELECT p.tag, p.patch_version, p.content_sha256, p.threshold, "
         "       p.apply_mode, p.gate_tags, p.operating_point, c.name AS category, "
         "       p.artifact_kind AS kind "
@@ -153,6 +171,9 @@ async def list_head_policies(db: AsyncSession = Depends(get_db)):
         "JOIN tag_category c ON c.id = vocab.category_id "
         "ORDER BY p.tag"
     ))).mappings().all()
+
+
+async def render_head_policy_inventory(rows, *, require_complete):
     # **tag ごとに、効力のある 1 版だけを配る** (`tagger_current_head_policy`、0186:
     # 最新の approved 版)。全版を配ると、worker は head を tag で持つので後から
     # 読んだ版が前の版を上書きし、どの版の閾値で当たるかが行の並び次第になる
@@ -175,6 +196,11 @@ async def list_head_policies(db: AsyncSession = Depends(get_db)):
                 fix="Point the approved character policy at a content_head_bundle artifact before resuming tagging.",
                 ref="docs/notes/character-completion.md",
             )
+    # "Complete" means the deployable content-head lane defined by migration
+    # 0186, not every historical approved measurement. A bare probe is not a
+    # content head and has no reap authority. Keep it visible as excluded;
+    # do not invent a head or resurrect its predecessor. Missing bytes for any
+    # actual bundle below are a strict refusal.
     rows = [r for r in rows if r.get("kind") == CONTENT_HEAD_BUNDLE]
     # **配れない policy を配らない。** `tagger_artifact` の行は「この bytes を
     # 知っている」の意味でしかなく、**このノードに実体があるかは別**。
@@ -186,17 +212,14 @@ async def list_head_policies(db: AsyncSession = Depends(get_db)):
     # 各ノードで同じ調査が繰り返される。
     from api.tagger_core.artifact_store import default_store
     store = default_store()
-    # Release this read transaction before potentially hashing large models.
-    # No mutations or subsequent DB reads belong to this metadata endpoint.
-    await db.rollback()
     from api.services.policy_artifacts import policy_artifact_availability
     available = await policy_artifact_availability(store, [r["content_sha256"] for r in rows])
     out, absent = [], []
     for r in rows:
         if not available[r["content_sha256"]]:
-            if r.get("category") == "character":
+            if require_complete or r.get("category") == "character":
                 raise KuraError(
-                    503, "character_head_unavailable",
+                    503, "content_head_unavailable" if require_complete else "character_head_unavailable",
                     context={"tag": r["tag"], "content_sha256": r["content_sha256"]},
                     fix="Restore the approved character-head artifact before resuming tagging.",
                     ref="docs/notes/character-completion.md",
@@ -218,7 +241,26 @@ async def list_head_policies(db: AsyncSession = Depends(get_db)):
               f"除外 — {', '.join(absent)} "
               f"(scripts/backfill_head_policy.py か runner の upload が要る)",
               flush=True)
-    return out
+    return out, len(not_heads)
+
+
+@router.get("/head-policies", response_model=list[HeadPolicyOut])
+async def list_head_policies(db: AsyncSession = Depends(get_db), require_complete: bool = False):
+    """配備中の head と**その当て方**を返す。
+
+    タグ名で分岐するコードを worker から無くすための窓口。行が無ければ空 —
+    「既定で全部当てる」にはしない (policy の無い head は適用しない)。
+    """
+    rows = await read_head_policy_rows(db)
+    # End the endpoint's read transaction before hashing large artifacts.
+    await db.rollback()
+    policies, excluded = await render_head_policy_inventory(rows, require_complete=require_complete)
+    if require_complete:
+        from fastapi.responses import JSONResponse
+        return JSONResponse([policy.model_dump() for policy in policies],
+                            headers={'X-Kura-Head-Inventory': 'deployable-complete-v1',
+                                     'X-Kura-Head-Excluded-Non-Bundles': str(excluded)})
+    return policies
 
 
 # 書き込みは認証必須 (registration-request / veto-head と同じ扱い)。
@@ -564,6 +606,61 @@ async def submit_registration_request(
                             context={"registration_id": same.id,
                                      "lifecycle_event_id": body.lifecycle_event_id},
                             fix="a lifecycle event takes one result; measure again after the next move to training.")
+    review = (body.metrics or {}).get("production_review")
+    if review is not None:
+        from api.services.human_review import digest
+        from api.services.review_queues import ReviewQueueRefused
+        from api.services.review_set_registry import register_candidate_set
+
+        request = review.get("request") if isinstance(review, dict) else None
+        source = request.get("source_provenance") if isinstance(request, dict) else None
+        qualification = body.metrics.get("serving_qualification")
+        if (not body.fencing_token or not isinstance(source, dict)
+                or not isinstance(qualification, dict)
+                or request.get("tag") != body.tag
+                or request.get("model_sha256") != body.artifact_sha256
+                or request.get("frame_sha256") != review.get("frame_sha256")
+                or source.get("snapshot_sha256") != qualification.get("snapshot_sha256")
+                or source.get("measurement_sha256") != qualification.get("measurement_sha256")
+                or source.get("measurement_sha256") != review.get("measurement_sha256")
+                or qualification.get("state") != "awaiting_production_precision"):
+            raise KuraError(422, "production_review_binding_invalid",
+                            fix="Submit the review request bound to this fenced measurement.")
+        if "frame" in review:
+            frame = review["frame"]
+            if (not isinstance(frame, dict)
+                    or frame.get("schema") != "tagger-scored-review-frame/1"
+                    or frame.get("model_sha256") != body.artifact_sha256
+                    or frame.get("threshold") != body.metrics.get("threshold")
+                    or digest(frame) != review["frame_sha256"]):
+                raise KuraError(422, "production_review_frame_invalid",
+                                fix="Submit the frozen frame matching this candidate and review request.")
+        if "worker_trial_inputs" in review:
+            manifest = review["worker_trial_inputs"]
+            if (not isinstance(manifest, dict)
+                    or manifest.get("schema") != "tagger-worker-trial-inputs/1"
+                    or manifest.get("artifact_sha256") != body.artifact_sha256
+                    or manifest.get("snapshot_sha256") != source["snapshot_sha256"]
+                    or manifest.get("threshold") != body.metrics.get("threshold")
+                    or digest(manifest) != review.get("worker_trial_inputs_sha256")):
+                raise KuraError(422, "production_review_trial_inputs_invalid",
+                                fix="Submit the frozen trial inputs matching this candidate.")
+        artifact_ready = (await db.execute(sa.text("""
+            SELECT EXISTS (
+                SELECT 1 FROM tagger_artifact
+                WHERE content_sha256 = :sha AND kind = 'content_head_bundle'
+                  AND byte_size > 0 AND kind_checked_at IS NOT NULL
+            )
+        """), {"sha": body.artifact_sha256})).scalar_one()
+        if not artifact_ready:
+            raise KuraError(409, "production_review_artifact_unavailable",
+                            fix="Upload the verified candidate bundle before retrying.")
+        try:
+            await register_candidate_set(db, request)
+        except ReviewQueueRefused as exc:
+            raise KuraError(409, "production_review_request_refused",
+                            context={"reason": str(exc)},
+                            fix="Check the canonical review registry and candidate request.") from None
     row = (await db.execute(
         sa.text(
             "SELECT tagger_governed_submit_registration(:tag, :host, :ref, :sha, "
@@ -725,7 +822,11 @@ async def upload_veto_head(
             "why": (f"gated-veto head (plan:kura-tagger-self-improvement-loop). "
                     f"McNemar-validated in-gate vs v1. bytes={len(data)}. "
                     f"apply=sigmoid(((f-mu)/sd)@w+b)<threshold → veto {gate}."),
-            "repo": "SmilingWolf/wd-swinv2-tagger-v3",
+            # Veto heads read the pooled features of the release running now.
+            "repo": (await db.execute(sa.text(
+                "SELECT r.base_model_repo FROM tagger_release r "
+                "JOIN tagger_release_active a ON a.release_id = r.id AND a.id = 1"
+            ))).scalar_one(),
             "cat": dt.date.today(), "by": f"veto-head-upload:{user.name}", "md": data,
         })
         await db.commit()
@@ -734,3 +835,4 @@ async def upload_veto_head(
         return {"ok": True, "stored": str(dest), "bytes": len(data),
                 "provenance_warning": str(e)}
     return {"ok": True, "stored": str(dest), "bytes": len(data)}
+

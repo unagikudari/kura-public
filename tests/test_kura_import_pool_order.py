@@ -169,3 +169,40 @@ def test_pools_that_keep_failing_do_not_starve_one_that_waited(kura, tmp_path):
     finally:
         proc.send_signal(signal.SIGTERM)
         proc.communicate(timeout=20)
+
+
+@pytest.mark.parametrize('explicit_pool', [False, True])
+def test_changing_archive_reserves_only_its_destination(kura, tmp_path, explicit_pool):
+    root = tmp_path / 'archive-watch'
+    root.mkdir()
+    archive = root / 'A.cbz'
+    with zipfile.ZipFile(archive, 'w') as z:
+        z.writestr('first.png', PNG + b'first')
+    later = root / 'z.png'
+    later.write_bytes(PNG + b'last')
+    _old(later)
+    args = _args(root, kura, tmp_path, '--watch', '1', '--settle', '60')
+    if explicit_pool:
+        args.remove('--pool-per-folder')
+        args.extend(['--pool', 'Together'])
+    proc = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                            env={**os.environ, 'KURA_API_KEY': ''})
+    try:
+        time.sleep(2)
+        assert proc.poll() is None
+        if explicit_pool:
+            assert not _Kura.uploads
+        else:
+            assert [u['name'] for u in _Kura.uploads] == ['z.png']
+        _old(archive)
+        end = time.monotonic() + 20
+        while time.monotonic() < end and len(_Kura.uploads) < 2:
+            time.sleep(.1)
+        assert len(_Kura.uploads) == 2
+        if explicit_pool:
+            assert _pool('Together') == ['first.png', 'z.png']
+        else:
+            assert _pool('A') == ['first.png']
+    finally:
+        proc.send_signal(signal.SIGTERM)
+        proc.communicate(timeout=20)

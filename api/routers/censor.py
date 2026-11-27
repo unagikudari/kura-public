@@ -334,6 +334,9 @@ async def get_censor_pair(
     Post shape, so the lightbox renders censored|uncensored two-up without
     a second round-trip.
     """
+    from api.services.pool_visibility import require_visible_post
+
+    await require_visible_post(db, post_id)
     row = (await db.execute(text(
         """select censored_post_id, uncensored_post_id, method,
                   off_censor_pct, confirmed
@@ -344,6 +347,7 @@ async def get_censor_pair(
         raise HTTPException(status_code=404, detail="No censor pair for this post")
     cen, unc, method, off, confirmed = row
     partner_id = unc if post_id == cen else cen
+    await require_visible_post(db, partner_id)
     from sqlalchemy.orm import selectinload
     from api.db.models import Tag, PoolPost, Pool
     from api.routers.posts import _serialize_post
@@ -570,10 +574,13 @@ async def teacher_candidates(
 ) -> dict:
     """Auto-imported (created_by NULL) annotations scored worst-first.
     only ∈ {suspect (score≥3 & kept), all, excluded, kept}."""
+    from api.services.pool_visibility import post_visible
+
     limit = max(1, min(limit, 200))
     rows = (await db.execute(
         select(CensorAnnotation.post_id, CensorAnnotation.shape_type, CensorAnnotation.geometry)
-        .where(CensorAnnotation.created_by.is_(None), CensorAnnotation.deleted_at.is_(None)))).all()
+        .where(CensorAnnotation.created_by.is_(None), CensorAnnotation.deleted_at.is_(None),
+               post_visible(CensorAnnotation.post_id)))).all()
     by_post: dict[int, list] = defaultdict(list)
     for pid, st, geom in rows:
         by_post[pid].append((st, geom))

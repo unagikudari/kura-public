@@ -24,12 +24,12 @@ def test_header_keeps_details_and_artists_without_loading_post_graph(monkeypatch
     Base.metadata.create_all(engine, tables=tables)
     with engine.begin() as db:
         # Deliberately no full Post table: selecting any unused post metadata fails.
-        db.execute(text('CREATE TABLE post(id integer PRIMARY KEY,source text)'))
+        db.execute(text('CREATE TABLE post(id integer PRIMARY KEY,source text,status text)'))
         db.execute(PoolCategory.__table__.insert(), {'id': 1, 'name': 'default', 'color': '#fff', 'default': True, 'ord': 0})
         db.execute(Pool.__table__.insert(), {'id': 7, 'category_id': 1, 'version': 2,
             'creation_time': datetime(2026, 1, 1), 'description': 'details', 'cover_post_id': 1})
         db.execute(PoolName.__table__.insert(), {'pool_name_id': 1, 'pool_id': 7, 'name': 'work', 'ord': 0})
-        db.execute(text("INSERT INTO post VALUES(1,'https://example.test/source')"))
+        db.execute(text("INSERT INTO post VALUES(1,'https://example.test/source','ok')"))
         db.execute(text('INSERT INTO pool_post VALUES(7,1,0)'))
     statements = []
     event.listen(engine, 'before_cursor_execute', lambda conn, cursor, sql, parameters, context, executemany: statements.append(sql))

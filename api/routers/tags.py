@@ -13,12 +13,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload, load_only, raiseload
 
 from api.auth import get_current_user
-from api.db.models import PostTag, Tag, TagCategory, TagLink, TagName, TagLocalization, User, TagRelation
+from api.db.models import Pool, PostTag, Tag, TagCategory, TagLink, TagName, TagLocalization, User, TagRelation
 from api import site_rules
 from api.db.session import get_db
 from api.errors import tag_name_taken_concurrently
 from api.schemas.common import PagedResult
 
+from api.services.pool_visibility import pool_covers
 from api.services.tag_localization import localized_names, normalize_localizations, transfer_localizations
 
 router = APIRouter(prefix="/api", tags=["tags"])
@@ -446,8 +447,8 @@ async def merge_tags(
       - tagger_gt_label: identity タグの派生 GT は削除 (pins から再導出可能で、
         artist カテゴリは non-trainable — 誤って学習系に入った雑音)
       - tagger_head_candidate: canonical 名へ付け替え (履歴保持、重複は削除)
-    gt/candidate は governed テーブルなので SET LOCAL ROLE kura_reconciler で
-    行う (kura はそのメンバー — merge は人間指示の curation)。"""
+    gt/candidate は governed テーブルなので governed 関数 tagger_governed_merge_tag (0196) で行う
+    (kura は kura_reconciler のメンバーではない — merge は人間指示の curation)。"""
     source = await _find_tag(db, source_name)
     target = await _find_tag(db, target_name)
 
@@ -478,23 +479,57 @@ async def merge_tags(
 
     ids = {"tid": target.tag_id, "sid": source.tag_id}
 
-    # governed テーブル (gt_label / head_candidate) を扱うため。LOCAL なので
-    # commit/rollback で自動的に戻る。
-    await db.execute(text("SET LOCAL ROLE kura_reconciler"))
-    await db.execute(text(
-        "DELETE FROM tagger_gt_label WHERE tag_id = :sid"), ids)
+    # A tag the tagger is working on is not merged: its patch, head policy, node heads, rules, an open measurement
+    # or a lifecycle past `candidate` stay with the identity they were made for, and nothing here moves them. With
+    # this refusal a source that stays behind as a retired identity (below) is never part of the tagger's live set.
+    live = (await db.execute(text("""
+        SELECT what FROM (
+            SELECT 'patch' AS what WHERE EXISTS (SELECT 1 FROM tagger_patch WHERE tag_id = :sid)
+            UNION ALL SELECT 'head policy' WHERE EXISTS (SELECT 1 FROM tagger_head_policy WHERE tag_id = :sid)
+            UNION ALL SELECT 'node head' WHERE EXISTS (SELECT 1 FROM tagger_node_head WHERE tag_id = :sid)
+            UNION ALL SELECT 'tag rule' WHERE EXISTS (SELECT 1 FROM tagger_tag_rule WHERE tag_id = :sid)
+            UNION ALL SELECT 'tag exclusion' WHERE EXISTS (
+                SELECT 1 FROM tagger_tag_exclusion WHERE tag_a_id = :sid OR tag_b_id = :sid)
+            UNION ALL SELECT 'candidate disposition' WHERE EXISTS (
+                SELECT 1 FROM tagger_candidate_disposition WHERE tag_id = :sid)
+            UNION ALL SELECT 'quarantine' WHERE EXISTS (SELECT 1 FROM tag_quarantine WHERE tag_id = :sid)
+            UNION ALL SELECT 'registration ' || status FROM tagger_registration_request
+                       WHERE tag_id = :sid AND status <> 'rejected' GROUP BY status
+            UNION ALL SELECT 'lifecycle stage ' || to_stage FROM (
+                SELECT to_stage FROM tagger_lifecycle_event WHERE tag_id = :sid
+                ORDER BY occurred_at DESC, id DESC LIMIT 1) latest WHERE to_stage <> 'candidate'
+        ) x"""), ids)).scalars().all()
+    if live:
+        await db.rollback()
+        raise HTTPException(status_code=409, detail={
+            "error": "tag_merge_live_tagger_state",
+            "fix": f"the tagger is working on '{source_name}' ({', '.join(live)}); a merge does not move that. "
+                   "Settle or retire it on the tagger side first, then merge again.",
+            "state": live})
+
+    # Record the identity edge in this same transaction, before moving names. Historical
+    # IDs/names remain values even if a tag without history is subsequently deleted.
+    # Re-read under the tag locks: another merge may have moved a name while we waited.
+    current_names = (await db.execute(text("""
+        SELECT tag_id, name FROM tag_name WHERE tag_id IN (:sid, :tid) AND ord = 0
+    """), ids)).all()
+    canonical = dict(current_names)
+    requested = (await db.execute(text("""
+        SELECT count(*) FROM tag_name
+        WHERE (tag_id = :sid AND name = :source) OR (tag_id = :tid AND name = :target)
+    """), {**ids, "source": source_name, "target": target_name})).scalar()
+    if set(canonical) != {source.tag_id, target.tag_id} or requested != 2:
+        await db.rollback()
+        raise HTTPException(status_code=409, detail={"error": "tag_changed", "fix": "Reload the tags before merging."})
     await db.execute(text("""
-        UPDATE tagger_head_candidate c SET tag_id = :tid,
-               tag = (SELECT name FROM tag_name WHERE tag_id = :tid AND ord = 0)
-        WHERE c.tag_id = :sid AND NOT EXISTS (
-            SELECT 1 FROM tagger_head_candidate x
-            WHERE x.tag_id = :tid
-              AND x.source_pool_id IS NOT DISTINCT FROM c.source_pool_id
-              AND x.id <> c.id)
-    """), ids)
-    await db.execute(text(
-        "DELETE FROM tagger_head_candidate WHERE tag_id = :sid"), ids)
-    await db.execute(text("RESET ROLE"))
+        INSERT INTO tag_merge_identity(source_id, target_id, source_name, target_name, actor_user_id)
+        VALUES (:sid, :tid, :source, :target, :actor)
+    """), {**ids, "source": canonical[source.tag_id], "target": canonical[target.tag_id],
+           "actor": auth_user.user_id})
+
+    # The governed tagger rows (gt_label / head_candidate) move inside a governed function (0196): their row
+    # triggers accept only kura_reconciler, and kura is never a member of that role, so no role switch here.
+    await db.execute(text("SELECT tagger_governed_merge_tag(:sid, :tid)"), ids)
 
     await db.execute(text("""
         UPDATE tag_link SET tag_id = :tid
@@ -546,7 +581,18 @@ async def merge_tags(
     # よう source を session から切り離してから、行として消す (db.delete(source)
     # だと cascade が「source の names」— 今は target の別名 — を消しに行く)。
     db.expunge(source)
-    await db.execute(text("DELETE FROM tag WHERE id = :sid"), ids)
+    # The tagger's history (lifecycle events, candidate events, judged measurements) is append-only and names the
+    # identity it was recorded for. Where such rows exist the source row stays, with no name and no posts: a retired
+    # identity that only that history refers to. Nothing can be written to it again (tagger_bind_tag refuses a tag_id
+    # without a name) and the lifecycle view leaves it out (0197). Without such history the row is deleted.
+    retired = (await db.execute(text("""
+        SELECT EXISTS (SELECT 1 FROM tagger_lifecycle_event WHERE tag_id = :sid)
+            OR EXISTS (SELECT 1 FROM tagger_candidate_event WHERE tag_id = :sid)
+            OR EXISTS (SELECT 1 FROM tagger_registration_request WHERE tag_id = :sid)"""), ids)).scalar()
+    if retired:
+        await db.execute(text("UPDATE tag SET post_count = 0 WHERE id = :sid"), ids)
+    else:
+        await db.execute(text("DELETE FROM tag WHERE id = :sid"), ids)
     # The state the merge leaves, read once more before it commits: the merged tag on a post
     # its own absent pin says it is not on is never committed (#147).
     left = (await db.execute(text("""
@@ -617,7 +663,9 @@ def _validate_uncensored(v: int | None) -> None:
 async def list_tag_links(tag_name: str, db: AsyncSession = Depends(get_db)) -> list[dict]:
     tag = await _find_tag(db, tag_name)
     rows = (await db.execute(
-        select(TagLink).where(TagLink.tag_id == tag.tag_id).order_by(TagLink.platform, TagLink.id)
+        select(TagLink).outerjoin(Pool, Pool.pool_id == TagLink.pool_id)
+        .where(TagLink.tag_id == tag.tag_id, or_(TagLink.pool_id.is_(None), Pool.hidden.is_(False)))
+        .order_by(TagLink.platform, TagLink.id)
     )).scalars().all()
     return [_serialize_link(l) for l in rows]
 
@@ -722,7 +770,7 @@ async def discover_tag_links(
     account. Uses the stored tag_link.pool_id (migration 0063; the account's kura
     pool) for the cover + pool name; installed extensions add what they know about
     each link under `extensions`."""
-    conds = ["1=1"]
+    conds = ["(tl.pool_id IS NULL OR pl.hidden IS FALSE)"]
     params: dict = {"lim": limit}
     if tag_ids is not None:
         parts = tag_ids.split(',')
@@ -743,7 +791,7 @@ async def discover_tag_links(
         SELECT tl.id, tl.tag_id, tc.name AS tag_category, tl.platform, tl.url, tl.handle, tl.uncensored,
                tl.verified, tl.note, tl.created_at, tl.updated_at,
                (SELECT min(name) FROM tag_name WHERE tag_id = tl.tag_id) AS tag_name,
-               tl.pool_id, pl.cover_post_id,
+               tl.pool_id,
                (SELECT name FROM pool_name WHERE pool_id = tl.pool_id AND ord = 0 LIMIT 1) AS pool_name
         FROM tag_link tl
         JOIN tag t ON t.id=tl.tag_id
@@ -755,10 +803,12 @@ async def discover_tag_links(
     """
     rows = (await db.execute(text(sql), params)).mappings().all()
     from api import extension_hooks
+    covers = await pool_covers(db, sorted({r["pool_id"] for r in rows if r["pool_id"] is not None}))
     annotations = await extension_hooks.annotate_tag_links(
         db, [{"id": r["id"], "pool_id": r["pool_id"], "url": r["url"]} for r in rows])
     out = []
     for r in rows:
+        cover_id, _ = covers.get(r["pool_id"], (None, None))
         out.append({
             "id": r["id"], "tagId": r["tag_id"], "platform": r["platform"], "url": r["url"],
             "handle": r["handle"], "uncensored": r["uncensored"], "verified": r["verified"],
@@ -768,7 +818,7 @@ async def discover_tag_links(
             "tagName": r["tag_name"], "tagCategory": r["tag_category"],
             "poolId": r["pool_id"],
             "poolName": r["pool_name"],
-            "poolCover": f"/api/post/{r['cover_post_id']}/thumbnail" if r["cover_post_id"] else None,
+            "poolCover": f"/api/post/{cover_id}/thumbnail" if cover_id else None,
             # what installed extensions know about this link, keyed by extension id
             "extensions": annotations.get(r["id"], {}),
         })

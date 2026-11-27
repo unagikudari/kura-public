@@ -43,6 +43,7 @@ thresholds, manifest integration) is testable in any venv.
 from __future__ import annotations
 
 import io
+from api.tagger_core.post_exclusion import EVALUATION_AUDITS, not_excluded, training_label
 import json
 import os
 import random
@@ -701,7 +702,13 @@ def permutation_null(getv, pos, neg, group_of, *, tag: str, n_perm: int,
 
 # -------------------------------------------------------- population assembly
 
-def load_populations(tag: str, primary_conn, loc_conn, *, seed: int,
+def load_populations(tag, primary_conn, loc_conn, **kwargs):
+    from api.tagger_core.training_eligibility import read_snapshot
+    with read_snapshot(primary_conn):
+        return _load_populations(tag, primary_conn, loc_conn, **kwargs)
+
+
+def _load_populations(tag: str, primary_conn, loc_conn, *, seed: int,
                      neg_cap: int = NEG_CAP_DEFAULT,
                      oog_neg_cap: int = OOG_NEG_CAP_DEFAULT,
                      rand_sample: int = RAND_SAMPLE_DEFAULT,
@@ -712,16 +719,31 @@ def load_populations(tag: str, primary_conn, loc_conn, *, seed: int,
     needs to attest the sampling."""
     IMG = f"and {display_bytes.HAS_IMAGE} and p.type='image'"
     gt_rows = q(primary_conn, "select g.post_id, g.verdict, g.derived_from, g.source_pool_id "
-                          "from tagger_gt_label g where g.tag=%s", (tag,))
+                          "from tagger_gt_label g where g.tag=%s AND " + training_label("g"), (tag,))
+    from api.tagger_core import training_eligibility as eligibility
+    overlay = eligibility.load(lambda sql, args: q(primary_conn, sql, args), tag)
+    raw_pos = sum(r[1] == "positive" for r in gt_rows)
+    raw_neg = sum(r[1] == "negative" for r in gt_rows)
+    blocked = eligibility.excluded(overlay)
+    blocked.update(i for (i,) in q(primary_conn, "SELECT p.id FROM post p WHERE NOT (" + not_excluded("p.id") + ")"))
+    eligible_ids = eligibility.eligible_ids(overlay, ((r[0], r[1]) for r in gt_rows))
+    blocked |= {r[0] for r in gt_rows if r[0] not in eligible_ids}
+    gt_rows = [r for r in gt_rows if r[0] not in blocked]
     gt_ids = [r[0] for r in gt_rows]
     have = set(i for (i,) in q(loc_conn,
                f"select id from post p where p.id=any(%s) {IMG}", (gt_ids,))) if gt_ids else set()
     posset = {r[0]: r for r in gt_rows if r[1] == "positive"}
     negset = {r[0]: r for r in gt_rows if r[1] == "negative"}
 
+    # Human adds recovered as positives -- but not a post whose current pin for
+    # this tag is an evaluation answer (it would re-enter training through here).
     hadd = [i for (i,) in q(primary_conn, "select distinct a.post_id from post_tag_audit a "
-                                      "where a.actor_type='human' and %s=any(a.added_tags)", (tag,))]
-    rec = [i for i in hadd if i not in posset and i not in negset]
+                                      "where a.actor_type='human' and %s=any(a.added_tags) "
+                                      "and not exists (select 1 from post_tag_pin ev_pin "
+                                      "join tag_name ev_name on ev_name.tag_id=ev_pin.tag_id "
+                                      "where ev_pin.post_id=a.post_id and ev_name.name=%s "
+                                      f"and ev_pin.audit_id in ({EVALUATION_AUDITS}))", (tag, tag))]
+    rec = [i for i in hadd if i not in posset and i not in negset and i not in blocked]
     if rec:
         have |= set(i for (i,) in q(loc_conn,
                     f"select id from post p where p.id=any(%s) {IMG}", (rec,)))
@@ -743,6 +765,7 @@ def load_populations(tag: str, primary_conn, loc_conn, *, seed: int,
                 "select p.id from post p where p.type='image' and p.media_location = 'pg' "
                 "and p.id not in (select post_id from tagger_gt_label where tag=%s) "
                 "order by p.id limit 100000", (tag,))]
+    randpool = [i for i in randpool if i not in blocked]
     rand = sorted(random.Random(seed).sample(randpool, min(rand_sample, len(randpool))))
 
     gtids = set(ig_pos) | set(ig_neg) | set(oog_neg)
@@ -752,7 +775,7 @@ def load_populations(tag: str, primary_conn, loc_conn, *, seed: int,
                 "join post p on p.id=pt.post_id where p.type='image' and p.media_location = 'pg' "
                 "and not exists (select 1 from post_tag_audit a where a.post_id=pt.post_id "
                 "  and a.actor_id like 'nodec-autotag-r%%' and %s=any(a.added_tags)) "
-                "order by pt.post_id limit 3000", (tag, tag)) if i not in gtids]
+                "order by pt.post_id limit 3000", (tag, tag)) if i not in gtids and i not in blocked]
 
     # Non-GT populations (random archive / corpus augmentation) still need
     # groups for the manifest: they are not pool-reviewed, so per-post
@@ -779,11 +802,11 @@ def load_populations(tag: str, primary_conn, loc_conn, *, seed: int,
         "ig_neg_full_n": len(ig_neg_full), "oog_neg_full_n": len(oog_neg_full),
         # full tagger_gt_label store size (not eval-set-capped, not
         # image-presence-filtered) -- same semantics as reconciler._gt_counts,
-        # since gt_rows/posset/negset are built from the UNFILTERED query
-        # above. This is what a dispatch-growth baseline must compare against
+        # since raw_pos/raw_neg were captured BEFORE the eligibility overlay. This is what a dispatch-growth baseline must compare against
         # (plan Evidence: the eval-set-capped count degrades the auto-hold to
         # fail-open once true GT store size exceeds the cap).
-        "gt_full_pos_n": len(posset), "gt_full_neg_n": len(negset),
+        "gt_full_pos_n": raw_pos, "gt_full_neg_n": raw_neg,
+        "training_eligibility": overlay,
         "deploy_prevalence_pi": ig_prevalence,
         "corpus_flagged_n": corpus_flagged,
         "rand": rand, "corp_pre": corp_pre[:corpus_limit],
@@ -799,10 +822,11 @@ def load_populations(tag: str, primary_conn, loc_conn, *, seed: int,
 
 # ------------------------------------------------------------ heavy: features
 
-def _image_transform():
-    from torchvision import transforms
-    return transforms.Compose([transforms.Resize((INPUT_SIZE, INPUT_SIZE)),
-                               transforms.ToTensor()])  # infer.py verbatim
+def _image_transform(preprocessing=None):
+    from .content_preprocessing import spec, transform
+    # Preserve legacy extraction until versioned cache/bundle emission is wired.
+    # Explicit contracts are used by parity tests, not silently on old caches.
+    return transform(spec(INPUT_SIZE) if preprocessing is None else preprocessing)
 
 
 def _device() -> str:
@@ -1123,16 +1147,19 @@ def _save_deployable_head(out: dict, tag: str, spaces: dict, pos, neg, seed: int
         import torch  # noqa: F401
         from api.tagger_core.artifact_store import default_store, ingest_file
         from tagger.content_head_model import WD_SWINV2
-        from tagger.distribute_heads import bundle_from_folded
         head = fit_deployable(getv, pos, neg, seed=seed, **fit_kw)
         # **推論側が読む形で出す。** `content_head_model.load` は
         # `{'model': backbone+head の state_dict}` を `torch.load` で読む。
         # 生の `{w, b}` を出すと全ノードで `invalid load key` になる (2026-08-05 実測)。
-        model = bundle_from_folded(head["w"].reshape(1, -1), head["b"])
+        evidence = out.get("feature_contract")
+        if evidence is None:
+            raise ValueError("new head requires a frozen feature contract; legacy caches cannot be relabelled")
+        from tagger.feature_contract import attach_head
+        model, metadata = attach_head(head["w"], head["b"], evidence)
         store = default_store()
         tmp = store.root / f".fit-{tag}.pt"
         tmp.parent.mkdir(parents=True, exist_ok=True)
-        torch.save({"model": model.state_dict(), "meta": {"backbone": WD_SWINV2}}, tmp)
+        torch.save({"model": model.state_dict(), "meta": metadata}, tmp)
         sha = ingest_file(store, tmp, move=True)
         out["artifact_sha256"] = sha
         out["artifact_ref"] = str(store.path_for(sha))
@@ -1194,15 +1221,20 @@ def measure_tag(tag: str, *, seed: int = DEFAULT_SEED, out_path: str | None = No
         # once the store exceeds the cap, which degrades the rejected-
         # registration auto-hold to fail-open (see load_populations).
         out["gt"] = gt_payload(pop["gt_full_pos_n"], pop["gt_full_neg_n"])
+        out["training_eligibility"] = pop["training_eligibility"]
         print(json.dumps(out["counts"], indent=1), flush=True)
 
         # features (post-keyed, tag-independent caches)
         all_ids = list(dict.fromkeys(ig_pos + ig_neg + oog_neg + rand + corp_pre))
-        emb = _extract_features(loc_conn, all_ids, EMB_CACHE,
+        from tagger.feature_contract import extract as extract_contracted
+        emb, feature_evidence = extract_contracted(loc_conn, all_ids, EMB_CACHE,
                                 classifier_reset=True, label="kura-space emb")
+        out["feature_contract"] = feature_evidence
+        out["requires_preprocessing_review"] = True
         gtall = ig_pos + ig_neg + oog_neg
-        lg = _extract_features(loc_conn, gtall, LOGIT_CACHE,
+        lg, logit_evidence = extract_contracted(loc_conn, gtall, LOGIT_CACHE,
                                classifier_reset=False, label="wd14 logits")
+        out["logit_contract"] = logit_evidence
 
         present = lambda L: [i for i in L if i in emb]  # noqa: E731
         ig_pos, ig_neg, oog_neg, rand = (present(ig_pos), present(ig_neg),

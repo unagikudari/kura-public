@@ -1,0 +1,75 @@
+{
+  "reviewer": "担当Codex・自己評価",
+  "reviewer_kind": "author",
+  "reviewed_revision": "1f058d0f3276ad8623003358ba52d288720006a1",
+  "method": "code + 50 Python controls + isolated Chromium task checks at four widths + screenshot inspection",
+  "evaluated_at": "2026-11-15",
+  "criteria": [
+    {
+      "id": "situation",
+      "verdict": "pass",
+      "evidence": "次工程の分類と重複なし配備設定数を別に表示。設定を実行成功と呼ばない。",
+      "nextfix": "画面受入れ範囲の必須修正なし。"
+    },
+    {
+      "id": "consistency",
+      "verdict": "pass",
+      "evidence": "task()を行の次操作・分類・概要で共用。新しい依頼と過去の測定不能/不採用の優先を回帰テスト。",
+      "nextfix": "画面受入れ範囲の必須修正なし。"
+    },
+    {
+      "id": "duplication",
+      "verdict": "pass",
+      "evidence": "配備内訳と自動報告は詳細へ、評価は各基準の結論と各者の根拠に集約。",
+      "nextfix": "画面受入れ範囲の必須修正なし。"
+    },
+    {
+      "id": "completeness",
+      "verdict": "pass",
+      "evidence": "タグ、担当、次工程、理由、完了条件、日時/未記録を同じ行で追える。",
+      "nextfix": "画面受入れ範囲の必須修正なし。"
+    },
+    {
+      "id": "brevity",
+      "verdict": "pass",
+      "evidence": "候補の評価は以前の候補として詳細へ。狭幅はフィルタ折畳みとタグ・状態・次操作を先に縦積み。",
+      "nextfix": "画面受入れ範囲の必須修正なし。"
+    },
+    {
+      "id": "actionability",
+      "verdict": "pass",
+      "evidence": "利用者の追加承認が不要な工程を明示。付与済み画像の誤タグ訂正と未付与画像の不足確認を別リンクにした。",
+      "nextfix": "画面受入れ範囲の必須修正なし。"
+    },
+    {
+      "id": "exploration",
+      "verdict": "pass",
+      "evidence": "4幅ブラウザー試験で検索、並び替え、解除、コメント項目選択と未送信入力保持が成功。",
+      "nextfix": "画面受入れ範囲の必須修正なし。"
+    },
+    {
+      "id": "graphics",
+      "verdict": "pass",
+      "evidence": "次工程の件数バーと独立した配備設定総数を分離。候補meterは版/日時/標本数を表示し未知を0にしない。",
+      "nextfix": "画面受入れ範囲の必須修正なし。"
+    },
+    {
+      "id": "freshness",
+      "verdict": "pass",
+      "evidence": "候補集計は読み込み時点、実験/ノードは30秒更新と明示。実験取得失敗は前回記録へ、進捗変化時刻は未記録と示す。",
+      "nextfix": "画面受入れ範囲の必須修正なし。"
+    },
+    {
+      "id": "accessibility",
+      "verdict": "pass",
+      "evidence": "320/390/844/1280pxで次操作の横はみ出しなし。コメント入力へのフォーカス、未送信値保持、ナビ全項目への到達を確認。",
+      "nextfix": "画面受入れ範囲の必須修正なし。"
+    }
+  ],
+  "limitations": [
+    "UIの評価であってtaggerモデル品質や全ライフサイクル完成の判定ではない。",
+    "実画面プレビュー試験。音声読み上げの全経路やWCAG認証、実ユーザー調査は未実施。",
+    "新しいコメントの保存は本番では試していない。既存の認証/権限/永続化契約は変更していない。"
+  ],
+  "final_delta": "ba46a224のUI受入れに加え、停止条件の分類とAPI source照合の保証範囲を明記（1f058d0f）。本番Webは配布後に別途確認。"
+}

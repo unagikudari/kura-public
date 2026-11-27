@@ -17,7 +17,7 @@
   import BulkTagBar from '#lib/components/BulkTagBar.svelte';
   import PoolTitleBar, { poolIdFromQuery } from '#lib/components/PoolTitleBar.svelte';
   import { poolDisplayName } from '#lib/site.ts';
-  import { verifyOverlayOn, verifyHeaderOn, verifyTarget, postHasTag } from '#lib/verify.ts';
+  import { verifyOverlayOn, verifyHeaderOn, verifyTarget, bulkTagHistory, postHasTag } from '#lib/verify.ts';
   import { applyBulkTag, frameState, patchTagVersionAware, toggleAll, toggleCandidate, type BulkApplyResult, type BulkProgress } from '#lib/bulkTag.ts';
   import '#lib/styles/bulk.css';
   import { fetchPosts, fetchPost, patchPost, putTagPin, putTagPinBulk, fetchPostPinStates, deletePost, toggleFavorite, regenerateThumbnail, mediaUrl, fetchCensorStatus, fetchVariantStatus, setVariantReview, fetchTagDetail } from '#lib/api.ts';
@@ -675,6 +675,9 @@
   // target タグ検索入力 (BulkTagBar に bind — 選択/オートコンプリートは共通コンポーネント)
   let vInput = $state($verifyTarget);
   function selectVTarget(name: string) {
+    // 選択はタグに属する: 保留を捨てるときはグリッドと同じく確認する
+    if (name !== $verifyTarget && vSelected > 0 &&
+        !window.confirm(m.home.grid.confirmSwitchFocus($verifyTarget || null, vSelected, name))) return;
     verifyTarget.set(name);
     vAddIds = new Set(); vRemoveIds = new Set(); vResult = null;
   }
@@ -685,7 +688,7 @@
 
   // クリック=選択トグル (付与済み→解除候補 / 未付与→追加候補) — #lib/bulkTag の共通選択モデル
   function toggleVSelect(p: Post) {
-    if (!$verifyHeaderOn || !$verifyTarget) return;
+    if (!$verifyHeaderOn || !$verifyTarget || vApplying) return;
     const r = toggleCandidate(hasTarget(p), p.id, vAddIds, vRemoveIds);
     vAddIds = r.addIds;
     vRemoveIds = r.removeIds;
@@ -696,6 +699,32 @@
   function onItemClick(p: Post) {
     if (suppressItemClick) { suppressItemClick = false; return; }
     toggleVSelect(p);
+  }
+
+  // The two preceding clicks cancel their selection toggles. Apply only this
+  // image, preserving any other pending selections and the captured target.
+  async function onItemDblClick(p: Post) {
+    const target = $verifyTarget;
+    if (!$verifyHeaderOn || !target || vApplying || suppressItemClick) return;
+    const removing = postHasTag(p, target);
+    if (removing && vPinStates[p.id]?.[target] === 'present'
+        && !window.confirm(pm.lockedRemoveConfirm(1))) return;
+    vApplying = true; vResult = null;
+    vProgress = { done: 0, total: 1 };
+    try {
+      vResult = await applyBulkTag(target, removing ? [] : [p.id], removing ? [p.id] : [], {
+        ...patchDeps,
+        getPost: id => posts.find(pp => pp.id === id),
+        onUpdated: updated => {
+          applyUpdated(updated);
+          vPinStates[updated.id] = { ...(vPinStates[updated.id] ?? {}),
+            [target]: postHasTag(updated, target) ? 'present' : 'absent' };
+          vAddIds = new Set([...vAddIds].filter(id => id !== updated.id));
+          vRemoveIds = new Set([...vRemoveIds].filter(id => id !== updated.id));
+        },
+        onProgress: (done, total) => { vProgress = { done, total }; },
+      });
+    } finally { vApplying = false; vProgress = null; }
   }
 
   // ロード済みページに対する全選択/全解除/クリア (グリッドの「表示中」相当、トグル式)
@@ -989,7 +1018,8 @@
     onEnterSingle={() => goto(`/post/${post.id}?q=${encodeURIComponent(query)}&idx=${idx}` + (gridSort ? `&sort=${encodeURIComponent(gridSort)}&dir=${gridDir || 'desc'}` : ''))}
     onSelectCols={(c) => { try { saveClientGridSettings(gridScope(query), { cols: c }); } catch {} goto(`/?q=${encodeURIComponent(query)}`); }}
     onTogglePool={() => goto('/?mode=pools')}
-    onToggleBulk={() => goto(`/?q=${encodeURIComponent(query)}&bulk=1`)}
+    bulkMode={$verifyHeaderOn}
+    onToggleBulk={toggleVerifyHeader}
   />
 
   {#if ctxPoolId}
@@ -1065,6 +1095,8 @@
       deselectAllTitle={pm.deselectAllTitle}
       clearTitle={pm.clearTitle}
       onSelectTarget={selectVTarget}
+      recentTags={$bulkTagHistory}
+      onPickRecent={selectVTarget}
       onSelectAll={vSelectAll}
       onDeselectAll={vDeselectAll}
       onClear={vClear}
@@ -1115,7 +1147,7 @@
             <video src={mediaUrl(p.contentUrl)}
               poster={mediaUrl(p.thumbnailUrl)}
               width={hasDims ? p.canvasWidth ?? undefined : undefined} height={hasDims ? p.canvasHeight ?? undefined : undefined}
-              controls loop preload="metadata"
+              controls loop playsinline preload="metadata"
               bind:this={videoEls[p.id]}
               oncontextmenu={(e) => openVideoMenu(e, p)}></video>
           </div>
@@ -1133,7 +1165,7 @@
         {:else}
           <MangaImage src={imgSrcFor(p)} thumbnail={mediaUrl(p.thumbnailUrl)} near={isNearFocus} focused={isFocused}
             width={hasDims ? p.canvasWidth ?? undefined : undefined} height={hasDims ? p.canvasHeight ?? undefined : undefined}
-            selectable={vOn} onclick={() => onItemClick(p)} />
+            selectable={vOn} onclick={() => onItemClick(p)} ondblclick={() => onItemDblClick(p)} />
           <CensorRegions postId={p.id} w={p.canvasWidth} h={p.canvasHeight}
             show={showRegions}
             enabled={(censorStatus[p.id]?.annotationCount ?? 0) > 0 && !(showRecon && reconFor(p))} />

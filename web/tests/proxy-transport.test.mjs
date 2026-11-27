@@ -36,15 +36,15 @@ async function fixture(t, respond, envExtra = {}, identity = { authorization: 'T
   return {
     requests,
     headersSeen,
-    async call(method, body, declaredLength = true) {
-      const url = new URL('http://synthetic.invalid/m/action');
+    async call(method, body, declaredLength = true, pathname = '/m/action', path = 'action', signal) {
+      const url = new URL('http://synthetic.invalid' + pathname);
       const request = new Request(url, {
-        method, body,
+        method, body, signal,
         headers: body !== undefined && declaredLength ? { 'content-length': String(Buffer.byteLength(body)) } : {},
       });
       // Mutation bodies must remain streamed, regardless of size or length header.
       request.arrayBuffer = () => { throw new Error('proxy buffered a mutation'); };
-      return (route[method] ?? route.GET)({ params: { path: 'action' }, request, url, cookies: { get: () => 'synthetic' } });
+      return (route[method] ?? route.GET)({ params: { path }, request, url, cookies: { get: () => 'synthetic' } });
     },
   };
 }
@@ -89,6 +89,22 @@ test('GET stops after two connection failures', { timeout: 5000 }, async t => {
   assert.equal(detail.error, 'upstream_response_unavailable');
   assert.equal(detail.context.retried, true);
   assert.equal(f.requests.length, 2);
+});
+
+test('a disconnected browser cancels an outstanding library read without a retry', { timeout: 5000 }, async t => {
+  const controller = new AbortController();
+  const f = await fixture(t, (_req, res) => {
+    const finish = setTimeout(() => res.end('late response'), 100);
+    res.once('close', () => clearTimeout(finish));
+    controller.abort();
+  });
+  const path = 'collector-next/collections';
+  const response = await f.call('GET', undefined, true, '/m/' + path, path, controller.signal);
+  assert.equal(response.status, 502);
+  const { detail } = await response.json();
+  assert.equal(detail.error, 'upstream_response_unavailable');
+  assert.equal(detail.context.retried, false);
+  assert.equal(f.requests.length, 1);
 });
 
 test('an upstream HTTP error is preserved without retry', { timeout: 5000 }, async t => {
@@ -173,4 +189,47 @@ test('redirects are returned without forwarding credentials to the next server',
   assert.equal(response.status, 307);
   assert.equal(response.headers.get('location'), 'https://outside.invalid/file');
   assert.equal(f.requests.length, 1);
+});
+
+
+test('explicit review paths traverse the real proxy exactly once and preserve content bytes', async t => {
+  const api = await readFile(new URL('../src/lib/api.ts', import.meta.url), 'utf8');
+  const root = api.match(/export const MUT = '([^']+)'/)[1];
+  const helper = await readFile(new URL('../src/lib/tagger/humanReviewTransport.ts', import.meta.url), 'utf8');
+  const js = ts.transpileModule(helper, {compilerOptions:{module:ts.ModuleKind.ESNext,target:ts.ScriptTarget.ES2022}}).outputText;
+  const {reviewRequestPath,reviewMediaPath} = await import('data:text/javascript;base64,'+Buffer.from(js).toString('base64'));
+  const ref='a'.repeat(64), seen=[];
+  const f=await fixture(t,(req,res)=>{seen.push(req.url);res.setHeader('content-type',req.method==='GET'&&req.url.endsWith('/content')?'image/png':'application/json');res.end(req.url.endsWith('/content')?Buffer.from([1,2,3]):'{}');});
+  for(const [method,url,expected] of [
+    ['GET',reviewRequestPath(root,ref),`/api/tagger-review/${ref}`],
+    ['GET',reviewRequestPath(root,ref,'/posts/101'),`/api/tagger-review/${ref}/posts/101`],
+    ['POST',reviewRequestPath(root,ref,'/posts/101/judgments'),`/api/tagger-review/${ref}/posts/101/judgments`],
+    ['GET',reviewMediaPath(root,'/api/post/101/content',101),'/api/post/101/content'],
+  ]) {
+    const response=await f.call(method,method==='POST'?'{}':undefined,true,url,url.slice('/m/'.length));
+    assert.equal(response.status,200);assert.equal(seen.at(-1),expected);
+    if(expected.endsWith('/content'))assert.deepEqual(new Uint8Array(await response.arrayBuffer()),new Uint8Array([1,2,3]));
+    else await response.text();
+  }
+  assert.equal(seen.length,4);assert.ok(f.headersSeen.every(h=>h.authorization==='Token synthetic-test'));
+  assert.throws(()=>reviewMediaPath(root,'https://external.invalid/image',101));
+  assert.throws(()=>reviewRequestPath(root,ref,'/../other'));
+});
+
+test('worker receives the upstream inventory completeness marker', async t => {
+  const f = await fixture(t, (req, res) => {
+    assert.equal(req.url, '/api/tagger/head-policies?require_complete=true');
+    res.writeHead(200, {
+      'content-type': 'application/json',
+      'x-kura-head-inventory': 'deployable-complete-v1',
+      'x-kura-head-excluded-non-bundles': '1',
+    });
+    res.end('[]');
+  });
+  const response = await f.call('GET', undefined, true,
+    '/api/tagger/head-policies?require_complete=true', 'tagger/head-policies');
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get('x-kura-head-inventory'), 'deployable-complete-v1');
+  assert.equal(response.headers.get('x-kura-head-excluded-non-bundles'), '1');
+  assert.deepEqual(await response.json(), []);
 });

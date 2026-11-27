@@ -15,6 +15,10 @@
   type Media = { id: number; entry_id?: number; position?: number; original_name: string; relative_path?: string; media_type: string; width: number; height: number; tags: string[]; tag_revision: number };
   type Pending = ImportFile & { key: string; collection: number | null; done: boolean; rejected?: boolean; reason?: string };
   let collections = $state<Collection[]>([]);
+  let collectionsCursor = $state<number | null>(null);
+  let collectionsBusy = $state(false);
+  let collectionsError = $state('');
+  let collectionsEpoch = 0;
   let items = $state<Media[]>([]);
   let selected = $state('');
   let title = $state('');
@@ -34,6 +38,8 @@
   let activeKind = $state('');
   const tagTargets = $derived([...new Map(items.filter(item => chosen.has(item.id)).map(item => [item.id, { asset_id: item.id, revision: item.tag_revision }])).values()]);
   let safeMode = $state(false);
+  let statusReady = false;
+  let initializing = false;
   let pending = $state<Pending[]>([]);
   let picker: HTMLInputElement;
   let folderPicker: HTMLInputElement;
@@ -83,19 +89,41 @@
       message = items.length ? m.collector.page.showing(items.length) : filterTags.length || activeKind ? m.collector.page.noMatch : m.collector.page.empty;
     } catch (e) { if (current === epoch) { error = (e as Error).message; message = ''; } }
   }
-  onMount(() => {
-    void (async () => {
-      try {
-        const status = await api('status');
-        safeMode = status.safe_mode;
-        collections = await api('collections');
-        await load();
-        await refreshImports();
-      } catch (e) { error = (e as Error).message; message = ''; }
-    })();
-  });
+  async function loadCollections(more = false) {
+    if (more && (collectionsBusy || collectionsCursor === null)) return;
+    const current = ++collectionsEpoch;
+    const after = more ? collectionsCursor : null;
+    collectionsBusy = true; collectionsError = '';
+    try {
+      const page = await api(`collections?page=true${after === null ? '' : `&after=${after}`}`);
+      if (current !== collectionsEpoch) return;
+      // Retain loaded destinations, including a selected work outside the first page.
+      const merged = new Map(collections.map(c => [c.id, c]));
+      for (const c of page.items as Collection[]) merged.set(c.id, c);
+      collections = [...merged.values()].sort((a, b) => b.id - a.id);
+      collectionsCursor = page.next_cursor;
+    } catch (e) {
+      if (current === collectionsEpoch) collectionsError = (e as Error).message;
+    } finally {
+      if (current === collectionsEpoch) collectionsBusy = false;
+    }
+  }
+  async function initialize() {
+    if (initializing) return;
+    initializing = true;
+    error = '';
+    message = m.collector.loading;
+    try {
+      const status = await api('status');
+      safeMode = status.safe_mode;
+      statusReady = true;
+      await Promise.all([loadCollections(), load(), refreshImports()]);
+    } catch (e) { error = (e as Error).message; message = ''; }
+    finally { initializing = false; }
+  }
+  onMount(() => { void initialize(); });
   async function restored(result:{collection_id:number; entries:number}) {
-    collections=await api('collections');selected=String(result.collection_id);
+    await loadCollections();selected=String(result.collection_id);
     filterTags=[];filterInput='';kind='';activeKind='';chosen=new Set();
     catalogRevision++;
     await load();await refreshImports();
@@ -106,6 +134,7 @@
     try {
       creationKey ||= crypto.randomUUID();
       const created = await api('collections', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ title, request_key: creationKey }) });
+      ++collectionsEpoch; collectionsBusy = false;
       collections = [created, ...collections.filter(c => c.id !== created.id)]; selected = String(created.id); title = ''; creationKey = ''; await load();
     } catch (e) { error = (e as Error).message; message = ''; }
     finally { busy = false; }
@@ -207,7 +236,7 @@
       const count=operation?.registered_count ?? pending.filter(p=>p.done).length;
       const rejected=operation?.rejected_count ?? pending.filter(p=>p.rejected).length;
       const collectionsUsed=[...new Set(pending.map(p=>p.collection).filter(c=>c!==null))];
-      collections=await api('collections');
+      await loadCollections();
       if (!selected && collectionsUsed.length===1) selected=String(collectionsUsed[0]);
       await load();
       message = stopped
@@ -241,6 +270,12 @@
       <option value="">{m.collector.page.allMedia}</option>
       {#each collections as c}<option value={String(c.id)}>{c.title}</option>{/each}
     </select></label>
+    <button disabled={collectionsBusy || busy || tagBusy} onclick={() => loadCollections()}>{m.collector.page.refreshWorks}</button>
+    {#if collectionsCursor !== null}
+      <button disabled={collectionsBusy || busy || tagBusy} onclick={() => loadCollections(true)}>{m.collector.page.moreWorks}</button>
+    {/if}
+    {#if collectionsBusy}<span role="status">{m.collector.loading}</span>{/if}
+    {#if collectionsError}<span role="alert">{collectionsError}</span>{/if}
     <form onsubmit={(e) => { e.preventDefault(); void create(); }}>
       <input aria-label={m.collector.page.newWorkTitle} placeholder={m.collector.page.newWorkTitle} bind:value={title} oninput={() => { creationKey = ''; }} maxlength="200" disabled={busy || tagBusy} />
       <button disabled={busy || tagBusy || !title.trim()}>{m.collector.page.createWork}</button>
@@ -288,7 +323,7 @@
   <section class="selection" aria-label={m.collector.page.selectionLabel}>
     <button disabled={busy || tagBusy || !items.length} onclick={() => { chosen = new Set([...new Set(items.map(item => item.id))].slice(0, 100)); }}>{m.collector.page.selectShown}</button>
     <button disabled={busy || tagBusy || !chosen.size} onclick={() => { chosen = new Set(); }}>{m.collector.page.clearSelection}</button>
-    <button disabled={busy || tagBusy} onclick={refresh}>{m.collector.page.reloadList}</button>
+    <button disabled={busy || tagBusy} onclick={() => statusReady ? refresh() : initialize()}>{m.collector.page.reloadList}</button>
   </section>
   {#if tagTargets.length || tagBusy}
     <TagEditor targets={tagTargets} currentTags={tagTargets.length === 1 ? items.find(item => item.id === tagTargets[0].asset_id)?.tags ?? [] : []}

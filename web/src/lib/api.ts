@@ -54,8 +54,10 @@ export async function uploadPost(file: File): Promise<Post> {
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
     // `error` is the envelope's slug (api/errors.py); callers branch on it, never on the sentence.
+    // `context` carries what the refusal knows; a duplicate names the post that already holds the file.
+    const detail = (err as { detail?: { error?: string; context?: Record<string, unknown> } })?.detail;
     throw Object.assign(new Error(apiErrorMessage(err, `Upload error: ${res.status}`)),
-      { status: res.status, error: (err as { detail?: { error?: string } })?.detail?.error });
+      { status: res.status, error: detail?.error, context: detail?.context });
   }
   return res.json();
 }
@@ -66,14 +68,14 @@ export async function fetchPoolHeader(poolId: number): Promise<Omit<PoolSummary,
   return res.json();
 }
 
-export async function createVerifyPoolFromPosts(
+export async function createPoolFromPosts(
   name: string,
   postIds: number[],
 ): Promise<PoolSummary> {
   const created = await fetch(`${MUT}/pools`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ names: [name], verify_status: 'pending' }),
+    body: JSON.stringify({ names: [name] }),
   });
   if (!created.ok) {
     const err = await created.json().catch(() => ({}));
@@ -108,25 +110,6 @@ export async function fetchPools(
   const res = await fetch(`${BASE}/api/pools?${params}`, { signal });
   if (!res.ok) throw Object.assign(new Error(`API error: ${res.status}`), { status: res.status });
   return res.json();
-}
-
-export async function setPoolVerifyStatus(
-  poolId: number,
-  status: 'pending' | 'verified' | null,
-  headCandidate?: { tag: string; reason: string },
-): Promise<void> {
-  const body: Record<string, unknown> = { status };
-  // head_candidate (0075): tagger_head_candidate への自動登録フック。人間が
-  // 検証プールを見た「今」しか判断できない情報(head化する価値があるか)なので、
-  // verify 切替の同一アクションに乗せる — 別途「後で登録する」手順を作らない
-  // (user指示「この機構は自動化すること」)。
-  if (headCandidate) body.head_candidate = headCandidate;
-  const res = await fetch(`${MUT}/pools/${poolId}/verify-status`, {
-    method: 'PATCH',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
-  if (!res.ok) throw new Error(`API error: ${res.status}`);
 }
 
 export async function reorderPoolPosts(poolId: number, postIds: number[]): Promise<void> {
@@ -167,8 +150,8 @@ export async function setPoolCover(poolId: number, coverPostId: number): Promise
   }
 }
 
-export async function deletePost(id: number): Promise<void> {
-  const res = await fetch(`${MUT}/post/${id}`, { method: 'DELETE' });
+export async function deletePost(id: number, signal?: AbortSignal): Promise<void> {
+  const res = await fetch(`${MUT}/post/${id}`, { method: 'DELETE', signal });
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
     throw new Error(apiErrorMessage(err, `Delete error: ${res.status}`));
@@ -325,12 +308,14 @@ export async function patchPost(
   id: number,
   version: number,
   tags: string[],
-  extra?: { safety?: string; source?: string }
+  extra?: { safety?: string; source?: string },
+  signal?: AbortSignal
 ): Promise<Post> {
   const res = await fetch(`${MUT}/post/${id}?localize=true`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ version, tags, ...extra }),
+    signal,
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
@@ -357,11 +342,13 @@ export async function removeTagBulk(
   return res.json();
 }
 
+/** state='absent' (2026-11-15): 付いていないタグを「無い」と確定する (負例 GT + タガーの付け直し不可)。
+ *  付いている post は skipped — 外すのは removeTagBulk の仕事。undo は state=null。 */
 export async function putTagPinBulk(
   tag: string,
-  state: 'present' | null,
+  state: 'present' | 'absent' | null,
   postIds: number[]
-): Promise<{ tag: string; locked?: number; unlocked?: number; skipped: number }> {
+): Promise<{ tag: string; locked?: number; absent?: number; unlocked?: number; skipped: number }> {
   const res = await fetch(`${MUT}/posts/tag-pin-bulk`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
@@ -377,12 +364,14 @@ export async function putTagPinBulk(
 export async function putTagPin(
   id: number,
   tag: string,
-  state: 'present' | null
+  state: 'present' | null,
+  signal?: AbortSignal
 ): Promise<{ post_id: number; tag: string; pinned: string | null }> {
   const res = await fetch(`${MUT}/post/${id}/tag-pin`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ tag, state }),
+    signal,
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
@@ -395,10 +384,10 @@ export async function putTagPin(
 
 /** 一括編集ビュー用: post 群の全 pin をまとめて取得 ({post_id: {tag: 'present'|'absent'}}) */
 export async function fetchPostPinStates(
-  ids: number[]
+  ids: number[], signal?: AbortSignal
 ): Promise<Record<number, Record<string, 'present' | 'absent'>>> {
   if (!ids.length) return {};
-  const res = await fetch(`${BASE}/api/post-pin-states?ids=${ids.join(',')}`);
+  const res = await fetch(`${BASE}/api/post-pin-states?ids=${ids.join(',')}`, { signal });
   if (!res.ok) return {};
   const d = await res.json();
   return d.states ?? {};

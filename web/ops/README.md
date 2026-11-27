@@ -23,3 +23,20 @@ observation. The timer observes every fifteen minutes. The library-wide backup
 itself remains manual; the existing collector-only backup timer has a different
 scope. UI fixture tests can set the server-only `KURA_BACKUP_STATUS_FILE` to an
 isolated receipt file. Never point it at a full recovery manifest or env file.
+
+# Edge request timing
+
+The edge (`edge-nginx.conf`) logs every request with `log_format kura_timed`: time, status,
+method, path without the query string, `request_time`, `upstream_response_time`, bytes,
+protocol, client address and user agent. `request_time` includes the client's network;
+`upstream_response_time` is the web/API's own share.
+
+`kura-edge-log.timer` runs `web/scripts/edge-log.py rotate` every night at 04:10: the log is
+renamed into `logs/archive/`, nginx reopens it (SIGUSR1), a report is written to
+`~/.local/state/kura-edge/reports/` (`latest.json` is the newest) and the archive is gzipped.
+Archives and reports older than 14 days are removed. Read a report with
+`python3 web/scripts/edge-log.py report <archive.log.gz>`; the browser table is what people
+wait for, the worker table is taggers and import workers.
+
+Install both units from this directory into `~/.config/systemd/user/`, then
+`systemctl --user daemon-reload && systemctl --user enable --now kura-edge-log.timer`.

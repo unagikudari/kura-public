@@ -50,7 +50,7 @@ distribution's `nodejs` package stays on 22.22.1), and the rest from the distrib
 
 ```bash
 sudo apt update
-sudo apt install git postgresql-18 postgresql-18-pgvector python3-venv ffmpeg
+sudo apt install git postgresql-18 postgresql-18-pgvector python3-venv ffmpeg iproute2
 sudo snap install node --classic --channel=24/stable
 ```
 
@@ -61,6 +61,7 @@ git clone https://github.com/unagikudari/kura-public.git ~/kura && cd ~/kura
 
 # 1. The API's Python environment
 python3 -m venv ~/.local/share/kura-api/venv
+~/.local/share/kura-api/venv/bin/pip install -U "pip>=26.2.2"   # pip's bundled certifi (GHSA-6q48-6c7w-9gw2)
 ~/.local/share/kura-api/venv/bin/pip install -r api/requirements.lock
 
 # 2. Settings: writes api/env and web/.env.server (0600) with every secret generated.
@@ -290,6 +291,7 @@ once, from `~/kura`:
 # 1. The tagger's Python environment. torch and torchvision come from the same index — the CPU
 #    build here; for an NVIDIA GPU use the CUDA index that pytorch.org names instead.
 python3 -m venv ~/.local/share/kura-tagger/venv
+~/.local/share/kura-tagger/venv/bin/pip install -U "pip>=26.2.2"   # pip's bundled certifi (GHSA-6q48-6c7w-9gw2)
 ~/.local/share/kura-tagger/venv/bin/pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
 ~/.local/share/kura-tagger/venv/bin/pip install -r tagger/requirements.txt
 

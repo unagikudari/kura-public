@@ -1,0 +1,130 @@
+# Adversarial Review: Kura Dashboard Overview (`1302822e38aee9e974fd94ff46b846e70ca9348b`)
+
+> **Review Scope & Epistemic Constraints:**
+> - **Evidence base:** Inline visible parent DOM text and the three provided Svelte components (`ReviewQueues` / actions, `Runtime` summary, `ReviewComparison`).
+> - **Unverified surfaces:** Screenshots (390px / 1280px) are unavailable in this session, and the legacy `<iframe>` below the parent overview panels is not captured inline. Any claim depending on actual rendered pixel layout, visual hierarchy, contrast, or the contents of the legacy iframe is explicitly marked **unverified**.
+
+---
+
+## Summary Scorecard
+
+| # | ID | Criterion | Grade | Key Reason |
+|---|---|---|---|---|
+| 1 | `situation` | 状況が一目で分かる | **partial** | Top-level human request, production release, hold status, and experiment state are well-ordered, but the legacy iframe below the parent panels is unseen and its impact on whole-page status clarity is unverified; also the background 5-min observer is invisible. |
+| 2 | `consistency` | 矛盾がない | **pass** | Candidate evaluation (`未公開 · この実験は完了・品質は未承認`), production (`release 15`), and API hold (`4タグ: ... smegma`) are cleanly separated without contradicting each other. |
+| 3 | `duplication` | 重複がない | **partial** | Within the Svelte components, duplication is low, though the active `smegma` request (`341枚`) appears in both the top callout and the first row of the table with slightly different CTA labels (`この341枚を確認` vs `未判定の341枚へ`), and duplication against the unseen legacy iframe below cannot be ruled out. |
+| 4 | `completeness` | 必要な情報が揃う | **partial** | The `smegma` experiment line shows `観測 2026/11/17 3:34:51` and `nodeb CPU · 本番と同じ6GiB枠で検証`, but omits *what* the experiment actually completed (e.g., 16-image resource check, peak 4.68 GiB, 7,000 candidate scores ready) and *who/what* owns the next step on that row, leaving the user to piece together why `smegma` is both "experiment completed" and "waiting for 341 judgments". |
+| 5 | `brevity` | 初期表示が少なく明確 | **partial** | `比較グラフ`, `停止の理由`, `集計と公開について`, and `自動学習の記録（過去）` are properly tucked behind `<details>`, but the full 5-row table (`確認セットの一覧`) and its filter/sort toolbar are expanded by default above the fold / in initial view alongside multiple multi-sentence policy notes. |
+| 6 | `actionability` | 次の行動が具体的 | **pass** | The primary CTA (`この341枚を確認`) is first, explicit about who acts next (human judges 341 images; agent handles post-judgment aggregation/qualification/publication), and explains how to handle ambiguous images (`迷う画像は未判定のままで構いません`). |
+| 7 | `exploration` | 比較・探索ができる | **partial** | Filter (`全セット` / `確認依頼` / `不一致あり` / `未判定あり`), tag search (`type="search"`), sort (4 modes), visible count (`5/5セット`), and reset (`表示をリセット`) all work in code, **but** selecting `並び順: タグ名順` (`sort === 'tag'`) fails to disable priority/remaining tie-breaking cleanly when resetting (`sort !== 'priority'` shows reset button, which is good), and more importantly, the table's `不一致{difference(q)}枚` link only renders if `disagreement_url` passes `disagreementLink()`, while inside `ReviewComparison` (`compact` mode in the table), the `不一致の{disagreements}枚を見る（任意）` link is hidden (`#if !compact`). In the visible text, `不一致9枚` and `不一致2枚` are plain text or unverified whether `disagreement_url` was supplied. |
+| 8 | `graphics` | 図が判断を助ける | **partial** | The top progress bar (`0 / 341枚`) clearly labels judged count (`判定済み 0 / 341枚`), and `candidate_evaluation` hides comparison scores (`先入観を防ぐため比較は非表示`) to prevent bias. However, inside `ReviewComparison.svelte`, `<div class="bar">` uses `flex:${p.value}` with 5 categories including `未比較` (`remaining`), mixing *measurement coverage* (`未比較`) and *agreement/disagreement breakdown* (`tp`, `tn`, `fp`, `fn`) on the same 100%-width bar. |
+| 9 | `freshness` | 鮮度と不確実性が分かる | **partial** | `Runtime.svelte` has staleness logic (`experimentLive`, `snapshotOld`), scopes terminal state (`この実験は完了・品質は未承認`), and marks past learning (`自動学習の記録（過去）`). However, when `x.phase === 'completed'`, the condition `x.phase === 'completed' || (experimentLive && !snapshotOld && !error)` **always displays `この実験は完了・品質は未承認` without indicating that the observation (`3:34:51`) is ~50 minutes old** relative to `4:24:21`, whereas non-completed phases get `最後の報告: ...（過去）`. Also, `Runtime` lacks its own visible fetch timestamp (`observed_at` from top-level summary is validated in JS but never rendered!). |
+| 10 | `accessibility` | 操作しやすい | **unverified** | Code shows good semantic hooks (`min-height: 44px`, `aria-label`, `<details>/<summary>`, text labels alongside color swatches in `ReviewComparison`, mobile `@media(max-width:700px)` block layout with `data-label`), **but** without screenshots or live DOM inspection of the parent shell + legacy iframe, actual mobile overflow, focus order, contrast, and keyboard operability cannot be verified. |
+
+---
+
+## Detailed Criterion-by-Criterion Evaluation
+
+### 1. `situation` — 状況が一目で分かる (`partial`)
+- **What works:**
+  - The component order puts `あなたへの確認依頼` first, immediately surfacing `あなたの確認待ち: smegma · 新候補の評価` (`判定済み 0 / 341枚`) before runtime plumbing.
+  - `本番と改善処理` compactly separates active production (`release 15`), active safety holds (`機械による付与停止: 4タグ: bar_censor / condom_on_penis / mosaic_censoring / smegma`), and the offline experiment (`smegma の実験: 未公開 · この実験は完了・品質は未承認`).
+- **What falls short / remains unverified:**
+  - **Unseen legacy iframe:** Because the legacy iframe below the parent overview still renders old tables/graphs (not captured inline), a user scrolling the page may still encounter competing status displays.
+  - **Disconnect between experiment and review request:** In `本番と改善処理`, `smegma の実験` says `この実験は完了・品質は未承認` (`nodeb CPU · 本番と同じ6GiB枠で検証`), which does not make clear at a glance whether this completed experiment is the *source* of the 7,000 candidate scores backing the `smegma` 341-image review queue above, or an unrelated resource test.
+
+### 2. `consistency` — 矛盾がない (`pass`)
+- **Evidence:**
+  - Candidate evaluation (`smegma · 新候補の評価`, `未公開 · この実験は完了・品質は未承認`) is clearly distinguished from production (`本番の選択: release 15`) and from API tag blocking (`機械による付与停止: ... smegma`).
+  - Terminal experiment status is explicitly scoped to `この実験は完了・品質は未承認` rather than claiming global system idle or model qualification.
+  - The three `smegma` queues in `確認セットの一覧` are differentiated by purpose and status (`新候補の評価 · 確認依頼` 341枚, `固定確認セット · 任意の確認` 140枚/300枚, `判定境界の確認 · 受領済み` 0枚/8枚) and accompanied by an explicit overlap disclaimer (`境界セットは固定確認セットと重複します。件数は合計しません。`).
+
+### 3. `duplication` — 重複がない (`partial`)
+- **Evidence:**
+  - **Parent vs. Table duplication:** The active request for `smegma` (`新候補の評価`, `341枚`) is presented in `.request-section` (`この341枚を確認`) and immediately repeated as Row 1 of `確認セットの一覧` (`未判定の341枚へ`). While having requests in the full inventory table is understandable for filtering, showing both expanded simultaneously with slightly different link text (`この341枚を確認` vs. `未判定の341枚へ`) creates mild redundancy.
+  - **Parent vs. Legacy iframe:** Whether the legacy iframe below duplicates the tagger queues, hold lists, or release status is **unverified** (unseen iframe).
+
+### 4. `completeness` — 必要な情報が揃う (`partial`)
+- **Evidence:**
+  - **Review Request section (`あなたへの確認依頼`):** Covers target (`smegma · 新候補の評価`), state (`判定済み 0 / 341枚`), reason/scope (`今回のセットだけの判定数です`), owner of next step (`判定後の集計・改善と公開可否の確認は担当エージェントが進めます`), and entry point (`この341枚を確認`).
+  - **Runtime section (`本番と改善処理`) gaps:**
+    1. **Top-level `data.observed_at` is validated but never rendered:** In `Runtime.svelte`, `Date.parse(d.observed_at)` is checked in `loadSnapshot()`, and `fetchedAt` is shown at the very bottom of the `ReviewQueues` table (`最終取得 2026/11/17 4:24:21`), but `本番と改善処理` itself never renders when its summary snapshot was fetched or observed overall—only `x.observed_at` (`3:34:51`) on the experiment row and `data.learning.observed_at` inside the collapsed `<details>`.
+    2. **Experiment row lacks outcome & next-step link:** `smegma の実験` shows `未公開 · この実験は完了・品質は未承認` and `nodeb CPU · 本番と同じ6GiB枠で検証`, but does not state *why* quality is unapproved or *what* unblocks it (namely: waiting on the 341 human judgments above / agent qualification).
+
+### 5. `brevity` — 初期表示が少なく明確 (`partial`)
+- **Evidence:**
+  - **Good progressive disclosure:** `集計と公開について`, `停止の理由`, `自動学習の記録（過去）`, and all per-row `比較グラフ` blocks ( plus `採点情報を開く` inside them) are inside `<details>` elements.
+  - **Remaining initial-view bulk:** The prompt notes *"table/filter/sort/graphs behind details"* as a design goal, yet in `ReviewQueues.svelte`, `<section class="list-section" aria-label="確認セットの受領と比較">` (containing all filter controls, all 5 rows including optional/completed sets like `horse_penis`, `knotted_penis`, old `smegma` sets, and 3 bottom footnote paragraphs) is rendered **fully expanded** in initial view, not inside a `<details>` disclosure or secondary view. For a user whose only required task is `この341枚を確認`, the 5-row comparison table and its footnotes add substantial text weight to the initial overview screen.
+
+### 6. `actionability` — 次の行動が具体的 (`pass`)
+- **Evidence:**
+  - **Clear actor & trigger:** `あなたの確認待ち: smegma · 新候補の評価` with primary link `この341枚を確認` (`href={q.unjudged_url}`).
+  - **Clear division of labor:** `判定後の集計・改善と公開可否の確認は担当エージェントが進めます。`
+  - **Clear handling of edge cases:** `迷う画像は未判定のままで構いません。「なし」には数えず、評価できた範囲と不足を分けて扱います。`
+  - **Secondary actions clearly marked optional:** Non-requested rows in the table explicitly append `（任意）` (`未判定の263枚を確認（任意）`), preventing the human reviewer from wasting time on optional sets (`horse_penis`, `knotted_penis`, old `smegma` 140枚) thinking they are required blockers.
+
+### 7. `exploration` — 比較・探索ができる (`partial`)
+- **Evidence:**
+  - **Working controls:** Filter (`all`, `requests`, `disagreement`, `remaining`), tag search (`input type="search"`), sort (`priority`, `remaining`, `disagreement`, `tag`), active count (`5/5セット`), and conditional reset button (`表示をリセット`) are all present and wired via `$derived`.
+  - **Flaws in exploration:**
+    1. **Blind / unmeasured sets under `disagreement` sort:** When `sort === 'disagreement'`, `(difference(b) ?? -1) - (difference(a) ?? -1)` puts `null` difference rows at the bottom, which is fine, but the table cell for `smegma (160枚比較 · 不一致9枚)` and `smegma (8枚比較 · 不一致2枚)` only links `不一致X枚` if `disagreementLink(q.comparison)` is truthy. Meanwhile, inside `ReviewComparison.svelte`, `{#if !compact && disagreements && safeLink}<a href={safeLink}>不一致の{disagreements}枚を見る（任意）</a>{/if}` suppresses the disagreement link whenever `compact` is `true` (which is how the table invokes `<ReviewComparison ... compact/>`!).
+    2. **Overview refresh button not in provided components:** The prompt notes *"One overview refresh button now updates summaries+readonly overview panels, retaining other category filters/forms."* In the visible text, `概要を更新` appears at the top, and both Svelte components export `refresh()` while preserving `filter`, `search`, and `sort` `$state` variables across refreshes (`loadSnapshot()` only updates `queues`, `error`, `fetchedAt`).
+
+### 8. `graphics` — 図が判断を助ける (`partial`)
+- **Evidence:**
+  - **Strengths:**
+    - `progress` in `.request-status` is explicitly scoped to `判定済み 0 / 341枚` (human completion progress, not model accuracy).
+    - `candidate_evaluation` with `remaining > 0` withholds comparison graphics (`先入観を防ぐため比較は非表示`), preventing anchoring bias on the 341 blind images.
+    - `knotted_penis` (0 compared) shows `未測定` rather than `0%` or `不一致0枚`.
+  - **Weakness in `ReviewComparison.svelte`:**
+    - The stacked horizontal bar (`<div class="bar">`) plots 5 segments: `ありで一致` (`tp`), `なしで一致` (`tn`), `モデルだけが「あり」` (`fp`), `人だけが「あり」` (`fn`), and `未比較` (`remaining`). Because `flex:${p.value}` scales across `total` (e.g., for `horse_penis`, 263 of 300 are `未比較`, so 88% of the bar is gray `未比較` and the 37 compared images are squeezed into 12% of the bar), it visually conflates *review coverage* with *model agreement rate* in a single bar.
+    - Visual rendering of the bars and any graphs inside the unseen legacy iframe are **unverified**.
+
+### 9. `freshness` — 鮮度と不確実性が分かる (`partial`)
+- **Evidence:**
+  - **Strengths:**
+    - Error handlers explicitly guard against false-idle interpretation: `確認依頼を取得できません。「作業なし」とは判断できません。` and `比較結果を確認できません。一致・改善済みとは判断できません。`
+    - Client fetch time is shown with timezone/device context: `最終取得 2026/11/17 4:24:21（この端末の時刻）`.
+    - `自動学習の記録（過去）` clearly labels stale learning state.
+  - **Weaknesses:**
+    1. **50-minute-old completed experiment shown without a "past" qualifier:** `smegma の実験` was observed at `2026/11/17 3:34:51`, while the page is viewed at `4:24:21` (~50 minutes later). Because `Runtime.svelte` writes:
+       `{x.phase==='completed' || (experimentLive && !snapshotOld && !error) ? labels[x.phase] : ...}`
+       a `completed` experiment bypasses the `experimentLive` check (`age_seconds <= 120`) and displays `この実験は完了・品質は未承認` identically whether it finished 5 seconds ago or 5 days ago, relying entirely on the user reading `<small>観測 2026/11/17 3:34:51</small>`.
+    2. **Missing runtime fetch timestamp:** Unlike `ReviewQueues.svelte` (which prints `最終取得 2026/11/17 4:24:21`), `Runtime.svelte` never displays when `/api/tagger-dashboard/summary` was last fetched (`d.observed_at` is parsed in validation and discarded).
+    3. **5-minute background observer invisibility:** The prompt notes a 5-minute read-only observer is running in the background; nothing in the UI clarifies its existence or that UI counts come from a 30s live DB read rather than the 5-min observer.
+
+### 10. `accessibility` — 操作しやすい (`unverified`)
+- **Code-level evidence (positive):**
+  - Interactive targets (`a`, `button`, `input`, `select`, `summary`) have `min-height: 44px`.
+  - Color is not the sole carrier of meaning in `ReviewComparison.svelte`: the color bar is `aria-hidden="true"` and followed by an explicit text list (`<ul><li>...{p.label}<strong>{p.value}枚</strong></li></ul>`).
+  - Responsive CSS (`@media(max-width:700px)`) converts table rows into stacked blocks with `td[data-label]::before` prefixes.
+- **Why `unverified`:**
+  - Per instructions, no screenshots (390px / 1280px) are available to verify actual layout wrapping, touch target overlap, contrast ratios of `var(--accent)` / `var(--surface)` / `#8a8a8a`, or keyboard/screen-reader behavior across the parent shell and the unseen legacy iframe.
+
+---
+
+## Concrete Improvement Priorities (Ranked)
+
+1. **[P1 — Brevity & Focus] Collapse or demote optional/historical sets in `確認セットの一覧` when an active `確認依頼` exists:**
+   - Currently, the user has 1 required task (`smegma · 新候補の評価`, 341 images), which is already shown in `あなたへの確認依頼`. Yet the 5-row `確認セットの一覧` defaults to `filter = 'all'`, immediately listing 4 optional/completed sets (`horse_penis`, `knotted_penis`, old `smegma` sets) and 3 footnote paragraphs.
+2. **[P2 — Completeness & Freshness in `Runtime.svelte`] Connect `smegma の実験` to the next action and render `data.observed_at`:**
+   - Explain on the completed experiment line *what* awaits next (e.g., `品質は未承認（341枚の人手判定待ち）`) and render the summary's `observed_at` timestamp (which is currently validated in `loadSnapshot()` and thrown away).
+3. **[P3 — Graphics Clarity in `ReviewComparison.svelte`] Separate `未比較` (uncompared count) from the agreement breakdown bar:**
+   - Make the color bar represent 100% of *compared* images (`tp + tn + fp + fn` = `comparison.compared`), while stating `比較済み {comparison.compared} / {total}枚（未比較 {comparison.remaining}枚）` in text or a separate coverage track, so a mostly-unjudged set like `horse_penis` (37/300 compared) still has a readable agreement/disagreement bar.
+
+---
+
+## Single Next Small Improvement (Recommended)
+
+### Collapse `確認セットの一覧` (or default-filter/wrap non-requested sets in `<details>`) so initial view focuses on the active request and runtime summary
+
+- **Why this one change first:**
+  - It directly resolves the prompt's explicit structural target (*"Current human request FIRST above runtime, 341 remaining confirmed 0 judged, five total sets, table/filter/sort/graphs behind details"*) and improves both **`brevity`** and **`duplication`** in one small, self-contained edit to `ReviewQueues.svelte`.
+  - Right now, `比較グラフ` is behind `<details>`, but the 5-row `確認セットの一覧` table and its filter/sort toolbar are still fully open on initial load, repeating `smegma (341枚)` right below the top card and confronting the reviewer with 4 other sets (`horse_penis`, `knotted_penis`, etc.) they don't need to touch.
+- **Concrete change (`ReviewQueues.svelte`):**
+  - Wrap the body of `<section class="list-section">` in a `<details>` element (e.g., `<details class="sets-details"><summary><h2>確認セットの一覧（全{queues.length}セット · 任意の確認・比較）</h2></summary> ... </details>`), **or** keep the `<details>` closed by default whenever `requests.length > 0` (opening automatically if `requests.length === 0`).
+- **User benefit:**
+  - On initial load, the user sees **only**:
+    1. **What to do right now:** `あなたへの確認依頼` (`smegma · 新候補の評価`, `0 / 341枚`, `この341枚を確認`).
+    2. **Current system state:** `本番と改善処理` (`release 15`, `4タグ` on hold, `smegma の実験` completed).
+    3. **A single 44px disclosure row** (`確認セットの一覧（全5セット）`) to open the filter/sort/search table and comparison graphs whenever they want to explore optional or historical sets.

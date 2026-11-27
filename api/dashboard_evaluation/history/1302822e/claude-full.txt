@@ -1,0 +1,37 @@
+# Adversarial review: Kura dashboard overview @ 1302822e
+
+**Verdict: 3 pass, 7 partial, 0 fail.** The legacy iframe, the opened comparison graphs, the image-review destination and focus styling were not seen and are unverified. Everything else is graded from the four screenshots and the inline source.
+
+The human request does sit first, above runtime, and the top of the page is good at both 390 and 1280. The main weakness is that the page never says when the user is finished.
+
+| # | Criterion | Grade | Evidence |
+|---|---|---|---|
+| 1 | situation | **pass** | The request card is first, with `判定済み 0 / 341枚` and one button. Runtime shows `release 15`, the 4 held tags, and `未公開 · この実験は完了・品質は未承認`. Completion is scoped to this experiment and never claims global idle. The `ノード 5` badge has no unit. |
+| 2 | consistency | **partial** | `迷う画像は未判定のままで構いません` conflicts with the mechanics: `requested()` is `remaining>0`, so the `あなたの確認待ち` card never clears if any image is skipped. The details text `未判定が残る間は全体の品質を確定しません` pulls the other way. `本番と同じ6GiB枠で検証` reads as validation although it was only a resource observation. Section `aria-label`s differ from the visible `h2`s. |
+| 3 | duplication | **partial** | At 1280 the same call to action appears twice in one viewport: `この341枚を確認` on the card and `未判定の341枚へ` in the first table row. Four always-visible disclaimer notes overlap with the details text. Whether the iframe repeats these tables is unverified. |
+| 4 | completeness | **partial** | The request card has no timestamp; `最終取得` sits only below the table, many screens away at 390. The summary's `observed_at` is validated but never rendered, so `release 15` and the holds are undated. The experiment line shows no owner or next step. Nothing says the 341 all need fresh labels and earlier judgments do not carry over. |
+| 5 | brevity | **partial** | The first screen is tight. Internal terms still show by default: `固定モデル`, `固定確認セット`, `予測ありの確認`, `判定境界`, `nodeb CPU · 6GiB枠`. Three rows are all named `smegma`, told apart only by 12px subtext. |
+| 6 | actionability | **partial** | Who, what and where to start are clear. What unblocks progress is not: there is no completion condition and no way to signal "done" when ambiguous images are skipped. With 341 images, no chunking and no stop condition, the burden feels open-ended. |
+| 7 | exploration | **pass** | The source has a tag search, a 4-way filter, a 4-way sort, a `5/5セット` count and a conditional `表示をリセット`. The blind set shows no scores and sorts last under the disagreement sort, so nothing leaks. The reset button was not seen in a screenshot. |
+| 8 | graphics | **partial** | The progress bar at 0 renders as a hairline that looks like a divider, in both screenshots. The comparison graph code is sound: `未比較` is its own grey segment, `未測定` is text rather than 0, and the legend carries labels and counts. The graphs were closed in every screenshot, so their rendering is unverified, and the two "agree" greens (`#278265`, `#648e80`) are close. |
+| 9 | freshness | **pass** | Stale or unreachable data produces `最後の報告: …（過去）・現在の稼働は未確認` plus an alert after 120s. Learning history is collapsed and labelled `（過去）`. A fetch failure says `「作業なし」とは判断できません`. Prior-set comparisons are disclaimed as not progress, accuracy or release verdict. |
+| 10 | accessibility | **partial** | Good: 44px targets, native controls, explicit table roles that survive the mobile `display:block`, `data-label` prefixes, a labelled progress bar, and no colour-only meaning. Problems at 390: the sticky nav and header take about 245 of 900px and clip row text beneath them; the second link in each row wraps with a stray 12px indent; each row is about 310px tall. Focus visibility is unverified. |
+
+## Improvement priority
+
+1. State the completion condition (criteria 2, 6, 5).
+2. Show the fetch time on the request card and render the summary's `observed_at` (criterion 4).
+3. Drop the first table row's duplicate link, or replace it with `上の依頼を参照` (criterion 3).
+4. Reduce or unstick the mobile header (criterion 10).
+5. Give the 0-state progress bar a visible track (criterion 8).
+6. Reword `検証` to `メモリ観測` (criterion 2).
+
+## The one next small improvement
+
+Replace the two always-visible notes under the card with a single line that says when the user is done, and move the set-scoping sentence into `集計と公開について`:
+
+> 迷う画像は飛ばして構いません（「なし」扱いにはなりません）。最後まで一度見終えたら完了です。残りの扱いと公開可否は担当エージェントが進めます。
+
+This removes the "must I reach 341/341?" doubt, which is the largest burden on the user, and it cuts visible text by about a third. It is copy-only.
+
+The wording is only safe if the agent really does proceed on partial coverage. If that policy does not hold, state the real threshold in that line instead.

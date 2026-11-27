@@ -1,0 +1,84 @@
+{
+  "reviewer": "Claude",
+  "reviewed_revision": "8a8702e0417a8105395d32d5c5ea9420b57d10cc",
+  "method": "実CLIの独立レビュー。390/1280の実画面4枚・可視テキスト・ソースを閲覧。操作は未実施。",
+  "criteria": [
+    {
+      "id": "situation",
+      "verdict": "pass",
+      "assessment": "pass",
+      "evidence": "At 1280 the first viewport shows all three: action needed (「あなたの確認待ち」 card with CTA), running (smegma experiment bar 13/16), stopped (「機械による付与停止 4タグ」). At 390 the request card and the start of the runtime section fit.",
+      "nextfix": "Low: the nav badge 「ノード 5」 has no unit, so it is unclear whether it means five nodes or five problems."
+    },
+    {
+      "id": "consistency",
+      "verdict": "partial",
+      "assessment": "partial",
+      "evidence": "Two contradictions, detailed below: the experiment phase label versus what is actually running, and \"you may leave images\" versus \"evaluation is on hold while any remain\".",
+      "nextfix": "High: the completion rule. Medium: the phase label."
+    },
+    {
+      "id": "duplication",
+      "verdict": "partial",
+      "assessment": "partial",
+      "evidence": "Three manual reload buttons sit in one viewport (「詳細集計を再読み込み」「判定数を更新」「状況を更新」) on top of the 30-second auto-refresh. The same 341 link appears twice (「この341枚を確認」 and 「未判定の341枚へ」). \"Unjudged does not mean quality is settled\" is said three times (card note, 「集計と公開について」, table footnote).",
+      "nextfix": "Medium: one reload control; merge the caveats into one place."
+    },
+    {
+      "id": "completeness",
+      "verdict": "partial",
+      "assessment": "partial",
+      "evidence": "Target, state and timestamps are present. Missing: why it is 0/341, who owns the experiment and the next step, and per-tag reason and start date for the holds.",
+      "nextfix": "High: the 0/341 explanation."
+    },
+    {
+      "id": "brevity",
+      "verdict": "partial",
+      "assessment": "partial",
+      "evidence": "The order is right and graphs are behind details. Internal terms remain in the default view: 「基準照合」「配備前審査」「固定モデル」「release 15」「6GiB枠」「工程」「評価履歴を登録済み」. The stale 「自動学習の履歴」 line takes a default row to say \"unknown\".",
+      "nextfix": "Medium: move the learning-history line into details when it is not fresh."
+    },
+    {
+      "id": "actionability",
+      "verdict": "partial",
+      "assessment": "partial",
+      "evidence": "Who (「あなた」), what and the entry point are clear. What unblocks progress is not: 「判定が揃うと」 is undefined given that leaving images is allowed, and the next step names no actor.",
+      "nextfix": "High: same fix as criterion 2."
+    },
+    {
+      "id": "exploration",
+      "verdict": "pass",
+      "assessment": "pass",
+      "evidence": "Tag search, four filters, four sorts, an 「N/5セット」 count, a conditional 「表示をリセット」 and an empty-state message are all present.",
+      "nextfix": "Low: under tag sort, the three smegma rows fall back to hash order."
+    },
+    {
+      "id": "graphics",
+      "verdict": "partial",
+      "assessment": "partial",
+      "evidence": "The request bar is labelled 「判定済み 0 / 341枚」, so it reads as a count, not quality. The comparison bar has an explicit grey 「未比較」 segment and counts in the legend, so unmeasured is not shown as zero. Weak points: the two agreement greens (`#278265`, `#648e80`) are near-identical, the table has no per-set visual, and at 390 the experiment bar wraps away from its 「13/16 工程」 label.",
+      "nextfix": "Medium: a small judged/total bar in the 「未判定」 column."
+    },
+    {
+      "id": "freshness",
+      "verdict": "pass",
+      "assessment": "pass",
+      "evidence": "The stale learning line is demoted to 「最後の報告…（過去）・現在の稼働は未確認」 with its 1:15:13 observation time. The experiment falls back to the same wording after 120 seconds or on error. Fetch failure says 「「作業なし」とは判断できません」.",
+      "nextfix": "Low: add relative age (「2時間前」); the request card's fetch time sits only at the bottom of the table."
+    },
+    {
+      "id": "accessibility",
+      "verdict": "pass",
+      "assessment": "pass",
+      "evidence": "Controls are native elements with 44px targets and underlined links. The 390 layout turns rows into labelled blocks (「未判定 ·」「比較 ·」「画像 ·」) with table roles restored. Status is always carried by text, not colour alone.",
+      "nextfix": "Low: at 390 the sticky header and nav take about 245 of 900px."
+    }
+  ],
+  "limitations": [
+    "レビュー対象は8a8702e0の概要親画面。今回の修正・埋め込み画面・モデル品質の合格ではない。",
+    "原文は独立reviewerの実回答。要約・照合注記は実装者が作成。",
+    "Claude提案の「過去の判定は引き継ぎません」は採用しない。旧160枚は学習に使われ、新341枚は別画像の確認セット。",
+    "Geminiのタグ名順の不具合指摘は括弧の読み違い。既存ブラウザーcontrolで依頼先頭とタグ順を区別して検証。",
+    "Geminiの5分周期は別の証跡observer。画面の判定数は30秒ごとのGETで現在DBを読む。"
+  ]
+}

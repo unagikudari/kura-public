@@ -4,6 +4,7 @@
   import Header from '#lib/components/Header.svelte';
   import { IDENTITY_CATEGORIES, IDENTITY_DISPLAY_CONTEXT, IDENTITY_DISPLAY_COOKIE, readIdentityDisplay, type IdentityDisplay } from '#lib/identityDisplay.ts';
   import { t } from '#lib/i18n/index.ts';
+  import { HOVER_PREVIEW_CHOICES, HOVER_PREVIEW_DEFAULT, hoverPreviewMs } from '#lib/hoverPreview.ts';
   const m = t();
   const sm = m.pages.settings;
   const preferences = getContext<Writable<IdentityDisplay>>(IDENTITY_DISPLAY_CONTEXT);
@@ -42,6 +43,16 @@
       </label>
       <p class="hint">{sm.hint}</p>
       <button class="reset" type="button" onclick={() => save(readIdentityDisplay())}>{sm.reset}</button>
+    </section>
+    <section aria-labelledby="grid-settings-title">
+      <h2 id="grid-settings-title">{sm.gridHeading}</h2>
+      <label class="limit"><span>{sm.hoverPreview}</span>
+        <select aria-label={sm.hoverPreview} value={$hoverPreviewMs} onchange={(event) => hoverPreviewMs.set(Number((event.target as HTMLSelectElement).value))}>
+          {#each HOVER_PREVIEW_CHOICES as ms}<option value={ms}>{ms === 0 ? sm.hoverPreviewOff : sm.seconds(ms / 1000)}</option>{/each}
+        </select>
+      </label>
+      <p class="hint">{sm.hoverPreviewHint}</p>
+      <button class="reset" type="button" onclick={() => hoverPreviewMs.set(HOVER_PREVIEW_DEFAULT)}>{sm.reset}</button>
     </section>
   </main>
 </div>

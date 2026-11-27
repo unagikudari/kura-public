@@ -54,6 +54,9 @@ async def list_similar(
     # near_dup/corrupt/lost rows that have no content). `count(*) over()` returns
     # the full cluster total from the SAME grouped scan, so we don't pay a second
     # full GROUP BY for pagination (was ~2x the page latency).
+    from api.services.pool_visibility import post_visible_sql
+    visible = post_visible_sql("p.id")
+
     if pairs_only:
         # Only clusters holding BOTH a censored and an uncensored member — the
         # censored↔uncensored pairs used as decensor / detector training teachers.
@@ -71,7 +74,7 @@ async def list_similar(
                 from post p
                 left join cens c on c.post_id = p.id
                 left join censor_trained_post tr on tr.post_id = p.id
-                where p.perceptual_hash is not null and p.status = 'ok'
+                where p.perceptual_hash is not null and p.status = 'ok' AND ({visible})
                 group by p.perceptual_hash
                 having count(*) >= 2
                    and bool_or(c.post_id is not null) and bool_or(c.post_id is null)
@@ -82,13 +85,13 @@ async def list_similar(
         """).bindparams(bindparam("ctags", expanding=True))
         rows = (await db.execute(sql, {"lim": limit, "off": offset, "ctags": list(CENSOR_TAGS)})).all()
     else:
-        sql = text("""
+        sql = text(f"""
             with g as (
                 select encode(perceptual_hash, 'hex') as h,
                        array_agg(id order by id) as ids,
                        count(*) as c, max(id) as mx
-                from post
-                where perceptual_hash is not null and status = 'ok'
+                from post p
+                where perceptual_hash is not null and status = 'ok' AND ({visible})
                 group by perceptual_hash having count(*) >= 2
             )
             select h, ids, c, mx, count(*) over() as total

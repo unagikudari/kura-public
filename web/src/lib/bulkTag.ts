@@ -17,6 +17,8 @@ export interface BulkApplyResult {
   added: number;
   removed: number;
   locked: number;
+  /** 付いていないタグを「無い」と確定した件数 (一括バーの 🚫) */
+  absent?: number;
   fail: number;
   lastError?: string;
 }

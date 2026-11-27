@@ -1,0 +1,43 @@
+# Adversarial review: Kura overview at 8a8702e0
+
+**Verdict: 4 pass, 6 partial, 0 fail.** The page is not all-pass. The request card comes first and the 341-image entry point is obvious, but the page does not say what counts as "done", and the experiment line mislabels what is running.
+
+Evidence is the inline text and source plus the four screenshots (1280 and 390, top and table). I did not operate the page. No comparison graph is open in any screenshot, focus rings are not shown, and nothing below 「最終取得」 (any iframe or detail aggregate) was seen, so those are unverified.
+
+| # | Criterion | Grade | Evidence | Improvement (priority) |
+|---|---|---|---|---|
+| 1 | situation | **pass** | At 1280 the first viewport shows all three: action needed (「あなたの確認待ち」 card with CTA), running (smegma experiment bar 13/16), stopped (「機械による付与停止 4タグ」). At 390 the request card and the start of the runtime section fit. | Low: the nav badge 「ノード 5」 has no unit, so it is unclear whether it means five nodes or five problems. |
+| 2 | consistency | **partial** | Two contradictions, detailed below: the experiment phase label versus what is actually running, and "you may leave images" versus "evaluation is on hold while any remain". | High: the completion rule. Medium: the phase label. |
+| 3 | duplication | **partial** | Three manual reload buttons sit in one viewport (「詳細集計を再読み込み」「判定数を更新」「状況を更新」) on top of the 30-second auto-refresh. The same 341 link appears twice (「この341枚を確認」 and 「未判定の341枚へ」). "Unjudged does not mean quality is settled" is said three times (card note, 「集計と公開について」, table footnote). | Medium: one reload control; merge the caveats into one place. |
+| 4 | completeness | **partial** | Target, state and timestamps are present. Missing: why it is 0/341, who owns the experiment and the next step, and per-tag reason and start date for the holds. | High: the 0/341 explanation. |
+| 5 | brevity | **partial** | The order is right and graphs are behind details. Internal terms remain in the default view: 「基準照合」「配備前審査」「固定モデル」「release 15」「6GiB枠」「工程」「評価履歴を登録済み」. The stale 「自動学習の履歴」 line takes a default row to say "unknown". | Medium: move the learning-history line into details when it is not fresh. |
+| 6 | actionability | **partial** | Who (「あなた」), what and the entry point are clear. What unblocks progress is not: 「判定が揃うと」 is undefined given that leaving images is allowed, and the next step names no actor. | High: same fix as criterion 2. |
+| 7 | exploration | **pass** (from source, not operated) | Tag search, four filters, four sorts, an 「N/5セット」 count, a conditional 「表示をリセット」 and an empty-state message are all present. | Low: under tag sort, the three smegma rows fall back to hash order. |
+| 8 | graphics | **partial** | The request bar is labelled 「判定済み 0 / 341枚」, so it reads as a count, not quality. The comparison bar has an explicit grey 「未比較」 segment and counts in the legend, so unmeasured is not shown as zero. Weak points: the two agreement greens (`#278265`, `#648e80`) are near-identical, the table has no per-set visual, and at 390 the experiment bar wraps away from its 「13/16 工程」 label. | Medium: a small judged/total bar in the 「未判定」 column. |
+| 9 | freshness | **pass** | The stale learning line is demoted to 「最後の報告…（過去）・現在の稼働は未確認」 with its 1:15:13 observation time. The experiment falls back to the same wording after 120 seconds or on error. Fetch failure says 「「作業なし」とは判断できません」. | Low: add relative age (「2時間前」); the request card's fetch time sits only at the bottom of the table. |
+| 10 | accessibility | **pass** (focus visibility unverified) | Controls are native elements with 44px targets and underlined links. The 390 layout turns rows into labelled blocks (「未判定 ·」「比較 ·」「画像 ·」) with table roles restored. Status is always carried by text, not colour alone. | Low: at 390 the sticky header and nav take about 245 of 900px. |
+
+## The findings that matter
+
+- **Completion rule contradicts itself.** 「分からない画像は残して構いません」 is followed directly by 「残る間は評価も保留です」, and the details add 「未判定が残る間は全体の品質を確定しません」. You cannot tell whether skipping ambiguous images blocks the candidate indefinitely or is acceptable.
+- **0/341 is unexplained.** The table shows a smegma fixed set with 160 already judged, yet the request shows 0/341. Nothing says the 341 are the frozen 159 plus 182 extension images and that all need fresh explicit labels. It reads as lost work or a counting bug.
+- **Experiment phase label is wrong for the current run.** The line reads 「未公開 · 機械による候補の採点」 while the host field carries 「nodeb CPU · 本番と同じ6GiB枠で検証」. Scoring is finished; what is running is the resource qualification. The page implies quality scoring is still in progress and never says this run is separate from quality.
+- **Two smegma lines look contradictory.** The experiment shows as running, and the next line says smegma 「現在の稼働は未確認」. They are different processes, but both are labelled only with the tag.
+- **「比較はまだ表示しません」 gives no reason.** Without "to avoid biasing your judgment" it reads as broken or pending.
+
+## The one next improvement
+
+Replace the two notes under the request card with a single one that states the rule and explains the zero:
+
+> 341枚すべてに新しく判定を付けます（過去の判定は引き継ぎません）。迷う画像は未判定のまま残せます。「なし」扱いにはならず、残っている間は評価が保留になります。
+
+It answers "why 0?" and "must I finish all?" in the same space, and removes one duplicated caveat. It is a text-only change in the request section. The middle clause, 「過去の判定は引き継ぎません」, is my reading of "all new explicit labels needed"; confirm it before shipping.
+
+The experiment phase label is the next candidate after this, since it needs a new phase or label from the backend. I would stop after the note change rather than continue polishing the low-priority items.
+
+実装者の照合注記（原文とは別）
+レビュー対象は8a8702e0の概要親画面。今回の修正・埋め込み画面・モデル品質の合格ではない。
+原文は独立reviewerの実回答。要約・照合注記は実装者が作成。
+Claude提案の「過去の判定は引き継ぎません」は採用しない。旧160枚は学習に使われ、新341枚は別画像の確認セット。
+Geminiのタグ名順の不具合指摘は括弧の読み違い。既存ブラウザーcontrolで依頼先頭とタグ順を区別して検証。
+Geminiの5分周期は別の証跡observer。画面の判定数は30秒ごとのGETで現在DBを読む。

@@ -1,6 +1,8 @@
 """Bounded representative image selection for tag catalog pages."""
 from sqlalchemy import text
 
+from api.services.pool_visibility import post_visible_sql
+
 CANDIDATE_SCAN_LIMIT = 96
 COLOR_CHOICES = 12
 
@@ -8,17 +10,19 @@ COLOR_CHOICES = 12
 async def representatives(db, tag_ids: list[int]) -> dict[int, int]:
     if not tag_ids:
         return {}
-    rows = (await db.execute(text('''
+    rows = (await db.execute(text(f'''
         SELECT u.id,
           ARRAY(SELECT p.id FROM (
               SELECT pt.post_id FROM post_tag pt WHERE pt.tag_id=u.id
               ORDER BY pt.post_id LIMIT :scan
             ) sample JOIN post p ON p.id=sample.post_id
-            WHERE NOT EXISTS (SELECT 1 FROM post_tag x JOIN tag_name n ON n.tag_id=x.tag_id
+            WHERE p.status='ok' AND {post_visible_sql("p.id")}
+              AND NOT EXISTS (SELECT 1 FROM post_tag x JOIN tag_name n ON n.tag_id=x.tag_id
                               WHERE x.post_id=p.id AND n.name IN ('monochrome','greyscale','comic'))
             ORDER BY p.id LIMIT :colors),
-          (SELECT pt.post_id FROM post_tag pt WHERE pt.tag_id=u.id
-           ORDER BY pt.post_id LIMIT 1)
+          (SELECT pt.post_id FROM post_tag pt JOIN post p ON p.id=pt.post_id
+            WHERE pt.tag_id=u.id AND p.status='ok' AND {post_visible_sql("p.id")}
+            ORDER BY pt.post_id LIMIT 1)
         FROM unnest(CAST(:ids AS int[])) AS u(id)
     '''), {'ids': tag_ids, 'scan': CANDIDATE_SCAN_LIMIT, 'colors': COLOR_CHOICES})).all()
     candidates = {tid: (list(colors or []), fallback) for tid, colors, fallback in rows}

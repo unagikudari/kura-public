@@ -30,8 +30,9 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-from .infer import load_all_models, model_source_id, reap_domain, tag_image
+from .infer import primary_provider, load_all_models, model_source_id, reap_domain, tag_image
 from .pixai_chars import RequiredCharacterComponentError
+from .content_head_policy import RequiredContentHeadError
 from .content_fetch import DEFER_SECONDS, ContentUnavailable, classify_urllib_error
 
 HOSTNAME = socket.gethostname()
@@ -53,13 +54,12 @@ TAGGER_RELEASE_ID: int | None = None
 # (409) -- see api/services/tagging.py::enforce_claim_guard.
 WORKER_PROFILE = "full"
 # 2026-08-04: 2 -> 3。**publish より先に上げて配り切る**のが唯一の安全な順序。
-# tagger_governed_publish_release は active generation を必ず +1 するので、
-# worker が 2 のまま publish すると active=3 > worker=2 で全ノードが 409 を返し
-# fleet が止まる (2026-08-02 に実際に 14.5 時間・503,486 件を滞留させた)。
-# worker >= floor なら通るので、worker=3 / active=2 の窓は安全。
-WORKER_GENERATION = 5  # 2026-08-08: 4 -> 5, phimosis v2 retirement (chance AUC, serving P≈0.199) を載せる release の先行 bump — publish は active generation を必ず +1 するので、先に配り切るのが唯一の安全な順序 (2026-08-02 の 14.5h 停止の教訓)
+# Code compatibility is independent of model-publication epochs (0194).
+# Bump only for a worker behavior change, then explicitly raise the code floor.
+WORKER_GENERATION = 6  # CL policy-aware code; distribute before raising the active floor.
 WORKER_ID = f"{HOSTNAME}-loop"
 TAGGER_PROVIDER: str | None = None
+EXECUTION_RECEIPT: dict | None = None
 # veto-authority reap (plan:kura-tagger-self-improvement-loop, user 2026-07-22):
 # the gate tags this worker's gated-veto applies. Reported on every completion
 # so the server can DELETE an over-applied gate tag the veto suppressed (not
@@ -137,6 +137,14 @@ def _fetch_bytes(url: str, timeout: int = 60) -> bytes:
         raise
 
 
+def _head_configuration_matches(loaded_heads, *, api_url, headers):
+    from .nodec_autotag_worker import load_head_policies, policy_fingerprint
+
+    current = load_head_policies(api_url=api_url, headers=headers, require_complete=True)
+    loaded = loaded_heads.get("__report_policies__") or []
+    return policy_fingerprint(current) == policy_fingerprint(loaded)
+
+
 def claim(kind: str, limit: int) -> list[dict]:
     params = {"kind": kind, "limit": limit, "lease_seconds": LEASE_SECONDS, "host": HOSTNAME}
     if TAGGER_SOURCE:
@@ -153,12 +161,14 @@ def claim(kind: str, limit: int) -> list[dict]:
             params["provider"] = TAGGER_PROVIDER
         if TAGGER_SOURCE:
             params["model_sha256"] = TAGGER_SOURCE
-    resp = _req("POST", f"/api/internal/tagging/claim?{urllib.parse.urlencode(params)}")
+    resp = _req("POST", f"/api/internal/tagging/claim?{urllib.parse.urlencode(params)}",
+                {"packet": EXECUTION_RECEIPT} if kind == "auto_tag" and EXECUTION_RECEIPT else None)
     return resp.get("claimed", [])
 
 
 def complete(
-    kind: str, item_id: int, status: str, tags: list[dict] | None = None, error: str | None = None
+    kind: str, item_id: int, status: str, tags: list[dict] | None = None, error: str | None = None,
+    veto_gates: list[str] | None = None, executed_content_heads: list[dict] | None = None,
 ) -> None:
     body = {
         "id": item_id,
@@ -172,9 +182,13 @@ def complete(
         # veto-authority reap: gates this worker's veto applies + its code
         # generation (non-repudiation). Only meaningful on status=ok; harmless
         # on failed completions (server ignores an empty output there).
-        "veto_gates": VETO_GATES,
+        "veto_gates": VETO_GATES if veto_gates is None else veto_gates,
         "generation": WORKER_GENERATION,
     }
+    if kind == "auto_tag" and EXECUTION_RECEIPT:
+        body.update(worker_id=WORKER_ID, execution_receipt_sha256=EXECUTION_RECEIPT["receipt_sha256"])
+        if status == "ok" and executed_content_heads:
+            body["executed_content_heads"] = executed_content_heads
     _req("POST", "/api/internal/tagging/complete", body)
 
 
@@ -220,7 +234,9 @@ def process_one(item: dict, models: dict) -> tuple[bool, str]:
         # (API version 非依存・replication 安全、search q=chastity_belt_review で集約)
         tags.append({"name": "chastity_belt_review", "category": "general"})
         note += f" (chastity_belt_review prob={cb_review['prob']})"
-    complete("auto_tag", item_id, "ok", tags=tags)
+    complete("auto_tag", item_id, "ok", tags=tags,
+             veto_gates=sorted(set(VETO_GATES) | set(notes.get("content_head_reap") or [])),
+             executed_content_heads=notes.get("executed_content_heads"))
     return True, note
 
 
@@ -244,19 +260,33 @@ def main() -> int:
 
     print("[kura-tagger] loading models (download on first run may take minutes)...", flush=True)
     t0 = time.time()
-    models = load_all_models(api_url=KURA_URL, headers={"Authorization": _auth_header()})
+    from . import character_policy
+    policy = character_policy.fetch(KURA_URL, {"Authorization": _auth_header()})
+    options = {'character_threshold':policy['threshold']} if policy['threshold'] is not None else {}
+    models = load_all_models(api_url=KURA_URL, headers={"Authorization": _auth_header()}, **options)
+    character_policy.require_release(policy, (models.get('wd14_fixed') or {}).get('release_id'))
     print(f"[kura-tagger] models ready ({time.time() - t0:.1f}s)", flush=True)
+    # Report this process's actual loaded set, not the WD14 worker's module globals.
+    from .nodec_autotag_worker import report_node_heads
+    loaded_heads = models.get("content_heads") or {}
+    report_node_heads(loaded_heads.get("__report_policies__") or [], heads=loaded_heads,
+                      api_url=KURA_URL, headers={"Authorization": _auth_header()}, host=HOSTNAME)
 
-    global TAGGER_SOURCE, TAGGER_RELEASE_ID, TAGGER_PROVIDER, VETO_GATES
+    global TAGGER_SOURCE, TAGGER_RELEASE_ID, TAGGER_PROVIDER, VETO_GATES, EXECUTION_RECEIPT, WORKER_ID
     TAGGER_SOURCE = model_source_id(models)
     wd14_fixed = models.get("wd14_fixed")
     TAGGER_RELEASE_ID = wd14_fixed["release_id"] if wd14_fixed else None
-    TAGGER_PROVIDER = models["wd14_sess"].get_providers()[0]
+    from .execution_receipt import from_loaded, weakest_provider
+    EXECUTION_RECEIPT = (from_loaded(models['cl2_characters'], host=HOSTNAME, profile=WORKER_PROFILE,
+                                   release_id=TAGGER_RELEASE_ID) if models.get('cl2_characters') else None)
+    TAGGER_PROVIDER = weakest_provider(primary_provider(models), EXECUTION_RECEIPT)
+    if EXECUTION_RECEIPT:
+        print('[kura-tagger] character_execution=' + json.dumps(EXECUTION_RECEIPT, sort_keys=True), flush=True)
     # correction-authoritative reap domain: the release's patched rows ∪ veto
     # heads (NOT just the anilingus veto head — user 2026-07-22「最終的に一般化」).
     # Reported per completion so the server can reap a stale corrected tag this
     # run leaves out of its output. Data-driven, grows with the release.
-    VETO_GATES = reap_domain(wd14_fixed, models.get("veto_heads"), models.get("character_heads"))
+    VETO_GATES = reap_domain(wd14_fixed, models.get("veto_heads"))
     print(f"[kura-tagger] source={TAGGER_SOURCE} release_id={TAGGER_RELEASE_ID} "
           f"provider={TAGGER_PROVIDER} reap_gates={VETO_GATES}", flush=True)
 
@@ -276,6 +306,12 @@ def main() -> int:
         if yield_flag and os.path.exists(yield_flag):
             print(f"[kura-tagger] yield flag present ({yield_flag}) — graceful exit", flush=True)
             break
+        if not _head_configuration_matches(
+                loaded_heads, api_url=KURA_URL, headers={"Authorization": _auth_header()}):
+            # Restart before taking work. Holding both model sets at once would
+            # exceed the full worker's memory budget on some nodes.
+            print("[kura-tagger] head policy changed; restart before next claim", flush=True)
+            return 75
         items = claim("auto_tag", BATCH_LIMIT)
         if not items:
             if idle_waited >= IDLE_MAX_WAIT:
@@ -304,7 +340,7 @@ def main() -> int:
                       f"retry in {DEFER_SECONDS}s", flush=True)
                 time.sleep(DEFER_SECONDS)
                 break
-            except RequiredCharacterComponentError as exc:
+            except (RequiredCharacterComponentError, RequiredContentHeadError) as exc:
                 print(f"[DEFER] post {item['id']}: {exc}; batch stopped, no completion sent; "
                       f"leases expire within {LEASE_SECONDS}s; reload components on next worker start", flush=True)
                 return 1

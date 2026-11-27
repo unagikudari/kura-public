@@ -2,9 +2,9 @@
   import { untrack } from 'svelte';
   import { t } from '#lib/i18n/index.ts';
   const m = t();
-  let { src, thumbnail, near, focused = false, width, height, selectable = false, onclick }: {
+  let { src, thumbnail, near, focused = false, width, height, selectable = false, onclick, ondblclick }: {
     src: string; thumbnail: string; near: boolean; focused?: boolean;
-    width?: number; height?: number; selectable?: boolean; onclick: () => void;
+    width?: number; height?: number; selectable?: boolean; onclick: () => void; ondblclick?: () => void;
   } = $props();
   let pendingImage: HTMLImageElement | null = null;
   let ready = $state('');
@@ -54,7 +54,7 @@
 </script>
 
 <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
-<div class="manga-image" class:selectable class:known={!!(width && height)} {onclick} role="presentation">
+<div class="manga-image" class:selectable class:known={!!(width && height)} {onclick} {ondblclick} role="presentation">
   {#key `${full ? loadedUrl : thumbnail}:${retry}`}
     <img class="manga-page" class:manga-full={full} class:manga-preview={!full}
       src={full ? loadedUrl : thumbnail} alt="" draggable="false" {width} {height}
@@ -66,7 +66,7 @@
     <span class="loading" role="status">{failed ? m.home.manga.loadFailed : m.home.manga.loading}</span>
   {/if}
   {#if near && (failed || previewFailed)}
-    <button class="retry" onclick={(e) => { e.stopPropagation(); retry++; }}>{m.home.manga.reload}</button>
+    <button class="retry" ondblclick={(e) => e.stopPropagation()} onclick={(e) => { e.stopPropagation(); retry++; }}>{m.home.manga.reload}</button>
   {/if}
 </div>
 

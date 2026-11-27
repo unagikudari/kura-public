@@ -1,0 +1,81 @@
+{
+  "reviewer": "Codex（実装者）",
+  "reviewed_revision": "58475c381e5501ea50f151ceb3faa83352e84007",
+  "method": "実装者による390幅画面・ブラウザー検査・独立指摘の照合。独立レビューではない。",
+  "criteria": [
+    {
+      "id": "situation",
+      "verdict": "partial",
+      "assessment": "partial",
+      "evidence": "依頼は先頭・スマホ初画面内。終了報告にも稼働未確認が付き、今何を待つか弱い。",
+      "nextfix": "判定済み枚数のバーと待ち状態を示す"
+    },
+    {
+      "id": "consistency",
+      "verdict": "partial",
+      "assessment": "partial",
+      "evidence": "本番・候補は分離。終了報告と稼働未確認、二つの改善記録の関係が不明。",
+      "nextfix": "記録の対象と終端状態を区別"
+    },
+    {
+      "id": "duplication",
+      "verdict": "partial",
+      "assessment": "partial",
+      "evidence": "依頼と表のリンク、品質注意、三つの更新ボタンが重複。",
+      "nextfix": "依頼の説明をまとめ詳細は開いて読む"
+    },
+    {
+      "id": "completeness",
+      "verdict": "partial",
+      "assessment": "partial",
+      "evidence": "対象と入口はあるが、新しい確認が必要な理由と次工程が不足。",
+      "nextfix": "新候補用の確認と判定後の工程を示す"
+    },
+    {
+      "id": "brevity",
+      "verdict": "partial",
+      "assessment": "partial",
+      "evidence": "内部のホスト名や処理用語、更新ボタンの強さが残る。",
+      "nextfix": "初期表示を人の行動に絞る"
+    },
+    {
+      "id": "actionability",
+      "verdict": "partial",
+      "assessment": "partial",
+      "evidence": "入口は明確。保留できることと全件必要な集計条件の関係が弱い。",
+      "nextfix": "未判定を否定にせず次の判断を説明"
+    },
+    {
+      "id": "exploration",
+      "verdict": "pass",
+      "assessment": "pass",
+      "evidence": "4フィルター・検索・4ソート・件数・解除・空状態がある。",
+      "nextfix": "受領済みだけの探索も検討"
+    },
+    {
+      "id": "graphics",
+      "verdict": "partial",
+      "assessment": "partial",
+      "evidence": "比較は枚数で未比較も分離。依頼0/341の図がない。展開図は未確認。",
+      "nextfix": "依頼に判定数のバーを追加"
+    },
+    {
+      "id": "freshness",
+      "verdict": "pass",
+      "assessment": "pass",
+      "evidence": "古い報告を現在稼働と区別し時刻を示す。",
+      "nextfix": "終端記録の表現を整理"
+    },
+    {
+      "id": "accessibility",
+      "verdict": "partial",
+      "assessment": "partial",
+      "evidence": "初画面の341枚リンクは見える。文字の注意が長く、キーボードの全面確認は未実施。",
+      "nextfix": "依頼の進捗と短い説明を優先"
+    }
+  ],
+  "limitations": [
+    "58475c38概要の親画面のみ。今回の修正・埋め込み画面・モデル品質の合格ではない。",
+    "原文から実装者が要約。原文保存。Geminiの「判定数は5分前」は誤認：表示数はAPIがその都度DBを読む。別の5分observerは証跡用。"
+  ]
+}

@@ -48,6 +48,25 @@ def _psql(url, *sql):
 @pytest.fixture
 def world(pg, monkeypatch, tmp_path):
     url = load(*pg)
+    import importlib.util
+    spec=importlib.util.spec_from_file_location("learning_migration",
+        Path(__file__).resolve().parents[1]/"api/alembic/versions/0202_learning_execution.py")
+    m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
+    async def migrate():
+        from alembic.migration import MigrationContext
+        from alembic.operations import Operations
+        engine = create_async_engine(url, poolclass=sa.pool.NullPool)
+        try:
+            async with engine.begin() as connection:
+                await connection.execute(sa.text("SET SESSION AUTHORIZATION kura"))
+                def upgrade(sync):
+                    m.op = Operations(MigrationContext.configure(sync))
+                    m.upgrade()
+                await connection.run_sync(upgrade)
+                assert tuple((await connection.execute(sa.text("SELECT session_user,current_user"))).one()) == ("kura","kura")
+        finally:
+            await engine.dispose()
+    asyncio.run(migrate())
     _psql(url, "ALTER ROLE kura LOGIN",
           "INSERT INTO tag (id, category_id, creation_time, version) "
           "VALUES (1, (SELECT id FROM tag_category ORDER BY id LIMIT 1), now(), 1)",
@@ -83,18 +102,18 @@ def world(pg, monkeypatch, tmp_path):
     asyncio.run(engine.dispose())
 
 
-async def _queue(sessions) -> int:
+async def _queue(sessions, tag=TAG) -> int:
     async with sessions() as db:
-        lease = await acquire_lease(db, f"lifecycle:{TAG}", lease_seconds=30)
+        lease = await acquire_lease(db, f"lifecycle:{tag}", lease_seconds=30)
         try:
-            await record_lifecycle_event(db, tag=TAG, from_stage=None, to_stage="candidate",
+            await record_lifecycle_event(db, tag=tag, from_stage=None, to_stage="candidate",
                                          reason="test", lease=lease)
-            await record_lifecycle_event(db, tag=TAG, from_stage="candidate", to_stage="training",
+            await record_lifecycle_event(db, tag=tag, from_stage="candidate", to_stage="training",
                                          reason="test", lease=lease)
         finally:
             await release_lease(db, lease)
         return (await db.execute(sa.text(
-            "SELECT max(id) FROM tagger_lifecycle_event WHERE tag = :t"), {"t": TAG})).scalar_one()
+            "SELECT max(id) FROM tagger_lifecycle_event WHERE tag = :t"), {"t": tag})).scalar_one()
 
 
 async def _queued(sessions):
@@ -122,7 +141,17 @@ def _payload(sha="a" * 64):
 def _measure(w, ev):
     state = learn.load_state(w.state_path)
     out = asyncio.run(learn.measure_one(TAG, ev, state, w.state_path, ARGS))
-    return out, learn.load_state(w.state_path)
+    async def observed():
+        from tagger.learning_execution import read
+        async with w.sessions() as db:
+            r=await read(db,ev)
+        state={"backoff":{},"pending":{}}
+        if r and r["state"]=="retry_wait":
+            state["backoff"][learn.key_of(TAG,ev)]={"n":r["failure_count"],"next":r["retry_after"].timestamp()}
+        if r and r["state"] not in ("registered","refused","settled") and r["pending_payload"] is not None:
+            state["pending"][learn.key_of(TAG,ev)]=r["pending_payload"]
+        return state
+    return out, asyncio.run(observed())
 
 
 def test_a_result_is_registered_under_the_lease_and_leaves_the_queue(world, monkeypatch):
@@ -179,7 +208,8 @@ def test_a_child_that_fails_backs_off_and_touches_nothing(world, monkeypatch):
     assert asyncio.run(_stage(world.sessions)) == "training", "still queued"
     assert asyncio.run(_queued(world.sessions)) == [(TAG, ev)]
     out, state = _measure(world, ev)
-    assert state["backoff"][learn.key_of(TAG, ev)]["n"] == 2, "the wait grows"
+    assert out == "backoff"
+    assert state["backoff"][learn.key_of(TAG, ev)]["n"] == 1, "a repeated tick cannot bypass the wait"
 
 
 def test_a_structural_stop_defers_for_a_day_then_leaves_training(world, monkeypatch):
@@ -319,3 +349,147 @@ def test_settle_does_not_apply_an_old_verdict_to_a_newer_request(world, monkeypa
     assert asyncio.run(settle()) == []
     assert calls == [None, TAG], "re-read under the lease"
     assert asyncio.run(_stage(world.sessions)) == "training"
+
+
+def test_remote_measurement_does_not_keep_database_lease(world, monkeypatch):
+    event = asyncio.run(_queue(world.sessions))
+    remote_args = SimpleNamespace(lease_hours=8.0, remote_config="test")
+
+    def child(*args):
+        async def verify_available():
+            async with world.sessions() as db:
+                lease = await acquire_lease(db, f"lifecycle:{TAG}", lease_seconds=30)
+                assert await release_lease(db, lease)
+        asyncio.run(verify_available())
+        assert asyncio.run(learn.measure_one(
+            TAG, event, {}, world.state_path, remote_args,
+        )) == "busy"
+        assert asyncio.run(learn.measure_one(
+            TAG, event, {}, world.state_path, ARGS,
+        )) == "busy"
+        return {"outcome": "hold", "registration": _payload()}
+
+    monkeypatch.setattr(learn, "run_child", child)
+    result = asyncio.run(learn.measure_one(TAG, event, {}, world.state_path, remote_args))
+
+    assert result == "registered"
+    assert len(world.sent) == 1
+
+
+def test_remote_measurement_cannot_commit_after_execution_moves(world, monkeypatch):
+    from tagger import learning_execution
+
+    event = asyncio.run(_queue(world.sessions))
+
+    def child(*args):
+        async def move_execution():
+            async with world.sessions() as db:
+                lease = await acquire_lease(db, f"lifecycle:{TAG}", lease_seconds=30)
+                try:
+                    row = await learning_execution.read(db, event)
+                    await learning_execution.step(
+                        db, tag=TAG, event_id=event, lease=lease, previous=row, action="child_failed",
+                    )
+                finally:
+                    await release_lease(db, lease)
+        asyncio.run(move_execution())
+        return {"outcome": "hold", "registration": _payload()}
+
+    monkeypatch.setattr(learn, "run_child", child)
+    args = SimpleNamespace(lease_hours=8.0, remote_config="test")
+    result = asyncio.run(learn.measure_one(TAG, event, {}, world.state_path, args))
+
+    assert result == "moved"
+    assert not world.sent
+
+
+def test_remote_result_is_refused_if_lock_connection_dies(world, monkeypatch):
+    event = asyncio.run(_queue(world.sessions))
+
+    def child(*args):
+        _psql(world.url, """
+            SELECT pg_terminate_backend(pid)
+            FROM pg_locks
+            WHERE locktype='advisory' AND granted
+              AND database=(SELECT oid FROM pg_database WHERE datname=current_database())
+        """)
+        return {"outcome": "hold", "registration": _payload()}
+
+    monkeypatch.setattr(learn, "run_child", child)
+    args = SimpleNamespace(lease_hours=8.0, remote_config="test")
+
+    assert asyncio.run(learn.measure_one(TAG, event, {}, world.state_path, args)) == "busy"
+    assert not world.sent
+
+    monkeypatch.setattr(learn, "run_child", _child({"outcome": "hold", "registration": _payload()}))
+    assert asyncio.run(learn.measure_one(TAG, event, {}, world.state_path, args)) == "registered"
+    assert len(world.sent) == 1
+
+
+def test_learning_status_discloses_lease_without_claiming_running_worker(world):
+    from api.services.learning_execution import recent
+    from tagger.learning_execution import step
+
+    async def observe():
+        event = await _queue(world.sessions)
+        async with world.sessions() as db:
+            lease = await acquire_lease(db, f"lifecycle:{TAG}", lease_seconds=30)
+            try:
+                await step(db, tag=TAG, event_id=event, lease=lease, previous=None, action="start")
+                row, = await recent(db)
+                assert row["lease_expires_at"] == lease.expires_at.isoformat()
+                assert not row["runtime_verified"]
+                await record_lifecycle_event(db, tag=TAG, from_stage="training", to_stage="candidate",
+                                             reason="superseded", lease=lease)
+                row, = await recent(db)
+                assert row["lease_expires_at"] is None
+            finally:
+                await release_lease(db, lease)
+            row, = await recent(db)
+            assert row["lease_expires_at"] is None
+
+    asyncio.run(observe())
+
+
+def test_exclusive_pair_waits_for_joint_learning(world):
+    from tagger.exclusive_training import JOINT_REVIEW_PAIR
+
+    left, right = JOINT_REVIEW_PAIR
+    _psql(
+        world.url,
+        "INSERT INTO tag (id, category_id, creation_time, version) "
+        "SELECT pair.id, t.category_id, now(), 1 FROM tag t "
+        "CROSS JOIN (VALUES (2), (3)) pair(id) WHERE t.id=1",
+        f"INSERT INTO tag_name (tag_name_id, tag_id, name, ord) "
+        f"VALUES (2, 2, '{left}', 0), (3, 3, '{right}', 0)",
+        "INSERT INTO tag_relation (a_tag_id, b_tag_id, kind) VALUES (2, 3, 'related')",
+    )
+    normal_event = asyncio.run(_queue(world.sessions))
+    left_event = asyncio.run(_queue(world.sessions, left))
+    right_event = asyncio.run(_queue(world.sessions, right))
+    assert asyncio.run(_queued(world.sessions)) == [
+        (TAG, normal_event), (left, left_event), (right, right_event),
+    ]
+
+    _psql(world.url, "UPDATE tag_relation SET kind='exclusive' WHERE a_tag_id=2 AND b_tag_id=3")
+
+    assert asyncio.run(_queued(world.sessions)) == [(TAG, normal_event)]
+    assert _psql(
+        world.url,
+        f"SELECT count(*) FROM tagger_lifecycle_event WHERE id IN ({left_event}, {right_event})",
+    ) == "2"
+
+
+def test_supplemental_payload_budget_uses_canonical_jsonb_size(world, monkeypatch):
+    import json
+
+    event = asyncio.run(_queue(world.sessions))
+    payload = _payload()
+    payload["metrics"]["production_review"] = {
+        "scope": "catalog_extension_outside_frozen_gt_groups",
+        "frame": {"scores": [[i, 1e-300] for i in range(3500)]},
+    }
+    assert len(json.dumps(payload)) < 1_048_576
+    monkeypatch.setattr(learn, "run_child", _child({"outcome": "hold", "registration": payload}))
+    assert asyncio.run(learn.measure_one(TAG, event, {}, world.state_path, ARGS)) == "failed"
+    assert not world.sent

@@ -295,6 +295,12 @@ async def initialize_completion_database(sessions):
           "CREATE FUNCTION tagger_governed_complete_retry(p_pid int,p_state text,p_error text) RETURNS void LANGUAGE SQL AS $$UPDATE post_tagging_work SET status=p_state,attempts=attempts+1,lease_until=NULL,last_error=p_error WHERE post_id=p_pid$$",
         ]
         for sql in statements:await db.execute(text(sql))
+        # The canonical hold table is read at every completion. Use its real
+        # DDL; fixtures intentionally do not seed the production decisions.
+        quarantine=ast.parse(schema_history.migration('0068_tag_quarantine.py').read_text())
+        for node in ast.walk(quarantine):
+            if isinstance(node,ast.Constant) and isinstance(node.value,str) and node.value.strip().startswith('CREATE TABLE tag_quarantine'):
+                await db.execute(text(node.value))
         # Reuse actual production pin trigger DDL, not a copied substitute.
         tree=ast.parse(schema_history.migration('0057_invm_human_pin.py').read_text())
         for node in ast.walk(tree):

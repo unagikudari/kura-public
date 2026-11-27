@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { planDropImport, duplicateUpload } from '../src/lib/dropImport.ts';
+import { planDropImport, duplicateUpload, existingPost } from '../src/lib/dropImport.ts';
 import { messagesFor } from '../src/lib/i18n/index.ts';
 const m=messagesFor('ja');
 const input=path=>({file:new File(['content'],path.split('/').at(-1)),relativePath:path});
@@ -14,4 +14,13 @@ test('only the exact checksum duplicate refusal is counted as already registered
  assert.equal(duplicateUpload({status:409,error:'post_already_exists',message:'post_already_exists — すでに登録済みです (checksum重複)。同じ画像は取り込み済みです。'}),true);
  assert.equal(duplicateUpload({status:409,error:'version_conflict',message:'version_conflict — Reload the post'}),false);
  for(const error of [null,new Error('fetch failed'),{status:409,message:'Version conflict'},{status:500,message:'すでに登録済みです (checksum重複)'}]) assert.equal(duplicateUpload(error),false);
+});
+test('a duplicate refusal names the existing post only when the API said which one',()=>{
+ const refusal={status:409,error:'post_already_exists',message:'post_already_exists'};
+ assert.deepEqual(existingPost({...refusal,context:{post_id:426685,safety:'unsafe',status:'visible'}}),{id:426685,safety:'unsafe'});
+ assert.deepEqual(existingPost({...refusal,context:{post_id:7}}),{id:7,safety:undefined});
+ assert.equal(existingPost(refusal),null);                                              // an API before the change
+ assert.equal(existingPost({...refusal,context:{post_id:'7'}}),null);
+ assert.equal(existingPost({status:409,error:'version_conflict',context:{post_id:7}}),null);   // not a duplicate at all
+ for(const lang of ['ja','en']){const d=messagesFor(lang).home.drop;assert.ok(d.duplicateNote&&d.openExisting&&d.existingHidden);}
 });

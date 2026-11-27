@@ -189,6 +189,26 @@ def apply(decl: dict, host: str, home: Path, *, dry_run: bool = False,
         print(f"tagger-deploy: refusing: nodes.json says {host}'s home is {node['home']}, "
               f"this is {home}", file=sys.stderr)
         return 2
+    profiles = node["profiles"]
+    deploy_only = set(node.get("deploy_only_profiles", []))
+    if not deploy_only <= set(profiles):
+        print(f"tagger-deploy: {host}: deploy-only profile is not declared", file=sys.stderr)
+        return 2
+    stopped_units = {f"kura-tagger@{profile}.service" for profile in deploy_only}
+    for unit in sorted(stopped_units):
+        if dry_run:
+            print(f"tagger-deploy: would disable and stop {unit}")
+            continue
+        # disable ignores the persistent boot link while a runtime mask is present.
+        # Remove the link created by the template's WantedBy=default.target.
+        boot_link = home / ".config/systemd/user/default.target.wants" / unit
+        if boot_link.is_symlink():
+            boot_link.unlink()
+        result = _systemctl("disable", "--now", unit)
+        if result.returncode != 0:
+            print(f"tagger-deploy: could not disable and stop {unit}: {result.stderr}",
+                  file=sys.stderr)
+            return 1
     changed, absorbed = _drift(decl, host, home)
     pending = home / PENDING
     if not changed and not absorbed and not pending.exists():
@@ -200,6 +220,7 @@ def apply(decl: dict, host: str, home: Path, *, dry_run: bool = False,
     else:
         running = [f"kura-tagger@{p}.service" for p in node["profiles"]
                    if _systemctl("is-active", "--quiet", f"kura-tagger@{p}.service").returncode == 0]
+    running = [unit for unit in running if unit not in stopped_units]
     for rel in changed:
         print(f"tagger-deploy: {'would write' if dry_run else 'write'} {rel}")
     for rel in absorbed:

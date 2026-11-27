@@ -130,7 +130,7 @@ def test_hold_is_decided_before_the_floor_gate():
 def test_pending_query_selects_gt():
     """gt を取らないと hold の理由に件数を載せられない。"""
     src = (REPO / "tagger" / "auto_review.py").read_text()
-    assert "id, tag, metrics, gt FROM tagger_registration_request" in src
+    assert "id, tag, artifact_sha256, metrics, gt FROM tagger_registration_request" in src
 
 
 def test_unmeasurable_is_counted_separately_from_rejected():
@@ -241,3 +241,24 @@ def test_owner_decision_is_its_own_bucket():
     assert fns["decide"](SMEGMA_CLEANUP, None, None).bucket == "owner_decision"
     body = (REPO / "tagger" / "auto_review.py").read_text()
     assert '"owner_decision": owner_decision' in body
+
+
+def test_valid_offline_measurement_with_insufficient_production_support_is_unmeasurable():
+    from tagger.auto_review import decide
+    from tagger.dedicated_protocol import digest
+
+    report = {
+        "schema": "dedicated-serving-qualification/1", "tag": "fixture",
+        "bundle_sha256": "a" * 64, "snapshot_sha256": "b" * 64, "threshold": .75,
+        "heldout": {"tp": 30, "tn": 30, "fp": 0, "fn": 0, "precision": 1., "recall": 1.},
+        "parity": {"passed": True},
+    }
+    metrics = {
+        "serving_qualification": dict(report, sha256=digest(report)),
+        "snapshot_sha256": report["snapshot_sha256"], "threshold": report["threshold"],
+        "production_review_insufficient_support": {"predicted_positive": 7, "required_predicted_positive": 20},
+    }
+    config = {"min_precision": .85, "min_recall": .7, "min_val_pos_support": 20, "min_pred_pos_support": 20}
+    result = decide(metrics, {}, config, artifact_sha256=report["bundle_sha256"], tag="fixture")
+    assert result.reason == "production_evaluation_insufficient_support"
+    assert result.bucket == "unmeasurable"

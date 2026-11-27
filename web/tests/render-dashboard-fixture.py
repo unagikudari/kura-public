@@ -13,6 +13,8 @@ from api.services import tagger_progress, tagger_situation
 class Result:
     def __init__(self, rows=None, scalar=0): self.rows=rows or [];self.value=scalar
     def mappings(self): return self
+    def scalars(self): return self
+    def __iter__(self): return iter(self.rows)
     def all(self): return self.rows
     def first(self): return None
     def scalar(self): return self.value

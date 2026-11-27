@@ -3,7 +3,10 @@
 # Kind: tool
 # Effects: mutating (writes tagger_gt_label via governed function)
 # Runs-on: primary
-"""api/tagger_core/gt_sync.py — turns existing verify-pool review activity into
+"""Runtime: ordinary human tag/pin corrections only (pool workflow retired).
+Legacy derivation helpers remain for historical audits, not scheduled writes.
+
+api/tagger_core/gt_sync.py — turns existing verify-pool review activity into
 structured, trainable ground-truth labels (plan follow-up, user directive
 2026-07-20: design + implement the "correction -> trainable data" gap).
 
@@ -40,6 +43,7 @@ from sqlalchemy import text
 
 from api.db.session import async_session
 from api.tagger_core import gt_lock
+from api.tagger_core.post_exclusion import not_excluded
 from api.tagger_core.config import is_non_trainable, load_config
 
 SCOPE = "gt-sync"
@@ -65,6 +69,47 @@ async def _sync_global_positives(db) -> int:
     return (await db.execute(
         text("SELECT tagger_governed_sync_pos_gt_from_pins()")
     )).scalar_one()
+
+
+_REVIEWED_LOCKED_POSITIVES = f"""
+            FROM tagger_human_review_event e
+            JOIN post_tag_pin pin ON pin.post_id=e.post_id AND pin.audit_id=e.audit_id
+            JOIN post_tag pt ON pt.post_id=pin.post_id AND pt.tag_id=pin.tag_id AND pt.locked
+            JOIN post p ON p.id=pt.post_id AND p.status='ok'
+            JOIN tag_name n ON n.tag_id=pin.tag_id AND n.ord=0
+            JOIN post_tag_audit a ON a.id=e.audit_id AND a.post_id=e.post_id AND a.actor_type='human'
+            LEFT JOIN tagger_gt_label g ON g.post_id=pin.post_id AND g.tag_id=pin.tag_id
+            WHERE e.decision='present' AND pin.state='present'
+              AND e.source_context #>> '{{queue,purpose}}' IN ('historical_label_recheck','training_support')
+              AND e.source_context #>> '{{observed,tag_id}}'=pin.tag_id::text
+              AND {not_excluded("p.id")}
+              AND (g.verdict IS DISTINCT FROM 'positive' OR g.derived_from IS DISTINCT FROM 'human_correction')
+"""
+
+
+async def _sync_reviewed_locked_positives(db) -> int:
+    """Use a current, audit-backed image review even if a tag was already locked."""
+    # Lock posts before pins, matching explicit review writes. Re-read evidence in
+    # a second statement so an unlock that won the race cannot be replayed.
+    ids = (await db.execute(text("""
+        SELECT p.id FROM post p
+        WHERE p.id IN (SELECT pin.post_id """ + _REVIEWED_LOCKED_POSITIVES + """)
+        ORDER BY p.id FOR UPDATE OF p
+    """))).scalars().all()
+    if not ids:
+        return 0
+    return (await db.execute(text("""
+        WITH eligible AS MATERIALIZED (
+            SELECT n.name, pin.post_id
+    """ + _REVIEWED_LOCKED_POSITIVES + """
+              AND pin.post_id=ANY(:ids)
+            ORDER BY pin.post_id,pin.tag_id FOR SHARE OF pin,pt
+        ), applied AS MATERIALIZED (
+            SELECT tagger_governed_upsert_gt_label(name,post_id,'positive',NULL,'human_correction')
+            FROM eligible
+        )
+        SELECT count(*) FROM applied
+    """), {"ids": ids})).scalar_one()
 
 
 async def _detect_global_candidates(db, min_correction_posts: float) -> list[str]:
@@ -264,15 +309,15 @@ async def run_sync() -> dict:
     async with async_session() as db:
         # INV-C, global pass (pool-independent): (1) every human deletion
         # anywhere -> negative GT; (2) over-detected tags (heavily deleted
-        # corpus-wide) -> head_candidate. Runs BEFORE the pool pass so a tag
-        # flagged here also gets its pool positives synced below in the same
-        # run. min_gt_labels is reused as the corpus-deletion threshold (a tag
+        # corpus-wide) -> head_candidate. Historical pool labels are retained.
+        # min_gt_labels is reused as the corpus-deletion threshold (a tag
         # not correctable to that floor can't be dispatched anyway).
         try:
             await gt_lock.hold(db)          # a duplicate merge and this pass never interleave (#158)
             cfg = await load_config(db)
             neg_synced = await _sync_global_negatives(db)
             pos_synced = await _sync_global_positives(db)
+            pos_synced += await _sync_reviewed_locked_positives(db)
             flagged = await _detect_global_candidates(db, cfg["min_gt_labels"])
             await db.commit()
             summary["_global"] = {"negatives_synced": neg_synced, "positives_synced": pos_synced,
@@ -285,29 +330,73 @@ async def run_sync() -> dict:
             print(f"[gt_sync] global pass FAILED: {e}", file=sys.stderr)
             summary["_global"] = {"error": str(e)}
 
-        targets = await _open_candidate_pools(db)
-        for t in targets:
-            tag, pool_id = t["tag"], t["source_pool_id"]
-            key = f"{tag}:pool{pool_id}"
-            try:
-                await gt_lock.hold(db)
-                hp, hn = await _sync_human_corrections(db, tag, pool_id)
-                ip, iin = await _sync_implicit_review(db, tag, pool_id)
-                await db.commit()
-                summary[key] = {"human_positive": hp, "human_negative": hn,
-                                 "implicit_positive": ip, "implicit_negative": iin}
-                print(f"[gt_sync] {key}: human(+{hp}/-{hn}) implicit(+{ip}/-{iin})")
-            except Exception as e:  # noqa: BLE001
-                await db.rollback()
-                print(f"[gt_sync] {key} FAILED: {e}", file=sys.stderr)
-                summary[key] = {"error": str(e)}
+        # Pool review is retired: preserve historical GT/source_pool_id without
+        # reinterpreting old reviews using today's machine-generated tags.
+        # Ordinary human tag/pin corrections above are the sole live source.
     return summary
+
+
+def status_path() -> Path:
+    import os
+    return Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local" / "state") / "kura-tagger" / "gt-sync-status.json"
+
+
+def record_status(summary, path=None) -> list[str]:
+    """Remember the outcome of the latest sync so passes that do not run it
+    themselves (the 2-minute qualification pass) can refuse to review or
+    publish against labels a failed sync left behind (#161). Returns the
+    failed groups."""
+    import json
+    import os
+    import time
+
+    failed = sorted(key for key, result in summary.items() if "error" in result)
+    path = Path(path) if path else status_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    temporary.write_text(json.dumps({"ok": not failed, "failed": failed, "at": time.time()}))
+    temporary.replace(path)
+    return failed
+
+
+STATUS_FRESH_SECONDS = 30 * 60  # the sync runs every 5 minutes
+
+
+def last_status(path=None) -> dict | None:
+    """The latest recorded sync outcome; None only when none was recorded yet.
+    An unreadable record, or an ok older than STATUS_FRESH_SECONDS, is not ok."""
+    import json
+    import time
+
+    path = Path(path) if path else status_path()
+    if not path.exists():
+        return None
+    try:
+        doc = json.loads(path.read_text())
+        ok, at = doc["ok"], float(doc["at"])
+        if not isinstance(ok, bool):
+            raise ValueError
+    except (OSError, ValueError, KeyError, TypeError):
+        return {"ok": False, "failed": ["_status_unreadable"], "at": None}
+    if ok and time.time() - at > STATUS_FRESH_SECONDS:
+        return {"ok": False, "failed": ["_status_stale"], "at": at}
+    return {"ok": ok, "failed": list(doc.get("failed") or []), "at": at}
+
+
+async def sync_and_record():
+    """run_sync, with its outcome recorded even when it raises (a dead
+    connection during rollback must not leave an older ok behind)."""
+    try:
+        summary = await run_sync()
+    except Exception as exc:
+        record_status({"_global": {"error": f"{type(exc).__name__}: {exc}"}})
+        raise
+    return summary, record_status(summary)
 
 
 def main() -> int:
     import asyncio
-    summary = asyncio.run(run_sync())
-    failed = [key for key, result in summary.items() if "error" in result]
+    summary, failed = asyncio.run(sync_and_record())
     print(f"[gt_sync] done: {len(summary)} groups processed, {len(failed)} failed")
     if failed:
         print(f"[gt_sync] retry failed groups before reconciliation: {failed}", file=sys.stderr)

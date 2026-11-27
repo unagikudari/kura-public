@@ -1,0 +1,85 @@
+{
+  "reviewer": "Claude Opus 5.5・独立レビュー",
+  "reviewer_kind": "independent",
+  "reviewed_revision": "1f058d0f3276ad8623003358ba52d288720006a1",
+  "observed_api_revision": "db4f1e8b2427401e1c3341be307ca85d89fbd91c",
+  "method": "本番スクリーンショット＋iframe本文。取得欠落を訂正して再判定。クリック操作は未検証。",
+  "evaluated_at": "2026-11-16",
+  "criteria": [
+    {
+      "id": "situation",
+      "verdict": "fail",
+      "assessment": "fail",
+      "evidence": "隔離・配備ありの併記から、本番で付与されるか確定できない。",
+      "nextfix": "タグの自動付与可否と確認時刻を初期画面に出す。smegmaの遮断を画面だけで答えられるか確認する。"
+    },
+    {
+      "id": "consistency",
+      "verdict": "fail",
+      "assessment": "fail",
+      "evidence": "概要とタグ表の件数に取得時点差があり、操作不要と訂正案内の区別も不明瞭。",
+      "nextfix": "概要とタグ表に共通スナップショット時刻を表示し、操作が必要か任意かを分ける。"
+    },
+    {
+      "id": "duplication",
+      "verdict": "fail",
+      "assessment": "fail",
+      "evidence": "全行で同じ説明とリンクが繰り返される。",
+      "nextfix": "全行共通の説明・リンクを圧縮し、各タグ固有の差を先に表示する。"
+    },
+    {
+      "id": "completeness",
+      "verdict": "fail",
+      "assessment": "fail",
+      "evidence": "停止条件の中身、担当の実体、訂正の使途が分からない。",
+      "nextfix": "停止理由・解除条件・実行ジョブ・訂正を取り込んだ標本を結ぶ。欠落は推測で埋めない。"
+    },
+    {
+      "id": "brevity",
+      "verdict": "unverified",
+      "assessment": "partial",
+      "evidence": "部分的：分類は残せるが、注記が多くスマホの初期画面にタグ行がない。",
+      "nextfix": "最初の画面を人の判断・進行中の仕事・本番の安全状態にし、分類カードを下げる。"
+    },
+    {
+      "id": "actionability",
+      "verdict": "unverified",
+      "assessment": "partial",
+      "evidence": "部分的：追加件数は一部にあるが、進み具合と具体的な確認キューがない。",
+      "nextfix": "人の判断が必要な画像群に直接進める。再試験は既存の品質条件を維持し二重投入を防ぐ。"
+    },
+    {
+      "id": "exploration",
+      "verdict": "unverified",
+      "assessment": "partial",
+      "evidence": "部分的：絞り込みはあるが、既定ソートがほぼ全行0で役に立たない。",
+      "nextfix": "必要な判断・進行中・停止中・最近の変化で絞り込み、実測値で比較できるようにする。"
+    },
+    {
+      "id": "graphics",
+      "verdict": "fail",
+      "assessment": "fail",
+      "evidence": "工程表示は固定で、件数の棒は数字と同じ内容。",
+      "nextfix": "タグごとの実工程図と、同じ評価画像での旧新headのFP/FN比較を表示する。"
+    },
+    {
+      "id": "freshness",
+      "verdict": "unverified",
+      "assessment": "partial",
+      "evidence": "部分的：未確認を明記する点は良いが、集計時刻と経過時間が不足。",
+      "nextfix": "処理の最終前進時刻と生存確認を分ける。完了記録を心拍切れだけで不明に戻さない。"
+    },
+    {
+      "id": "accessibility",
+      "verdict": "unverified",
+      "assessment": "unverified",
+      "evidence": "実クリックを検証していない。",
+      "nextfix": "クリック・キーボード操作と初見のタスク達成を実測する。スクリーンショットだけで合格にしない。"
+    }
+  ],
+  "limitations": [
+    "初見利用者のタスク達成を実測した評価ではない。",
+    "モデルの品質や本番適用を承認するものではない。"
+  ],
+  "supersedes": "2026-11-15の全項目合格は撤回。原文はhistory/20261115-withdrawnに保存。"
+}

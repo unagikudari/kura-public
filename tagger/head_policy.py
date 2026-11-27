@@ -193,6 +193,16 @@ WHERE r.tag = :tag
 """
 
 
+def proposed_policy(policy, *, tag, category, version, artifact_sha256, threshold):
+    """Project the candidate into the same serving fields returned by head-policies."""
+    return {
+        "tag": tag, "category": category, "patch_version": version,
+        "content_sha256": artifact_sha256, "threshold": threshold,
+        "apply_mode": policy["apply_mode"], "gate_tags": policy["gate_tags"],
+        "operating_point": policy["operating_point"],
+    }
+
+
 async def domain_gate_tags(db, tag: str) -> tuple[str, ...] | None:
     """curated 宣言 (tagger_tag_rule → tagger_tag_condition) から、この tag の
     head を発火させてよい視覚 domain を gate_tags として導出する。

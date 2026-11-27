@@ -201,23 +201,34 @@ def _vectors(rows: list[dict], weight, bias) -> dict:
     }
 
 
-#: The base a --base-only release is the unmodified copy of (the base every patch here names).
-BASE_REPO = "SmilingWolf/wd-swinv2-tagger-v3"
+from tagger import base_model  # noqa: E402
+
+#: The base a --base-only release is the unmodified copy of: the active pinned descriptor
+#: (tagger/base_models.json), which every patch here also names.
+BASE_REPO = base_model.active()["repo"]
 
 
 def build_and_save(output_dir: Path, pin_revision: str | None = None,
-                    venv_python: str | None = None, base_only: bool = False) -> dict:
+                    venv_python: str | None = None, base_only: bool = False,
+                    base: str | None = None) -> dict:
     import timm  # noqa: PLC0415
     import torch  # noqa: PLC0415
-    import torch.nn as nn  # noqa: PLC0415
     from huggingface_hub import HfApi, hf_hub_download  # noqa: PLC0415
 
     if base_only:
         # A new install has no patches (tagger/patches is this deployment's, not the
         # product's): its first release is the base model itself. Asked for by name, so an
         # emptied MANIFEST on a deployment that has patches still refuses below.
-        loaded, base_repo, pinned = [], BASE_REPO, None
+        try:
+            chosen = (dict(base_model.load()["models"][base], name=base) if base
+                      else base_model.active())
+        except KeyError as exc:
+            raise BuildError(f"unknown base model {base!r} (tagger/base_models.json)") from exc
+        loaded, base_repo, pinned = [], chosen["repo"], chosen["revision"]
     else:
+        if base:
+            raise BuildError("--base names the model of a --base-only release; patched "
+                             "releases are built on the base their patches name")
         if not MANIFEST_PATH.is_file():
             raise BuildError(f"{MANIFEST_PATH} does not exist -- a new install builds its "
                              "first release with --base-only")
@@ -227,21 +238,40 @@ def build_and_save(output_dir: Path, pin_revision: str | None = None,
         loaded = [(entry, *_load_patch(entry["tag"], entry["version"], entry["patch_sha256"]))
                   for entry in entries]
         base_repo, pinned = _resolve_base([meta for _, meta, _, _ in loaded])
-    resolved_revision = pin_revision or pinned or HfApi().model_info(base_repo).sha
+    descriptor = base_model.for_repo(base_repo)
+    # The input contract follows the base, not the file pins: keep it even when an
+    # explicit revision below leaves the bytes unverified.
+    preprocessing = (descriptor or {}).get("preprocessing", "resize-totensor-unnormalized")
+    resolved_revision = (pin_revision or pinned or (descriptor or {}).get("revision")
+                         or HfApi().model_info(base_repo).sha)
     if not resolved_revision:
         raise BuildError(f"could not resolve a pinned revision for {base_repo}")
+    if descriptor is not None and descriptor["revision"] != resolved_revision:
+        print(f"[build_release] {base_repo}@{resolved_revision} is not the pinned revision "
+              f"{descriptor['revision']}: file bytes are not verified", file=sys.stderr)
+        descriptor = None  # an explicit other revision is not covered by the file pins
 
     # timm's "hf-hub:repo@revision" syntax pins the exact snapshot (hf_split in
     # timm/models/_hub.py) -- passing a local directory path here does not work,
     # timm always re-validates the hub id.
     tags_csv = hf_hub_download(base_repo, "selected_tags.csv", revision=resolved_revision)
+    if descriptor is not None:
+        # The pinned bytes, not whatever the hub or a warm cache serves.
+        for filename in descriptor["files"]:
+            try:
+                base_model.verify_file(descriptor, filename, hf_hub_download(
+                    base_repo, filename, revision=resolved_revision))
+            except base_model.BaseModelError as exc:
+                raise BuildError(str(exc)) from exc
     base_rows = _read_csv_rows(Path(tags_csv))
     model = timm.create_model(f"hf-hub:{base_repo}@{resolved_revision}", pretrained=True)
-    stock_weight = model.head.fc.weight.detach().clone()
-    stock_bias = model.head.fc.bias.detach().clone()
+    # get_classifier()/reset_classifier() are timm's architecture-neutral handles
+    # (head.fc on SwinV2, head on EVA02), so a release can carry any timm base.
+    stock_weight = model.get_classifier().weight.detach().clone()
+    stock_bias = model.get_classifier().bias.detach().clone()
     if stock_weight.shape[0] != len(base_rows):
         raise BuildError(
-            f"selected_tags.csv has {len(base_rows)} rows but head.fc has "
+            f"selected_tags.csv has {len(base_rows)} rows but the classifier has "
             f"{stock_weight.shape[0]} rows -- base model/vocab mismatch, refusing to guess")
 
     new_weight, new_bias, merged_rows, allowed_keys, patched_map, n_stock, n_out = merge(
@@ -253,11 +283,10 @@ def build_and_save(output_dir: Path, pin_revision: str | None = None,
     # unless the merge is provably "base model + only the allowlisted rows".
     rf.validate_merge(base_rows, merged_rows, base_vectors, merged_vectors, allowed_keys)
 
-    fc = nn.Linear(new_weight.shape[1], n_out)
+    model.reset_classifier(n_out)
     with torch.no_grad():
-        fc.weight.copy_(new_weight)
-        fc.bias.copy_(new_bias)
-    model.head.fc = fc
+        model.get_classifier().weight.copy_(new_weight)
+        model.get_classifier().bias.copy_(new_bias)
 
     # Bundle gated-veto heads (plan:kura-tagger-self-improvement-loop) so they
     # ride the release to EVERY node (release_client distribution). Without this
@@ -270,6 +299,11 @@ def build_and_save(output_dir: Path, pin_revision: str | None = None,
                      or (Path.home() / ".cache" / "kura-tagger" / "models")) / "veto-heads"
     # A base-only release is the unmodified base: no veto heads either, whatever this host has.
     veto_heads = {} if base_only else load_veto_dir(_veto_dir)
+    # Logit patches and veto heads were all trained on today's unnormalised
+    # pipeline over the SwinV2 base; they mean nothing on another contract.
+    if (loaded or veto_heads) and preprocessing != "resize-totensor-unnormalized":
+        raise BuildError(f"{base_repo} uses the {preprocessing} contract; patches and veto heads "
+                         "trained on resize-totensor-unnormalized cannot be bundled with it")
     _retired = {} if base_only else _load_retired_gates()
     if _retired:
         _skipped = sorted(g for g in veto_heads if g in _retired)
@@ -287,6 +321,11 @@ def build_and_save(output_dir: Path, pin_revision: str | None = None,
         "n_out": n_out, "n_stock": n_stock, "patched": patched_map,
         "img_size": model.pretrained_cfg["input_size"][-1],
         "veto_heads": veto_heads,
+        # The input contract workers must apply (tagger/base_preprocess.py); a release
+        # without it is read as today's unnormalised pipeline.
+        "preprocessing": preprocessing,
+        "mean": list(model.pretrained_cfg.get("mean") or []),
+        "std": list(model.pretrained_cfg.get("std") or []),
     }, model_path)
 
     csv_path = output_dir / "selected_tags.csv"
@@ -323,13 +362,17 @@ def main() -> int:
                           "else: resolve the repo's current HEAD)")
     ap.add_argument("--venv-python", default=None,
                      help="python of the build venv, captured as the release lockfile")
+    ap.add_argument("--base", default=None,
+                     help="with --base-only: the descriptor name in tagger/base_models.json "
+                          "(default: the active base)")
     ap.add_argument("--base-only", action="store_true",
                      help=f"release the unmodified base model ({BASE_REPO}) without reading "
                           "tagger/patches: a new install's first release")
     args = ap.parse_args()
     try:
         release = build_and_save(Path(args.output_dir), pin_revision=args.pin_revision,
-                                  venv_python=args.venv_python, base_only=args.base_only)
+                                  venv_python=args.venv_python, base_only=args.base_only,
+                                  base=args.base)
     except (BuildError, rf.FreezeViolation) as e:
         print(f"[build_release] REFUSED: {e}", file=sys.stderr)
         return 1

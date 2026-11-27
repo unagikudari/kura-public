@@ -1,5 +1,5 @@
 """Routing, rollback and immutable assets use synthetic state; never live Serve."""
-import copy,importlib.util,json
+import copy,importlib.util,json,os,sys
 from pathlib import Path
 import pytest
 spec=importlib.util.spec_from_file_location('web_release',Path(__file__).parents[1]/'scripts/web-release.py')
@@ -31,6 +31,7 @@ def source(tmp_path,version,asset,content):
  (root/'web/src/lib/build_info.ts').write_text('export const BUILD_INFO = '+json.dumps({'commit':'abcdef12','dirty':False})+' as const;')
  return root
 def test_release_copy_is_immutable_and_keeps_previous_hashed_assets(tmp_path,monkeypatch):
+ monkeypatch.setattr(m,'validate_node',lambda node:'v24.22.1')
  monkeypatch.setattr(m,'command',lambda *a: '' if 'status' in a else 'abcdef123456')
  root=tmp_path/'releases';src=source(tmp_path,'1','old.js','old');first,first_manifest=m.prepare(src,root,Path('/fixture/node'));m.atomic(first/'release.json',{**first_manifest,'activated':True})
  src=source(tmp_path,'2','new.js','new');second,manifest=m.prepare(src,root,Path('/fixture/node'))
@@ -41,6 +42,26 @@ def test_release_copy_is_immutable_and_keeps_previous_hashed_assets(tmp_path,mon
  src=source(tmp_path,'3','old.js','collision')
  with pytest.raises(ValueError):m.prepare(src,root,Path('/fixture/node'))
  assert not list((root/'releases').glob('.preparing-*'))
+
+@pytest.mark.parametrize('version',['v22.23.3','v24.14.1','v24.22.0','v26.12.0','v25.99.0','v24.22.1-rc.1','invalid'])
+def test_insecure_or_unknown_runtime_is_rejected(tmp_path,monkeypatch,version):
+ node=tmp_path/'node';node.touch()
+ monkeypatch.setattr(m.subprocess,'check_output',lambda *a,**k:version+'\n')
+ with pytest.raises(ValueError):m.validate_node(node)
+
+@pytest.mark.parametrize('version',['v22.23.4','v24.22.1','v24.23.0','v26.12.1'])
+def test_fixed_runtime_is_accepted(tmp_path,monkeypatch,version):
+ node=tmp_path/'node';node.touch()
+ monkeypatch.setattr(m.subprocess,'check_output',lambda *a,**k:version+'\n')
+ assert m.validate_node(node)==version
+
+def test_runtime_rejection_precedes_release_or_activation_mutations(tmp_path,monkeypatch):
+ def reject(node):raise ValueError('old runtime')
+ monkeypatch.setattr(m,'validate_node',reject)
+ root=tmp_path/'not-created'
+ with pytest.raises(ValueError,match='old runtime'):m.prepare(tmp_path,root,Path('/old/node'))
+ with pytest.raises(ValueError,match='old runtime'):m.activate(tmp_path,root,tmp_path,{'node':'/old/node'},ORIGIN)
+ assert not root.exists()
 def test_failed_warmup_never_changes_ingress(monkeypatch):
  monkeypatch.setattr(m,'response',lambda url:(503,b'{}'))
  with pytest.raises(RuntimeError):m.warm(3002,'fixture',timeout=.01)
@@ -93,3 +114,43 @@ def test_settling_waits_out_the_reload_then_gives_up(monkeypatch):
  monkeypatch.setattr(m.time,'sleep',lambda s:None)
  m.settled(probe,ORIGIN);assert len(seen)==3
  with pytest.raises(ValueError):m.settled(lambda o:(_ for _ in ()).throw(ValueError('x')),ORIGIN,timeout=0)
+
+
+def cli_fixture(tmp_path,monkeypatch):
+    src=tmp_path/'source';(src/'web').mkdir(parents=True)
+    root=tmp_path/'release-state';calls=[]
+    monkeypatch.setattr(sys,'argv',['web-release','--source',str(src),'--root',str(root),'--origin',ORIGIN,'--node','/fixture/node'])
+    monkeypatch.setattr(m,'validate_node',lambda node:'v24.22.1')
+    monkeypatch.setattr(m,'built_origin',lambda source:ORIGIN)
+    def prepare(*args):calls.append('prepare');return root/'candidate',{'fixture':True}
+    monkeypatch.setattr(m,'prepare',prepare)
+    monkeypatch.setattr(m,'activate',lambda *args:calls.append('activate'))
+    monkeypatch.setattr(m,'command',lambda *args:pytest.fail('preflight invoked an external command'))
+    return src,root,calls
+
+@pytest.mark.parametrize('kind',['missing','directory','symlink','dangling_symlink','fifo','wrong_owner','public_mode','executable','empty','oversized'])
+def test_probe_env_refusal_precedes_cli_release_mutations(tmp_path,monkeypatch,kind):
+    src,root,calls=cli_fixture(tmp_path,monkeypatch);env=src/'web/.env.server'
+    if kind=='directory':env.mkdir()
+    elif kind in ('symlink','dangling_symlink'):
+        target=tmp_path/'private-env'
+        if kind=='symlink':target.write_bytes(b'fixture');target.chmod(0o600)
+        env.symlink_to(target)
+    elif kind=='fifo':os.mkfifo(env,0o600)
+    elif kind!='missing':
+        env.write_bytes(b'' if kind=='empty' else b'x'*(65537 if kind=='oversized' else 7));env.chmod(0o600)
+        if kind=='public_mode':env.chmod(0o644)
+        if kind=='executable':env.chmod(0o700)
+        if kind=='wrong_owner':monkeypatch.setattr(m.os,'getuid',lambda:env.stat().st_uid+1)
+    with pytest.raises(ValueError,match='Private probe environment'):m.main()
+    assert calls==[] and not root.exists()
+
+@pytest.mark.parametrize('size',[1,65536])
+def test_valid_probe_env_enters_normal_cli_release_flow_without_reading_values(tmp_path,monkeypatch,size):
+    src,root,calls=cli_fixture(tmp_path,monkeypatch);env=src/'web/.env.server'
+    env.write_bytes(b'x'*size);env.chmod(0o600)
+    # These are deliberately not valid credentials: preflight is metadata-only.
+    def no_read(*args,**kwargs):pytest.fail('preflight read environment contents')
+    monkeypatch.setattr(Path,'read_text',no_read);monkeypatch.setattr(Path,'read_bytes',no_read)
+    m.main()
+    assert calls==['prepare','activate'] and (root/'deploy.lock').is_file()

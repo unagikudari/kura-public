@@ -194,6 +194,8 @@ class PoolPost(Base):
 class Pool(Base):
     __tablename__ = "pool"
 
+    hidden = sa.Column(sa.Boolean, nullable=False, server_default=sa.false())
+
     pool_id = sa.Column("id", sa.Integer, primary_key=True)
     category_id = sa.Column("category_id", sa.Integer, sa.ForeignKey("pool_category.id"), nullable=False, index=True)
     version = sa.Column("version", sa.Integer, default=1, nullable=False)

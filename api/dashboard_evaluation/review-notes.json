@@ -1,0 +1,21 @@
+{
+  "reviewed_revision": "4588fbd5adfd7014ac228da5777de0890487b349",
+  "notes": [
+    {
+      "id": "no_fabricated_new_claude_review",
+      "text": "旧Claude/Gemini評価はhistory/1302822eへ原文のまま保存。新しいClaudeレビューは実施していない。"
+    },
+    {
+      "id": "gemini_grade_mismatch",
+      "text": "Geminiの原回答ではsituationがverdict=pass/assessment=partial、accessibilityがverdict=unverified/assessment=partial。原文・両列とも変更していない。既存画面はassessment列を表示する。根拠文は支援技術未検証と明記しており、自己評価のunverifiedにより全体の操作性は未検証になる。確認依頼はRESOURCE_EXHAUSTEDで回答なし。"
+    },
+    {
+      "id": "aria_not_established_defect",
+      "text": "Geminiの明示ARIA roleによる構造破綻の懸念は未実証。CSS display:blockとroleの併用だけで不具合とは断定できないため、この理由だけでroleを削除しない。実際の支援技術検証が必要。"
+    },
+    {
+      "id": "not_a_quality_gate",
+      "text": "画面の評価はモデル品質や公開許可ではない。341枚は固定した候補品質標本であり、全てが難しい画像ではない。"
+    }
+  ]
+}

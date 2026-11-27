@@ -1,0 +1,68 @@
+"""Synthetic request metadata; never install queues or submit judgments."""
+import importlib.util,time,copy
+from pathlib import Path
+from playwright.sync_api import expect
+s=importlib.util.spec_from_file_location('fixture',Path(__file__).with_name('compact-tag-filter.browser.py'));f=importlib.util.module_from_spec(s);s.loader.exec_module(f)
+def exercise(context,base,width,phone,evidence):
+ p=context.new_page();errors=[];p.on('pageerror',lambda e:errors.append(str(e)))
+ q=dict(schema='human-review-set/1',tag='knotted_fixture',purpose='training_support',total=30,remaining=30,judged={},model_sha256=None,frame_sha256='c'*64,queue_sha256='a'*64,browse_url='/?q=ids:3,8',unjudged_url='/?q=ids:3,8%20-locked:knotted_fixture',comparison={'state':'not_supplied'},request=None,request_unavailable=False)
+ other=dict(q,tag='other_training',queue_sha256='d'*64)
+ mandatory=[]
+ state={'requests_state':'available','request_unavailable':None}
+ request=dict(schema='review-request/1',queue_sha256=q['queue_sha256'],frame_sha256=q['frame_sha256'],reason='class_group_support',evidence_sha256='e'*64,requested_at='2026-11-17T00:00:00Z')
+ p.route('**/m/client-timing',lambda r:r.fulfill(status=204))
+ p.route('**/api/tagger-dashboard/review-queues',lambda r:r.fulfill(json={'state':'available','queues':[q,other]+mandatory,**state}))
+ p.route('**/api/tagger-dashboard/summary',lambda r:r.fulfill(json=dict(state='available',selected_release=15,machine_output_holds=[],observed_at=time.strftime('%Y-%m-%dT%H:%M:%SZ',time.gmtime()),learning=None,experiment=None,deployment_verified=False,model_quality_verified=False)))
+ p.route('**/api/tagger-dashboard/nodes',lambda r:r.fulfill(json={'nodes':[],'unexpected':[]}))
+ p.route('**/api/tagger-dashboard?*',lambda r:r.fulfill(content_type='text/html',body='<section data-tagger-category="overview">runtime</section>'))
+ p.route('**/api/tagger-dashboard/experiment',lambda r:r.fulfill(content_type='text/html',body='<div id="experiment-observation"></div>'))
+ p.goto(base+'/tagger-dashboard#overview',wait_until='networkidle');box=p.locator('.actions')
+ first=box.get_by_role('region',name='今やること'); requests=box.get_by_role('region',name='あなたへの確認依頼')
+ def refresh():
+  button=p.get_by_role('button',name='概要を更新',exact=True);expect(button).to_have_attribute('aria-busy','false')
+  with p.expect_response(lambda r:'/api/tagger-dashboard/review-queues' in r.url):button.click()
+  expect(button).to_have_attribute('aria-busy','false')
+ expect(box.get_by_text('追加の判定依頼はありません。',exact=True)).to_be_visible()
+ expect(box.locator('.request')).to_have_count(0)
+ q['request']=copy.deepcopy(request);refresh()
+ card=box.locator('.request');expect(card).to_have_count(1)
+ expect(card).to_contain_text('knotted_fixture');expect(card).to_contain_text('判定済み 0 / 30枚')
+ expect(card).to_contain_text('学習に必要な例の確認です。')
+ expect(card.get_by_role('link')).to_have_attribute('href',q['unjudged_url'])
+ expect(card).not_to_contain_text('今回の回答');expect(card).not_to_contain_text('判別できない')
+ expect(box.locator('.row').filter(has_text='other_training')).to_contain_text('任意の確認')
+ expect(box.locator('.row').filter(has_text='other_training').get_by_role('link',name='未判定の30枚を確認（任意）',exact=True)).to_be_visible()
+ box.get_by_label('表示',exact=True).select_option('requests');expect(box.locator('.row')).to_have_count(1)
+ box.get_by_role('button',name='上の確認依頼へ: knotted_fixture · 学習用の確認',exact=True).click();expect(card.get_by_role('link')).to_be_focused()
+ assert p.evaluate('document.documentElement.scrollWidth<=innerWidth')
+ if evidence:p.screenshot(path=str(evidence/f'explicit-request-{width}.png'),full_page=True)
+ box.get_by_role('button',name='表示をリセット').click()
+ for change in ({'frame_sha256':'f'*64},{'queue_sha256':'f'*64},{'evidence_sha256':'bad'},{'reason':'publish'}):
+  q['request']=dict(request,**change);refresh();expect(requests.get_by_role('alert')).to_contain_text('前回取得した状態')
+  expect(card).to_have_count(1)
+  q['request']=copy.deepcopy(request);refresh();expect(box.get_by_role('alert')).to_have_count(0)
+ q['remaining']=0;refresh();expect(card).to_have_count(0)
+ expect(box.locator('.row').filter(has_text='knotted_fixture')).to_contain_text('受領済み')
+ q['remaining']=30;q['request']=None;q['request_unavailable']=True;other['request_unavailable']=True
+ mandatory.append(dict(other,tag='existing_request',purpose='boundary_recheck',queue_sha256='f'*64,request_unavailable=False))
+ state.update(requests_state='unavailable',request_unavailable={'reason':'request_metadata_unavailable'});refresh()
+ expect(first.get_by_role('alert')).to_contain_text('knotted_fixture / other_training')
+ expect(first.get_by_role('link',name='画像確認',exact=False)).to_contain_text('確認できた分 1セット・30枚')
+ expect(requests.get_by_role('alert')).to_contain_text('学習用セットの依頼状況は不明')
+ expect(card).to_have_count(1);expect(card).to_contain_text('existing_request')
+ expect(card.get_by_role('link')).to_have_attribute('href',mandatory[0]['unjudged_url'])
+ expect(box.get_by_text('追加の判定依頼はありません。',exact=True)).to_have_count(0)
+ expect(box.locator('.row').filter(has_text='knotted_fixture')).to_contain_text('依頼状況不明')
+ expect(box.get_by_role('link',name='未判定の30枚を確認（任意）',exact=True)).to_have_count(0)
+ if evidence:first.get_by_role('alert').scroll_into_view_if_needed();p.screenshot(path=str(evidence/f'request-unavailable-{width}.png'),full_page=True)
+ mandatory.clear();refresh()
+ expect(first.get_by_role('link',name='画像確認',exact=False)).to_contain_text('件数未確認')
+ expect(first.get_by_text('0セット・0枚',exact=True)).to_have_count(0)
+ state.update(requests_state='available',request_unavailable=None);q['request_unavailable']=other['request_unavailable']=False;refresh()
+ expect(box.get_by_role('alert')).to_have_count(0);expect(box.get_by_text('追加の判定依頼はありません。',exact=True)).to_be_visible()
+ expect(first.get_by_text('0セット・0枚',exact=True)).to_be_visible()
+ expect(box.locator('.row').filter(has_text='knotted_fixture')).to_contain_text('任意の確認')
+ assert not errors;p.close()
+ return {'width':width,'only_explicit_training_is_request':True,'original_v1_url_and_pin_semantics':True,'malformed_retains_prior_with_error':True,'unavailable_not_optional_or_empty':True,'empty_restores_optional':True,'unavailable_preserves_existing_purpose_request':True}
+f.exercise=exercise
+if __name__=='__main__':f.main()

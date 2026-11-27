@@ -144,6 +144,9 @@ def main() -> int:
     conn.autocommit = False
     cur = conn.cursor()
     try:
+        from tagger.character_inheritance import lock_predecessor_sync, attach_sync
+        cur.execute("SET LOCAL lock_timeout='2s'")
+        prior = lock_predecessor_sync(cur) if args.publish else None
         # artifact は multi-writer + content-addressed なので ON CONFLICT DO NOTHING
         for c in comps:
             cur.execute("INSERT INTO tagger_artifact (content_sha256, byte_size) "
@@ -185,6 +188,8 @@ def main() -> int:
                 WHERE r.id = (SELECT release_id FROM tagger_release_active WHERE id = 1)
             """, (prov["commit_sha"], args.created_by))
             new_id = cur.fetchone()[0]
+            cur.execute("SELECT model_sha256 FROM tagger_release WHERE id=%s", (new_id,))
+            attach_sync(cur, prior, new_id, cur.fetchone()[0])
             cur.execute("UPDATE tagger_release_manifest SET release_id=%s "
                         "WHERE release_digest=%s", (new_id, digest))
             print(f"  **新 release id = {new_id}** (active に切替、generation +1)")

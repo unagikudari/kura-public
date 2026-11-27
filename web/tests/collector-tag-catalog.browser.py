@@ -25,7 +25,7 @@ def exercise(context,base,width,evidence):
         if path.endswith('/thumbnail'):
             return req.fulfill(body='<svg xmlns="http://www.w3.org/2000/svg" width="40" height="40"><rect width="40" height="40" fill="blue"/></svg>',content_type='image/svg+xml')
         if path=='status':return req.fulfill(json={'safe_mode':False})
-        return req.fulfill(json=[] if path=='collections' else {'items':[],'next_cursor':None})
+        return req.fulfill(json={'items':[],'next_cursor':None})
     page.route('**/m/collector-next/**',route)
     page.goto(base+'/lab/collector',wait_until='networkidle')
     panel=page.get_by_role('region',name='整理タグ')

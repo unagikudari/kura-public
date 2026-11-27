@@ -20,6 +20,7 @@
   // (armed、赤ハイライト+×+打ち消し線)、同じチップをもう 1 タップ=本削除。
   // 別チップタップで待機が移る / パネル外タップ・フォーカスページ移動・
   // 5 秒無操作で解除。左パネル (bottom=false) は従来どおり読み取り専用。
+  import { goto } from '$app/navigation';
   import { catColor } from '#lib/categoryColor.ts';
   import FlashMessage from '#lib/components/FlashMessage.svelte';
   import TagChip from '#lib/components/TagChip.svelte';
@@ -123,6 +124,13 @@
   });
 
   const deletable = $derived(bottom && !!onRemove);
+  // 右クリック = そのタグだけの検索へ (owner 2026-11-22: 「漫画ビューのタグ表示からそのタグを指定した検索に飛べるように。右クリックでいい」)。
+  // 左クリック/タップは従来どおり (bottom モードの 2 段階削除) で、削除と取り違えない。
+  function searchTag(e: MouseEvent, name: string) {
+    e.preventDefault();
+    hideTip();
+    void goto('/?q=' + encodeURIComponent(name));
+  }
 </script>
 
 <svelte:window onpointerdowncapture={onWindowPointerdown} />
@@ -147,10 +155,11 @@
             <TagChip variant="overlay" name={tag.names[0]} localizedNames={tag.localizedNames} color={catColor(tag.category)}
               busy={busy === tag.names[0]} armed={armed === tag.names[0]}
               onpointerenter={(e) => chipEnter(e, tag.names[0])} onpointerleave={hideTip}
-              onclick={() => chipClick(tag.names[0])} />
+              onclick={() => chipClick(tag.names[0])} oncontextmenu={(e) => searchTag(e, tag.names[0])} />
           {:else}
             <TagChip variant="overlay" name={tag.names[0]} localizedNames={tag.localizedNames} color={catColor(tag.category)}
-              onpointerenter={(e) => chipEnter(e, tag.names[0])} onpointerleave={hideTip} />
+              onpointerenter={(e) => chipEnter(e, tag.names[0])} onpointerleave={hideTip}
+              oncontextmenu={(e) => searchTag(e, tag.names[0])} />
           {/if}
         {/each}
       </div>

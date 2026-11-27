@@ -24,12 +24,11 @@
 
   const locale = tagLocale();
   let artists = $state<NonNullable<PoolSummary['artists']>>([]);
+  let poolName = $state<string | null>(null);
   const account = $derived(poolName ? poolNameParts(poolName).account : null);
   const artistNames = $derived(artists.map(tag => tagDisplayName(tag.names[0], tag.localizedNames, $locale)).join('・'));
 
-  let poolName = $state<string | null>(null);
   let poolSource = $state<string | null>(null);
-  let verifyStatus = $state<'pending' | 'verified' | 'excluded' | null>(null);
   // 検証プールの focus タグ (server 導出: dashboard-manual:<tag> または
   // tagger_head_candidate 逆引き)。user 2026-08-02:「フォーカスタグが
   // きちんと明示されていない。任務も」— チップ+任務行で常時明示する。
@@ -52,7 +51,7 @@
     let active = true;
     artists = []; loadedPoolId = null;
     poolName = null; poolSource = null;
-    verifyStatus = null; focusTag = null;
+    focusTag = null;
     fetchPoolHeader(id)
       .then(p => {
         if (!active) return;
@@ -60,10 +59,9 @@
         artists = p.artists ?? [];
         poolName = p.name;
         poolSource = pickPoolSource(p);
-        verifyStatus = ((p as any).verifyStatus ?? null) as typeof verifyStatus;
         focusTag = (p as any).focusTag ?? null;
       })
-      .catch(() => { if (!active) return; artists = []; poolName = null; poolSource = null; verifyStatus = null; focusTag = null; });
+      .catch(() => { if (!active) return; artists = []; poolName = null; poolSource = null; focusTag = null; });
     return () => { active = false; };
   });
 
@@ -148,11 +146,6 @@
   </div>
   {#if focusTag}
     <div class="pool-focus"><span class="pool-focus-tag" title={m.home.poolTitle.focusTag}>🎯 {focusTag}</span></div>
-  {/if}
-  {#if focusTag && verifyStatus === 'pending'}
-    <div class="pool-mission">
-      {m.home.poolTitle.missionBefore}<strong>{focusTag}</strong>{m.home.poolTitle.missionAfter}
-    </div>
   {/if}
 {/if}
 

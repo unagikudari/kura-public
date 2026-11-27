@@ -7,7 +7,8 @@ import { messagesFor, resolveUiLocale, UI_LOCALE_COOKIE, type Messages } from '#
 //
 // The browser calls /m/<path> (same-origin, NO credentials in the page). This
 // Shared by /api, /m and /data. Every read and command requires a verified
-// session or explicit service credential. Secrets stay in server-side headers.
+// session or explicit service credential, except the exact public updater GET.
+// Secrets stay in server-side headers.
 const INTERNAL = (env.INTERNAL_API_URL || 'http://127.0.0.1:8001').replace(/\/$/, '');
 
 // kura-api gates the machine-gated extension routes behind a machine key (api/main.py
@@ -27,6 +28,7 @@ const FWD_REQ_HEADERS = ['range', 'accept', 'if-none-match', 'if-modified-since'
 const FWD_RESP_HEADERS = [
   'content-type', 'content-length', 'accept-ranges', 'content-range',
   'cache-control', 'content-disposition', 'etag', 'last-modified',
+  'x-kura-head-inventory', 'x-kura-head-excluded-non-bundles',
 ];
 
 // A rejected fetch does not establish whether the upstream applied a write.
@@ -98,10 +100,13 @@ const handler: RequestHandler = async ({ params, request, url, cookies }) => {
 
   const method = request.method;
   const login = !media && path === 'auth/login' && method === 'POST';
+  // Credential-free updater artifact only. No wildcard, media alias, query,
+  // mutation or service credential forwarding. Ingress remains tailnet-only.
+  let updater = false;
   let identity;
-  try { identity = login ? null : await credential(request, cookies.get(SESSION_COOKIE)); }
+  try { identity = (login || updater) ? null : await credential(request, cookies.get(SESSION_COOKIE)); }
   catch { return new Response(JSON.stringify({ detail: { error: 'authentication_unavailable', fix: m.pages.proxy.authUnavailable } }), { status: 503, headers: { 'content-type': 'application/json', 'cache-control': 'no-store' } }); }
-  if (!login && !identity) {
+  if (!login && !updater && !identity) {
     return new Response(JSON.stringify({ detail: m.pages.proxy.signInRequired }), {
       status: 401,
       headers: { 'content-type': 'application/json' },
@@ -128,24 +133,27 @@ const handler: RequestHandler = async ({ params, request, url, cookies }) => {
   // (this process is capped at MemoryMax=1G) and anything over BODY_SIZE_LIMIT
   // threw on the buffer read → 500. Streaming keeps memory flat; kura-api
   // spools the multipart to disk on its side.
+  const safeRead = method === 'GET' || method === 'HEAD';
   const init: RequestInit = { method, headers, redirect: 'manual' };
-  if (method !== 'GET' && method !== 'HEAD' && request.body !== null) {
+  // Release an outstanding upstream read when the browser leaves or times out.
+  if (safeRead) init.signal = request.signal;
+  if (!safeRead && request.body !== null) {
     init.body = request.body;
     // `duplex: 'half'` is required by the fetch spec when sending a stream body.
     (init as unknown as { duplex: 'half' }).duplex = 'half';
   }
-  const safeRead = method === 'GET' || method === 'HEAD';
   let upstream: Response;
   try {
     upstream = await fetch(target, init);
   } catch (err) {
+    if (safeRead && request.signal.aborted) return transportFailure(m, true, false);
     logProxyFailure(method, path, err, false);
     if (isUnreplayableAuthChallenge(err)) return authChallenge(m);
     if (!safeRead) return transportFailure(m, false, false);
     try {
       upstream = await fetch(target, init);
     } catch (retryErr) {
-      logProxyFailure(method, path, retryErr, true);
+      if (!request.signal.aborted) logProxyFailure(method, path, retryErr, true);
       if (isUnreplayableAuthChallenge(retryErr)) return authChallenge(m);
       return transportFailure(m, true, true);
     }

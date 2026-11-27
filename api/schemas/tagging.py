@@ -48,7 +48,21 @@ class TagItem(BaseModel):
     category: Optional[str] = None
 
 
+class ClaimExecution(BaseModel):
+    packet: dict
+
+
+class ExecutedContentHead(BaseModel):
+    tag: str = Field(min_length=1, max_length=256)
+    artifact_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    threshold: float = Field(ge=0, le=1)
+    apply_mode: Literal["replace", "add_only"]
+
+
 class CompleteRequest(BaseModel):
+    executed_content_heads: list[ExecutedContentHead] = Field(default_factory=list, max_length=256)
+    worker_id: Optional[str] = Field(default=None, max_length=256)
+    execution_receipt_sha256: Optional[str] = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     id: int
     kind: TaggingKind
     status: CompleteStatus

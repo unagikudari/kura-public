@@ -1,12 +1,14 @@
 <script lang="ts" module>
   export type IconName = 'info' | 'artist' | 'character' | 'archive' | 'search' | 'menu' | 'filter' | 'manga' | 'image'
     | 'shield' | 'pool' | 'sort' | 'select' | 'tag' | 'list' | 'grid' | 'columns' | 'pointer' | 'expand' | 'shrink'
-    | 'pencil' | 'images' | 'download' | 'eye' | 'eyeOff' | 'move';
+    | 'tagger' | 'lora' | 'pencil' | 'images' | 'download' | 'eye' | 'eyeOff' | 'move';
 </script>
 
 <script lang="ts">
   // Decorative only: the surrounding control supplies its accessible name.
   const paths: Record<IconName, string> = {
+    lora: 'M12 3l9 5-9 5-9-5z M3 12l9 5 9-5 M3 16l9 5 9-5',
+    tagger: 'M6 6h12v12H6z M9 9h6v6H9z M9 3v3 M15 3v3 M9 18v3 M15 18v3 M3 9h3 M3 15h3 M18 9h3 M18 15h3',
     info: 'M12 8h.01 M11 12h1v5 M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0',
     artist: 'M4 20l4-1L20 7l-3-3L5 16z M14 7l3 3',
     character: 'M16 7a4 4 0 1 1-8 0 4 4 0 0 1 8 0 M4 21v-2a8 8 0 0 1 16 0v2',

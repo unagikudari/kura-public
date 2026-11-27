@@ -1,0 +1,34 @@
+{
+  "reviewed_revision": "4588fbd5adfd7014ac228da5777de0890487b349",
+  "live_api_revision": "5fafeccec5826a67149fd070ebd6dfdf748a0ccd",
+  "web_build": "1794885868331",
+  "capture": {
+    "writes": 0,
+    "page_errors": 0,
+    "widths": [
+      390,
+      1280
+    ]
+  },
+  "gemini_observation": "source_text_only_no_browser",
+  "retained_text_sha256": {
+    "codex-full.txt": "7f351eb93f8a9d4697eb973e8aa9aae29f368578818c1251253ee0a21199ef15",
+    "gemini-full.txt": "07192223e89c7a0b85da4af5e2231edc00c7f300262da8ce338cddacd3928de7"
+  },
+  "grade_counts": {
+    "self": {
+      "partial": 8,
+      "pass": 1,
+      "unverified": 1
+    },
+    "gemini": {
+      "partial": 7,
+      "pass": 3
+    }
+  },
+  "evidence": {
+    "live_readiness": "21f6fb42c525c9e709999efb895804df75549a1cb658f2b993e51b44c9c26c03",
+    "existing_paths": "7c6a3a20e946e66dd270d6052a3646050fbd53e8c4c012967f7cc1d0191109b0"
+  },
+  "clarification": "Gemini correction request failed RESOURCE_EXHAUSTED; no clarification claimed"
+}

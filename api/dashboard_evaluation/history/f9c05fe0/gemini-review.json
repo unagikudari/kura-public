@@ -1,0 +1,81 @@
+{
+  "reviewer": "Gemini",
+  "reviewed_revision": "f9c05fe01a94fe5c48a790e517980e63fe110900",
+  "method": "Gemini CLI: 可視本文とソース。画像・操作なし。2026-11-17。",
+  "criteria": [
+    {
+      "id": "situation",
+      "verdict": "partial",
+      "assessment": "partial",
+      "evidence": "付与停止・機械採点・人間への159枚依頼が分散し関連が不明。",
+      "nextfix": "人への依頼を先頭にし処理との関係を示す"
+    },
+    {
+      "id": "consistency",
+      "verdict": "pass",
+      "assessment": "pass",
+      "evidence": "本番と未公開候補、比較非表示と未測定は区別される。",
+      "nextfix": "同じ候補に対する二つの確認を関連づける"
+    },
+    {
+      "id": "duplication",
+      "verdict": "partial",
+      "assessment": "partial",
+      "evidence": "更新ボタンと表・展開内の見出しやリンクが重複。",
+      "nextfix": "展開内は内訳に絞る"
+    },
+    {
+      "id": "completeness",
+      "verdict": "partial",
+      "assessment": "partial",
+      "evidence": "担当と数はあるが抽出理由と完了条件が離れている。",
+      "nextfix": "先入観を防ぐため予測を隠す理由を示す"
+    },
+    {
+      "id": "brevity",
+      "verdict": "partial",
+      "assessment": "partial",
+      "evidence": "全5セットと比較用の別行が初期表示され長い。",
+      "nextfix": "確認依頼を目立たせ参考情報を整理"
+    },
+    {
+      "id": "actionability",
+      "verdict": "partial",
+      "assessment": "partial",
+      "evidence": "表の依頼行は全件リンクだけで残りへ再開できない。",
+      "nextfix": "表でも未判定へ直接進める"
+    },
+    {
+      "id": "exploration",
+      "verdict": "pass",
+      "assessment": "pass",
+      "evidence": "検索・4ソート・状況フィルター・解除・空状態がある。",
+      "nextfix": "フィルターの対象数を示す"
+    },
+    {
+      "id": "graphics",
+      "verdict": "partial",
+      "assessment": "partial",
+      "evidence": "未比較を0にせずグラフを条件表示。実描画は未検証。",
+      "nextfix": "非ゼロの内訳を見やすくする"
+    },
+    {
+      "id": "freshness",
+      "verdict": "pass",
+      "assessment": "pass",
+      "evidence": "古い報告・通信失敗を現在稼働や作業なしと区別。",
+      "nextfix": "観測時刻に相対時間も添える"
+    },
+    {
+      "id": "accessibility",
+      "verdict": "unverified",
+      "assessment": "unverified",
+      "evidence": "ソースと文字のみ。実画面・キーボード・iframeは未確認。",
+      "nextfix": "実画面と操作を別に検証"
+    }
+  ],
+  "limitations": [
+    "f9c05fe0/779e4cf6の概要の親画面のみ。今回の修正・埋め込み画面・モデル品質の合格ではない。",
+    "原文から実装者が要約。レビュー原文も保存。"
+  ]
+}

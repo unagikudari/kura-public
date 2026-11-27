@@ -7,6 +7,7 @@ sys.path.insert(0,str(Path(__file__).resolve().parents[2]))
 from tagger import display_bytes
 from tagger.api_target import api_base, api_origin
 from tagger.kura_db import connect_read
+from tagger.heads.quality import APPLY_THRESHOLDS
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF","expandable_segments:True")
 import torch,psycopg2,timm
 from PIL import Image
@@ -14,11 +15,14 @@ from safetensors.torch import load_file
 
 # per-concept 閾値: 7341 検証の実測精度に基づく (majora 97.1% / minora 79.6% / wrinkled 82.0%)
 # 弱い head は高閾値で適用し、hard-neg 還流で head が育ったら下げる
-TH_BY={"dark_labia_majora":0.95,"dark_labia_minora":0.995,"wrinkled_labia":0.98}
+TH_BY=APPLY_THRESHOLDS
 TH=0.95  # 後方互換 (pool description 用)
 SRC=os.environ.get("APPLY_SRC","trainer-head-r3")
-HOME=os.path.expanduser("~/tagger-heads")
-CONCEPTS=["dark_labia_majora","dark_labia_minora","wrinkled_labia"]
+HOME=os.environ.get("TAGGER_HEADS_DATA", os.path.expanduser("~/tagger-heads"))
+CONCEPTS = [name for name in TH_BY if (Path(HOME) / "heads" / f"{name}.safetensors").is_file()]
+if not CONCEPTS:
+    print("AUTOAPPLY_SKIPPED no published auto-apply heads", flush=True)
+    raise SystemExit(0)
 HEADS={c:load_file(f"{HOME}/heads/{c}.safetensors") for c in CONCEPTS}
 ctx=ssl.create_default_context();ctx.check_hostname=False;ctx.verify_mode=ssl.CERT_NONE
 AUTH={"Authorization":"Token "+base64.b64encode(f"owner:{os.environ['KTOK']}".encode()).decode(),
@@ -125,32 +129,6 @@ for line in open(logf):
         d=json.loads(line)
         if d["pid"] not in verified: backlog.add(d["pid"])
     except: pass
-# rate-limit: 未検証(pending, 未promote)の labia HEADVERIFY pool が既にあれば新規生成しない
-_unverified=0
-if os.path.exists(f"{HOME}/pending_pools.jsonl"):
-    for _l in open(f"{HOME}/pending_pools.jsonl"):
-        try:
-            _e=json.loads(_l)
-            if _e.get("src","").startswith("trainer-head") and not _e.get("promoted") and not _e.get("retired"): _unverified+=1
-        except: pass
-if _unverified>=1:
-    print(f"rate-limit: 未検証 labia pool {_unverified}件 → 新規検証pool 生成をスキップ(機械適用は実施済)",flush=True)
-    backlog=set()
-if backlog:
-    import random as _r
-    # 新規適用を優先し、残りを backlog で埋める
-    new_ids=[p for p in per_post.keys() if p in backlog]
-    rest=[p for p in backlog if p not in per_post]
-    POOL_N=20  # 検証プールサイズ(user: 集中力が持つ 1/4 サイズ、2026-07-18)
-    pool_src=(new_ids+_r.Random(11).sample(rest,len(rest)))[:POOL_N] if new_ids else _r.Random(11).sample(sorted(backlog),min(POOL_N,len(backlog)))
-    sample=pool_src
-    stamp=datetime.datetime.now().strftime("%m%d-%H%M")
-    body={"names":[f"HEADVERIFY-{stamp}: 機械適用の検証"],"category":"default",
-     "verify_status":"pending","tagger_source":SRC,
-     "description":f"head 機械適用(source={SRC}, ≥{TH})の検証 pool。誤りを剥がすだけでOK。検証完了後 promote_verified.py が『残した=正例/剥がした=hard negative』を学習GTへ還流。","posts":sample}
-    r=api("POST","/pools",body)
-    if r.get("id"):
-        with open(f"{HOME}/pending_pools.jsonl","a") as pf:
-            pf.write(json.dumps({"pool":r["id"],"src":SRC,"t":now,"n":len(sample)})+"\n")
-        print(f"VERIFY POOL {r.get("id")} URL={api_origin()}/?q=pool:{r.get("id")}",flush=True)
-print("AUTOAPPLY_DONE",flush=True)
+# Dedicated verification-pool generation is retired. Human tag corrections
+# supply GT; preserve existing pools without producing a new review queue.
+print("AUTOAPPLY_DONE", flush=True)

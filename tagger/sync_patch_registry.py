@@ -76,7 +76,7 @@ async def sync_registry(conn) -> int:
             "tag": ch["tag"], "version": ch["version"], "status": "approved", "sha": sha,
             "why": ch["why"], "why_rejected": None,
             "metrics": json.dumps(ch["metrics"]), "gt": json.dumps(ch["gt"]),
-            "head_type": "content_head", "base_repo": "SmilingWolf/wd-swinv2-tagger-v3",
+            "head_type": "content_head", "base_repo": _content_head_backbone(),
             "base_revision": None, "logit_index": None, "created_at": _as_date(ch["created_at"]),
             "created_by": ch["created_by"],
             # Opportunistic (Step 19, minimal pass): populated only when
@@ -85,6 +85,13 @@ async def sync_registry(conn) -> int:
             "model_data": ckpt_bytes})
         n += 1
     return n
+
+
+def _content_head_backbone() -> str:
+    import sys
+    sys.path.insert(0, str(REPO_ROOT))
+    from tagger.base_model import CONTENT_HEAD_BACKBONE_REPO
+    return CONTENT_HEAD_BACKBONE_REPO
 
 
 async def _main() -> int:

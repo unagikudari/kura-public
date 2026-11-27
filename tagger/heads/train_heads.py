@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """wd14-swinv2 backbone (1024-dim, patch head と同形式) 上で新概念 head を学習。
 production 適用は別途配線。ここは train+validate、成果物は patch 形式で保存。"""
-import os,io,json,sys,random
+import os,io,json,sys,random,hashlib
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF","expandable_segments:True")
-import torch,numpy as np,psycopg2,timm
+import torch,numpy as np,timm
 from PIL import Image
-from safetensors.torch import save_file
+from safetensors.torch import load_file, save_file
+from tempfile import NamedTemporaryFile
 from pathlib import Path
 
 # REPO ROOT ON sys.path. This file is always launched BY PATH — update_cycle.sh runs
@@ -25,9 +26,61 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 # The default is where they live today, so this change moves nothing.
 DATA=os.environ.get("TAGGER_HEADS_DATA", os.path.expanduser("~/tagger-heads"))
 from tagger.kura_db import connect_read  # noqa: E402  bulk reads (tagger/kura_db.py)
-conn=connect_read();conn.autocommit=True
-def rows(sql,a=None):
-    c=conn.cursor();c.execute(sql,a);r=c.fetchall();c.close();return r
+from tagger.heads.canonical_gt import coverage, load_inputs
+from tagger.heads import planner as _pl
+from tagger.heads.quality import (
+    APPLY_THRESHOLDS, NO_UPDATE, independent_validation, measure, rejection, training_ids_for,
+)
+
+samples, floors = load_inputs()
+counts = coverage(samples, floors)
+print("HEADS_GT", json.dumps({"floors": floors, "tags": counts}, sort_keys=True), flush=True)
+plan = {}
+results = {}
+existing_training = {}
+heads_root = Path(DATA) / "heads"
+
+
+def report():
+    print("HEADS_RESULT", json.dumps(results, sort_keys=True), flush=True)
+
+
+for tag, labels in samples.items():
+    if counts[tag]["need_positive"] or counts[tag]["need_negative"]:
+        results[tag] = {"state": "skipped", "reason": "below_gt_floor", **counts[tag]}
+        continue
+    if any(not _pl.split_by_post(list(ids))[0] for ids in labels.values()):
+        results[tag] = {"state": "skipped", "reason": "insufficient_split"}
+        continue
+    _, proposed_val = _pl.split_by_post(list(labels["positive"]))
+    weight_path = heads_root / f"{tag}.safetensors"
+    if weight_path.exists():
+        prior_training = training_ids_for(weight_path, heads_root / "manifests" / f"{tag}.manifest.json")
+        if prior_training is None:
+            results[tag] = {"state": "skipped", "reason": "existing_training_provenance_unavailable",
+                            "positive_upper_bound": len(proposed_val),
+                            "minimum_positive": floors["min_val_pos_support"]}
+            continue
+        existing_training[tag] = prior_training
+    independent_pos = independent_validation(proposed_val, existing_training.get(tag, ()))
+    if len(independent_pos) < floors["min_val_pos_support"]:
+        results[tag] = {"state": "skipped", "reason": "insufficient_validation_positive",
+                        "observed": len(independent_pos), "minimum": floors["min_val_pos_support"]}
+        continue
+    plan[tag] = (list(labels["positive"]), list(labels["negative"]))
+if not plan:
+    report()
+    raise SystemExit(NO_UPDATE)
+
+conn = connect_read()
+conn.autocommit = True
+
+
+def rows(sql, params):
+    with conn.cursor() as cursor:
+        cursor.execute(sql, params)
+        return cursor.fetchall()
+
 
 dev="cuda"
 print("loading wd14-swinv2 backbone...",flush=True)
@@ -79,202 +132,121 @@ def embed(ids,bs=None):
         print(f"  embed {min(i,len(ids))}/{len(ids)} (bs={bs})",flush=True)
     return res
 
-CONCEPTS={
- "wrinkled_labia": dict(
-    pos="select id from post where exists(select 1 from post_tag pt join tag_name tn on tn.tag_id=pt.tag_id where pt.post_id=post.id and tn.name='wrinkled_labia') and not exists(select 1 from tagger_gt_exclude e where e.post_id=post.id) and type='image' and media_location = 'pg'",
-    neg="select id from post where exists(select 1 from post_tag pt join tag_name tn on tn.tag_id=pt.tag_id where pt.post_id=post.id and tn.name='uncensored') and exists(select 1 from post_tag pt join tag_name tn on tn.tag_id=pt.tag_id where pt.post_id=post.id and tn.name='pussy') and not(exists(select 1 from post_tag pt join tag_name tn on tn.tag_id=pt.tag_id where pt.post_id=post.id and tn.name='wrinkled_labia')) and not exists(select 1 from tagger_gt_exclude e where e.post_id=post.id) and type='image' and media_location = 'pg' order by md5(id::text) limit 500"),
- "dark_labia_majora": dict(
-    pos="select id from post where exists(select 1 from post_tag pt join tag_name tn on tn.tag_id=pt.tag_id where pt.post_id=post.id and tn.name='dark_labia_majora') and not exists(select 1 from tagger_gt_exclude e where e.post_id=post.id) and type='image' and media_location = 'pg'",
-    neg="select id from post where exists(select 1 from post_tag pt join tag_name tn on tn.tag_id=pt.tag_id where pt.post_id=post.id and tn.name='uncensored') and exists(select 1 from post_tag pt join tag_name tn on tn.tag_id=pt.tag_id where pt.post_id=post.id and tn.name='pussy') and not(exists(select 1 from post_tag pt join tag_name tn on tn.tag_id=pt.tag_id where pt.post_id=post.id and tn.name='dark_labia_majora')) and not(exists(select 1 from post_tag pt join tag_name tn on tn.tag_id=pt.tag_id where pt.post_id=post.id and tn.name='dark_labia')) and not exists(select 1 from tagger_gt_exclude e where e.post_id=post.id) and type='image' and media_location = 'pg' order by md5(id::text) limit 500"),
- "dark_labia_minora": dict(
-    pos="select id from post where exists(select 1 from post_tag pt join tag_name tn on tn.tag_id=pt.tag_id where pt.post_id=post.id and tn.name='dark_labia_minora') and not exists(select 1 from tagger_gt_exclude e where e.post_id=post.id) and type='image' and media_location = 'pg'",
-    neg="select id from post where exists(select 1 from post_tag pt join tag_name tn on tn.tag_id=pt.tag_id where pt.post_id=post.id and tn.name='uncensored') and exists(select 1 from post_tag pt join tag_name tn on tn.tag_id=pt.tag_id where pt.post_id=post.id and tn.name='pussy') and not(exists(select 1 from post_tag pt join tag_name tn on tn.tag_id=pt.tag_id where pt.post_id=post.id and tn.name='dark_labia_minora')) and not(exists(select 1 from post_tag pt join tag_name tn on tn.tag_id=pt.tag_id where pt.post_id=post.id and tn.name='dark_labia')) and not exists(select 1 from tagger_gt_exclude e where e.post_id=post.id) and type='image' and media_location = 'pg' order by md5(id::text) limit 500"),
- # phimosis は base WD14 タグが P≈0 のノイズ(mine_phimosis.py 参照)なので raw タグ query を pos に使わない。
- # GT は curated verified_log(mine_phimosis 手書き import + grey_owl seed pool の人手判定)由来 = gt:"verified"。
- # neg_fill は uncensored∩penis∩¬phimosis を hard-neg 補充に(2x まで)。
- "phimosis": dict(
-    gt="verified",
-    neg_fill="select id from post where exists(select 1 from post_tag pt join tag_name tn on tn.tag_id=pt.tag_id where pt.post_id=post.id and tn.name='uncensored') and exists(select 1 from post_tag pt join tag_name tn on tn.tag_id=pt.tag_id where pt.post_id=post.id and tn.name='penis') and not(exists(select 1 from post_tag pt join tag_name tn on tn.tag_id=pt.tag_id where pt.post_id=post.id and tn.name='phimosis')) and not exists(select 1 from tagger_gt_exclude e where e.post_id=post.id) and type='image' and media_location = 'pg' order by md5(id::text) limit 500"),
- # small_penis / dark_penis = grey_owl tag-delta 逆算で判明した WD14 二大盲点。base タグはノイズ(small_penisは danbooru語彙, dark_penisは23297機械大量)なので curated verified_log GT で。
- "small_penis": dict(
-    gt="verified",
-    neg_fill="select id from post where exists(select 1 from post_tag pt join tag_name tn on tn.tag_id=pt.tag_id where pt.post_id=post.id and tn.name='uncensored') and exists(select 1 from post_tag pt join tag_name tn on tn.tag_id=pt.tag_id where pt.post_id=post.id and tn.name='penis') and not(exists(select 1 from post_tag pt join tag_name tn on tn.tag_id=pt.tag_id where pt.post_id=post.id and tn.name='small_penis')) and not exists(select 1 from tagger_gt_exclude e where e.post_id=post.id) and type='image' and media_location = 'pg' order by md5(id::text) limit 500"),
- "dark_penis": dict(
-    gt="verified",
-    neg_fill="select id from post where exists(select 1 from post_tag pt join tag_name tn on tn.tag_id=pt.tag_id where pt.post_id=post.id and tn.name='uncensored') and exists(select 1 from post_tag pt join tag_name tn on tn.tag_id=pt.tag_id where pt.post_id=post.id and tn.name='penis') and not(exists(select 1 from post_tag pt join tag_name tn on tn.tag_id=pt.tag_id where pt.post_id=post.id and tn.name='dark_penis')) and not exists(select 1 from tagger_gt_exclude e where e.post_id=post.id) and type='image' and media_location = 'pg' order by md5(id::text) limit 500"),
- # dark_perineum / half-erect = grey_owl tag-delta 逆算で浮上した追加盲点。curated verified_log GT。
- "dark_perineum": dict(
-    gt="verified",
-    neg_fill="select id from post where exists(select 1 from post_tag pt join tag_name tn on tn.tag_id=pt.tag_id where pt.post_id=post.id and tn.name='uncensored') and exists(select 1 from post_tag pt join tag_name tn on tn.tag_id=pt.tag_id where pt.post_id=post.id and tn.name='penis') and not(exists(select 1 from post_tag pt join tag_name tn on tn.tag_id=pt.tag_id where pt.post_id=post.id and tn.name='dark_perineum')) and not exists(select 1 from tagger_gt_exclude e where e.post_id=post.id) and type='image' and media_location = 'pg' order by md5(id::text) limit 500"),
- "half-erect": dict(
-    gt="verified",
-    neg_fill="select id from post where exists(select 1 from post_tag pt join tag_name tn on tn.tag_id=pt.tag_id where pt.post_id=post.id and tn.name='uncensored') and exists(select 1 from post_tag pt join tag_name tn on tn.tag_id=pt.tag_id where pt.post_id=post.id and tn.name='penis') and not(exists(select 1 from post_tag pt join tag_name tn on tn.tag_id=pt.tag_id where pt.post_id=post.id and tn.name='half-erect')) and not exists(select 1 from tagger_gt_exclude e where e.post_id=post.id) and type='image' and media_location = 'pg' order by md5(id::text) limit 500"),
-}
-
-# 全 pos/neg id を集めて一括 embed (重複 embed 回避)
-allids=set()
-plan={}
-import os as _os
-_applied={}; _verpos={}; _verneg={}
-_lf=f"{DATA}/applied_log.jsonl"
-if _os.path.exists(_lf):
-    for _line in open(_lf):
-        try:
-            _d=json.loads(_line);_applied.setdefault(_d["c"],set()).add(_d["pid"])
-        except: pass
-# kura#64: a verified_log row is curated ground truth only if it says so in the
-# row — carries human provenance under the schema-2 ledger. A machine-applied row,
-# a provenance-less legacy row, or a malformed one is a candidate, never a teacher,
-# so it does NOT enter verified_pos/neg. Refusing them can only lose curated GT
-# (training falls back to the SQL-derived set); it can never let a machine guess in
-# as truth, which is the failure this issue was about. The count of refusals is
-# logged once so "curated GT went empty" is visible, not silent — a legacy file
-# that predates the backfill shows up here as a loud refusal, not as green.
-from tagger.heads import verified_ledger as _vl
-_vf=f"{DATA}/verified_log.jsonl"
-# Four outcomes, counted apart on purpose (trainer's post-backfill observation):
-#   curated  — human provenance, used as verified GT
-#   machine  — schema-2 but source=machine_applied: correctly demoted, EXPECTED,
-#              not a problem — a backfilled file is mostly these
-#   legacy   — no `schema` field: a pre-#64 row the backfill has not converted yet
-#   malformed— schema present but invalid (unknown source, bad shape)
-# Only `legacy` means "run the backfill"; folding machine into it made the hint
-# fire forever after a clean backfill.
-_ver_curated=_ver_machine=_ver_legacy=_ver_malformed=0
-if _os.path.exists(_vf):
-    for _line in open(_vf):
-        _line=_line.strip()
-        if not _line:
-            continue
-        try:
-            _d=json.loads(_line)
-        except Exception:
-            _ver_malformed+=1; continue
-        if _vl.is_curated(_d):
-            (_verpos if _d["label"]=="positive" else _verneg).setdefault(
-                _d["concept"], set()).add(_d["post_id"])
-            _ver_curated+=1
-        elif not isinstance(_d, dict) or "schema" not in _d:
-            _ver_legacy+=1                    # pre-#64 row, backfill pending
-        elif _d.get("source") in _vl.MACHINE_SOURCES:
-            _ver_machine+=1                   # demoted on purpose — expected, not an error
-        else:
-            _ver_malformed+=1                 # schema-2 but does not validate
-print(f"  [verified_log] curated={_ver_curated} used; machine(excluded)={_ver_machine}"
-      f"{f', legacy(RUN BACKFILL)={_ver_legacy}' if _ver_legacy else ''}"
-      f"{f', malformed={_ver_malformed}' if _ver_malformed else ''}", flush=True)
-if _ver_legacy:
-    print(f"  [verified_log] {_ver_legacy} legacy rows lack provenance — run "
-          f"tagger/heads/backfill_verified_provenance.py on the heads node (kura#64).",
-          flush=True)
-from tagger.heads import planner as _pl
-import datetime as _dt
-
-# 既存 8 タグの neg SQL は `limit 500` で、正例の多いタグでは予算 2*pos が 500 を超える
-# (dark_labia_minora: 予算 451,252)。旧経路も同じ不足を抱えており、planner の既定 (止める)
-# にすると本番 8 タグが全滅する — なので **期限付きで** 通す。期限が切れれば学習が止まり、
-# LIMIT を上げる (Phase 2) か根拠を書いて更新するしかない。記録を読む人を待たない。
-_LEGACY_SHORTFALL_WAIVER = _pl.ShortfallWaiver(
-    reason="既存 8 タグの neg SQL は LIMIT 500。旧経路と同じ不足で、Phase 1 は挙動を変えない。"
-           " LIMIT の引き上げ (完全候補集合) は Phase 2 の SQL 作業で行う",
-    expires=_dt.date(2026, 10, 4),
-    granted_by="plan kura-generic-head-trainer rev3 / 実装レビュー round 3 (両席 REVISE の fold)")
-
-# 旧ループ (二分岐 + `neg[:len(pos)*2]`) は planner の dispatch 表と層別クォータへ移した。
-# ここは SQL を撃って id 列を渡すだけ — 判断は planner にあり、そちらは DB 無しで
-# テストできる。
-_PLANS = {}
-for name,q in CONCEPTS.items():
-    _kind = _pl.kind_of(q)
-    if _kind == "verified_log":
-        _plan = _pl.build(name, q,
-            verified_pos=list(_verpos.get(name,set())),
-            verified_neg=list(_verneg.get(name,set())),
-            neg_fill=[r[0] for r in rows(q["neg_fill"])] if q.get("neg_fill") else [],
-            shortfall_waiver=_LEGACY_SHORTFALL_WAIVER)
-    else:
-        _plan = _pl.build(name, q,
-            sql_pos=[r[0] for r in rows(q["pos"])],
-            sql_neg=[r[0] for r in rows(q["neg"])],
-            applied=list(_applied.get(name,set())),
-            verified_pos=list(_verpos.get(name,set())),
-            verified_neg=list(_verneg.get(name,set())),
-            shortfall_waiver=_LEGACY_SHORTFALL_WAIVER)
-    _PLANS[name] = _plan
-    if _verpos.get(name) or _verneg.get(name):
-        print(f"  [{name}] verified: +{len(_verpos.get(name,()))} pos,"
-              f" +{len(_verneg.get(name,()))} hard-neg")
-    plan[name]=(_plan.pos,_plan.neg); allids|=set(_plan.pos)|set(_plan.neg)
+allids = {pid for pos, neg in plan.values() for pid in pos + neg}
 
 print("total unique imgs to embed:",len(allids),flush=True)
-emb=embed(list(allids))
+emb=embed(sorted(allids))
+
+def atomic_write(dest, writer):
+    with NamedTemporaryFile(dir=dest.parent, prefix=f".{dest.name}.", delete=False) as temp:
+        staged = Path(temp.name)
+    try:
+        writer(staged)
+        os.replace(staged, dest)
+    finally:
+        staged.unlink(missing_ok=True)
+
 
 OUT={}
 for name,(pos,neg) in plan.items():
-    Xp=torch.stack([emb[i] for i in pos if i in emb])
-    Xn=torch.stack([emb[i] for i in neg if i in emb])
     # 以降の索引は「emb にある id の並び」に一致させる。tensor の位置ではなく id で引く。
     # 80/20 split — **post_id 単位で、埋め込みより前に確定した順序**を使う (round 1 指摘)。
     # tensor の添字を shuffle すると post の同一性が消え、派生画像が train/val を跨いでも
     # 分からない。planner が決めた split を id で引き当てる。
     _pids=[i for i in pos if i in emb]; _nids=[i for i in neg if i in emb]
     ptr_ids,pva_ids=_pl.split_by_post(_pids); ntr_ids,nva_ids=_pl.split_by_post(_nids)
+    if (len(_pids) < floors["min_gt_positive"] or len(_nids) < floors["min_gt_negative"]
+            or not all((ptr_ids, pva_ids, ntr_ids, nva_ids))):
+        results[name] = {"state": "skipped", "reason": "insufficient_loaded_samples",
+                         "positive": len(_pids), "negative": len(_nids)}
+        continue
+    prior_training = existing_training.get(name, ())
+    pva_ids = independent_validation(pva_ids, prior_training)
+    nva_ids = independent_validation(nva_ids, prior_training)
+    if len(pva_ids) < floors["min_val_pos_support"] or not nva_ids:
+        results[name] = {"state": "skipped", "reason": "insufficient_independent_validation",
+                         "positive": len(pva_ids), "negative": len(nva_ids),
+                         "minimum_positive": floors["min_val_pos_support"]}
+        continue
+    ntr_ids = ntr_ids[:2 * len(ptr_ids)]
+    Xp=torch.stack([emb[i] for i in _pids])
+    Xn=torch.stack([emb[i] for i in _nids])
     _pl.assert_no_split_leak(name, ptr_ids+ntr_ids, pva_ids+nva_ids)
     _pi={i:j for j,i in enumerate(_pids)}; _ni={i:j for j,i in enumerate(_nids)}
     Xtp=Xp[[_pi[i] for i in ptr_ids]]; Xvp=Xp[[_pi[i] for i in pva_ids]]
     Xtn=Xn[[_ni[i] for i in ntr_ids]]; Xvn=Xn[[_ni[i] for i in nva_ids]]
     Xtr=torch.cat([Xtp,Xtn]);ytr=torch.cat([torch.ones(len(Xtp)),torch.zeros(len(Xtn))])
-    # PER-SAMPLE WEIGHT。S2 (PU の弱ラベル) を確定負例と同じ重さで学習しないための器。
-    # `reduction="none"` の損失に掛けてから平均する — `BCEWithLogitsLoss(weight=...)` に
-    # 渡す形でも同じだが、正規化の仕方を明示したいので手で書く (round 1 指摘)。
-    # 既存 8 タグは全負例が確定 (weight 1.0) なので、この経路を通しても**学習は変わらない**。
-    _wneg = _PLANS[name].weights if name in _PLANS else [1.0]*len(neg)
-    _wmap = dict(zip(neg, _wneg))
-    wtr=torch.cat([torch.ones(len(Xtp)),
-                   torch.tensor([_wmap.get(i,1.0) for i in ntr_ids],dtype=torch.float)])
     Xv=torch.cat([Xvp,Xvn]);yv=torch.cat([torch.ones(len(Xvp)),torch.zeros(len(Xvn))])
     # normalize features (like patch space)
     mu=Xtr.mean(0);sd=Xtr.std(0)+1e-6
-    Xtr=(Xtr-mu)/sd; Xv=(Xv-mu)/sd
+    Xtr=(Xtr-mu)/sd
     w=torch.zeros(1024,requires_grad=True);b=torch.zeros(1,requires_grad=True)
     opt=torch.optim.Adam([w,b],lr=0.05);lf=torch.nn.BCEWithLogitsLoss(
         pos_weight=torch.tensor(float(len(Xtn))/max(1,len(Xtp))), reduction="none")
     for _ in range(500):
         opt.zero_grad()
         per=lf(Xtr@w+b,ytr)                       # reduction="none" -> 標本ごと
-        loss=(per*wtr).sum()/wtr.sum()+1e-3*w.norm()**2   # 重み付き平均。正規化は sum(w)
+        loss=per.mean()+1e-3*w.norm()**2
         loss.backward();opt.step()
+    threshold = APPLY_THRESHOLDS.get(name, 0.5)
+    candidate = {"w": w.detach(), "b": b.detach(), "mu": mu, "sd": sd}
+    dest = Path(DATA) / "heads" / f"{name}.safetensors"
+    existing = name in existing_training
+    baseline = None
     with torch.no_grad():
-        # val metrics @ th=0.5
-        pv=torch.sigmoid(Xv@w+b)
-        pred=(pv>0.5).float()
-        tp=((pred==1)&(yv==1)).sum().item();fp=((pred==1)&(yv==0)).sum().item()
-        fn=((pred==0)&(yv==1)).sum().item();tn=((pred==0)&(yv==0)).sum().item()
-        P=tp/max(1,tp+fp);R=tp/max(1,tp+fn);acc=(tp+tn)/max(1,len(yv))
-    print(f"[{name}] pos={len(Xp)} neg={len(Xn)} | val P={P:.2f} R={R:.2f} acc={acc:.2f} (tp{tp}/fp{fp}/fn{fn}/tn{tn})",flush=True)
-    OUT[name]=dict(P=P,R=R,acc=acc,pos=len(Xp),neg=len(Xn),
-                   w=w.detach(),b=b.detach(),mu=mu,sd=sd)
+        try:
+            measured = measure(candidate, Xv, yv, threshold)
+        except ValueError:
+            results[name] = {"state": "rejected", "reason": "invalid_candidate"}
+            continue
+        if existing:
+            try:
+                if training_ids_for(dest, heads_root / "manifests" / f"{name}.manifest.json") == prior_training:
+                    baseline = measure(load_file(dest), Xv, yv, threshold)
+            except Exception as exc:
+                print(f"[{name}] existing head unreadable ({type(exc).__name__})", flush=True)
+    why = rejection(measured, floors, existing=existing, baseline=baseline)
+    results[name] = {"state": "rejected" if why else "accepted", "reason": why,
+                     "candidate": measured, "baseline": baseline, "threshold": threshold}
+    if why:
+        continue
+    OUT[name] = dict(training_ids=ptr_ids+ntr_ids, used_ids={"positive": ptr_ids+pva_ids, "negative": ntr_ids+nva_ids},
+                     P=measured["precision"], R=measured["recall"], acc=measured["accuracy"],
+                     pos=len(_pids), neg=len(ntr_ids)+len(nva_ids), **candidate)
 
 # 保存 (patch 形式 + メタ) — validate 用の scratch dir
+if not OUT:
+    report()
+    raise SystemExit(NO_UPDATE)
 os.makedirs(f"{DATA}/heads",exist_ok=True)
 summary={}
 for name,d in OUT.items():
-    save_file({"w":d["w"],"b":d["b"],"mu":d["mu"],"sd":d["sd"]},f"{DATA}/heads/{name}.safetensors")
+    weight_path = heads_root / f"{name}.safetensors"
+    atomic_write(weight_path,
+                 lambda path: save_file({key: d[key] for key in ("w", "b", "mu", "sd")}, path))
     summary[name]={k:d[k] for k in ("P","R","acc","pos","neg")}
-    # 負例 provenance。round 2 で指摘されたとおり、集計だけ summary に載せて `chosen`
-    # (post ごとの層・重み) を**どこにも保存していなかった** — 「manifest で再構成できる」
-    # という主張が嘘になっていた。完全 manifest は別 artifact に落とし、summary には
-    # 参照先と digest だけ置く (summary を全 ID で膨らませない、も round 1 の指摘)。
-    if name in _PLANS:
-        _man=_PLANS[name].manifest
-        _mdir=f"{DATA}/heads/manifests"; os.makedirs(_mdir,exist_ok=True)
-        _mpath=f"{_mdir}/{name}.manifest.json"
-        _blob=json.dumps(_man,ensure_ascii=False,sort_keys=True,indent=1)
-        open(_mpath,"w").write(_blob)
-        summary[name]["manifest"]={k:v for k,v in _man.items() if k != "chosen"}
-        summary[name]["manifest_ref"]={
-            "path": _mpath,
-            "sha256": __import__("hashlib").sha256(_blob.encode()).hexdigest(),
-            "chosen_count": len(_man.get("chosen",[]))}
-json.dump(summary,open(f"{DATA}/heads/summary.json","w"),indent=1)
+    manifest = {
+        "schema": "kura-head-training/1",
+        "source": "tagger_gt_label",
+        "head_sha256": hashlib.sha256(weight_path.read_bytes()).hexdigest(),
+        "training_post_ids": sorted(d["training_ids"]),
+        "chosen": [
+            {"post_id": pid, "verdict": verdict, "audit_id": samples[name][verdict][pid]}
+            for verdict, ids in d["used_ids"].items() for pid in ids
+        ],
+    }
+    manifest_dir = Path(DATA) / "heads" / "manifests"
+    manifest_dir.mkdir(exist_ok=True)
+    manifest_path = manifest_dir / f"{name}.manifest.json"
+    manifest_text = json.dumps(manifest, ensure_ascii=False, sort_keys=True, indent=1)
+    atomic_write(manifest_path, lambda path: path.write_text(manifest_text))
+    summary[name]["manifest"] = {"source": manifest["source"]}
+    summary[name]["manifest_ref"] = {
+        "path": str(manifest_path),
+        "sha256": hashlib.sha256(manifest_text.encode()).hexdigest(),
+        "chosen_count": len(manifest["chosen"]),
+    }
+atomic_write(Path(DATA) / "heads" / "summary.json",
+             lambda path: path.write_text(json.dumps(summary, indent=1)))
+report()
 print("HEADS_DONE",json.dumps(summary),flush=True)

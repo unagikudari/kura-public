@@ -1,0 +1,4 @@
+{
+ "_doc": "Owner-approved additions per base model (ruling 2026-11-23): a candidate base's vocabulary names that kura has no tag for are held, never auto-created. Add a name here only on the owner's decision; tagger/base_vocabulary.py reads this file.",
+ "approved_additions": {}
+}

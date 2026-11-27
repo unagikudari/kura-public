@@ -1,0 +1,8 @@
+[Unit]
+Description=kura-edge: rotate the access log and write the daily request-timing report (web/scripts/edge-log.py)
+After=kura-edge.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 %h/kura/web/scripts/edge-log.py rotate --keep-days 14
+Nice=10

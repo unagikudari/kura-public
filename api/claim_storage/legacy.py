@@ -14,8 +14,9 @@ async def candidates(db,pid,actor,keep_ids):
     return list(rows.scalars())
 
 
-async def replace(db,pid,actor,tag_ids):
-    await db.execute(text("DELETE FROM post_tag_actor_claim WHERE post_id = :pid AND actor_id = :actor"),{'pid':pid,'actor':actor})
+async def replace(db,pid,actor,tag_ids, *, preserve_tag_ids=()):
+    tag_ids = [tid for tid in tag_ids if tid not in preserve_tag_ids]
+    await db.execute(text("DELETE FROM post_tag_actor_claim WHERE post_id = :pid AND actor_id = :actor AND tag_id<>ALL(CAST(:held AS int[]))"),{'pid':pid,'actor':actor,'held':list(preserve_tag_ids)})
     await db.execute(text(
         "INSERT INTO post_tag_actor_claim (post_id, tag_id, actor_id) "
         "SELECT :pid, x, :actor FROM unnest((:tag_ids)::int[]) AS x"),

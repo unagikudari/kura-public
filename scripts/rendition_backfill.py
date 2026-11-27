@@ -125,7 +125,8 @@ def run(conn, root: Path, batch: int, max_rows: int, reserve: int, verify: bool,
 RESTORE_IDS = """
 SELECT r.post_id, r.kind, o.sha256, o.mime FROM post_rendition r JOIN rendition_object o USING (sha256)
  JOIN post p ON p.id = r.post_id
- WHERE (r.kind = 'view' AND p.data IS NULL) OR (r.kind = 'thumb' AND p.thumbnail IS NULL)
+ WHERE o.mime LIKE 'image/%%'
+   AND ((r.kind = 'view' AND p.data IS NULL) OR (r.kind = 'thumb' AND p.thumbnail IS NULL))
  ORDER BY r.post_id, r.kind LIMIT %(limit)s
 """
 

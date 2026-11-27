@@ -143,7 +143,10 @@ QUARANTINE_TAGS: frozenset[str] = frozenset({"condom_on_penis", "mosaic_censorin
 # reconciler's candidate loop) plus the one-shot triage script
 # (tagger/vnext_triage.py). Keep it pure (no DB) -- callers look up the
 # category themselves.
-NON_TRAINABLE_TAGS: frozenset[str] = frozenset({"tagger-exclude"})
+# source_unknown records that a post's origin is unknown -- not a feature of the
+# image -- so it is never learned, refilled into human review or dispatched
+# (owner 2026-11-25: 「画像自身の特徴ではないので人間に判定させたりタグとして管理するのをやめて」).
+NON_TRAINABLE_TAGS: frozenset[str] = frozenset({"tagger-exclude", "tagger-training-exclude", "source_unknown"})
 NON_TRAINABLE_TAG_CATEGORIES: frozenset[str] = frozenset({"meta", "artist", "copyright"})
 
 

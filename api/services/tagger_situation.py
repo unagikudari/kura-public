@@ -185,8 +185,9 @@ async def character_coverage(db: AsyncSession) -> dict[str, Any]:
     """
     cat = await character_category_id(db)
     cov = (await db.execute(text(
-        "SELECT (SELECT count(DISTINCT pt.post_id) FROM post_tag pt "
-        "        JOIN tag t ON t.id = pt.tag_id AND t.category_id = :cat) AS covered, "
+        "SELECT (SELECT count(*) FROM (SELECT pt.post_id FROM post_tag pt "
+        "        JOIN tag t ON t.id = pt.tag_id AND t.category_id = :cat "
+        "        GROUP BY pt.post_id) AS character_posts) AS covered, "
         "       (SELECT count(*) FROM post) AS total"
     ), {"cat": cat})).mappings().one()
     adds = (await db.execute(text(

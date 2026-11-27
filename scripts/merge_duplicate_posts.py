@@ -18,7 +18,8 @@ both posts must be ok. A duplicate whose checksum's file is gone merges only whe
   already in that pool, the duplicate's row is dropped. Pool covers pointing at the duplicate
   point at the representative.
 - post_tag: the tags the representative lacks are added as machine tags (audited as the auto
-  tagger's are, actor merge_duplicate_posts:dup=N); one it has pinned absent stays absent.
+  tagger's are, actor merge_duplicate_posts:dup=N); one it has pinned absent stays absent. Not when
+  the duplicate's served view did not show its original: its tags were made from another picture.
 - post_favorite: each person's favorite goes to the representative (one per person; one the
   representative already has keeps its own time), and the duplicate's rows go (#157).
 - tagger_gt_label: the duplicate keeps none, so one image counts once in the training set
@@ -55,7 +56,7 @@ from psycopg2.extras import RealDictCursor  # noqa: E402
 from api.config import DATABASE_URL_SYNC  # noqa: E402
 from api.services import files  # noqa: E402
 from api.tagger_core import gt_lock  # noqa: E402
-from scripts.repair_posts import Journal, Refused, Stop, _sync_dir, contents, current_rendition, original_bytes  # noqa: E402
+from scripts.repair_posts import Journal, Refused, Stop, _shows, _sync_dir, contents, current_rendition, original_bytes  # noqa: E402
 
 LOG = Path(os.environ.get("KURA_MERGE_LOG", Path.home() / ".local/state/kura-merge-posts"))
 
@@ -157,6 +158,14 @@ def _merge(pg, dup: int, rep: int, apply: bool, journal, planned: list, lost_ok:
                 raise Refused("original missing" if not found else "no file under the post's names has SHA1 = post.checksum")
             if dup_bytes != rep_bytes:
                 raise Refused("the two originals differ")
+            # A duplicate whose served view showed ANOTHER picture (a file of another image under its
+            # names, pool 1166 2026-11-22) was tagged by the tagger from that picture: its machine tags
+            # describe the other image and do not move (owner: 「1」, keep only what a human decides).
+            _, dup_view = current_rendition(db, dup, "view")
+            from PIL import Image
+            import io
+            with Image.open(io.BytesIO(dup_bytes)) as im:
+                dup_view_shows = dup_view is not None and _shows(im, dup_view)
 
             db.execute("SELECT pool_id, ord FROM pool_post WHERE post_id = %s ORDER BY pool_id", (dup,))
             dup_pools = [(p["pool_id"], p["ord"]) for p in db.fetchall()]
@@ -202,6 +211,7 @@ def _merge(pg, dup: int, rep: int, apply: bool, journal, planned: list, lost_ok:
                 raise Refused(f"the duplicate holds GT labels no governed per-post path can retract "
                               f"{[(g['tag'], g['derived_from']) for g in unretractable]}; it would count twice")
             record = {"dup": dup, "rep": rep, "requested_rep": requested, "dup_original_lost": lost,
+                      "dup_view_shows_original": dup_view_shows,
                       "pins": [{"tag": p[0], "state": p[1], "pinned_by": p[2]} for p in pins],
                       "pools": [{"pool": p, "ord": o, "rep_already_member": p in rep_pools} for p, o in dup_pools],
                       "covers": covers,
@@ -235,10 +245,12 @@ def _merge(pg, dup: int, rep: int, apply: bool, journal, planned: list, lost_ok:
                 db.execute("DELETE FROM post_favorite WHERE post_id = %s", (dup,))
             # Machine-added tags, like the auto tagger's; a tag the representative has pinned
             # absent is dropped by the pin guard and so is not among the rows returned.
-            db.execute("""INSERT INTO post_tag (post_id, tag_id, locked)
-                          SELECT %s, tag_id, locked FROM post_tag WHERE post_id = %s ON CONFLICT DO NOTHING
-                          RETURNING tag_id""", (rep, dup))
-            added = sorted(t["tag_id"] for t in db.fetchall())
+            added = []
+            if dup_view_shows:
+                db.execute("""INSERT INTO post_tag (post_id, tag_id, locked)
+                              SELECT %s, tag_id, locked FROM post_tag WHERE post_id = %s ON CONFLICT DO NOTHING
+                              RETURNING tag_id""", (rep, dup))
+                added = sorted(t["tag_id"] for t in db.fetchall())
             if added:
                 db.execute("""INSERT INTO post_tag_audit (post_id, actor_type, actor_id, source, added_tags, removed_tags, created_at, host)
                               SELECT %s, 'script', %s, 'auto_tag',

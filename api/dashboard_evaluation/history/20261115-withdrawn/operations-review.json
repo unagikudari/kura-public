@@ -1,0 +1,109 @@
+{
+  "reviewer": "独立エージェント・運用目的の使いやすさ",
+  "verdict": "approve",
+  "score": 20,
+  "max_score": 20,
+  "base_revision": "3eb5f406fd57e2239500ea4aa28753717b4b98eb",
+  "scope": "未commit actionability previewの画面の使いやすさ。モデル品質・学習完了・本番反映の判定ではない。",
+  "method": "独立したsource読解と実Chromium画像の目視。操作はUX agentと親のGET-only fixture実測を帰属を明示して利用。自身の追加ブラウザー操作は行っていない。",
+  "criteria": [
+    {
+      "id": "situation",
+      "verdict": "pass",
+      "score": 2,
+      "evidence": "次工程9分類をカードで示し、配備設定19タグを別段で説明。未確認304も稼働成功と混同しない。",
+      "nextfix": "今回の受入れに必要な修正なし"
+    },
+    {
+      "id": "consistency",
+      "verdict": "pass",
+      "score": 2,
+      "evidence": "隔離・修復待ちと配備設定ありは別軸。smegmaの個別停止確認は未確認と明記。過去候補#1361/日時と改善実験を分ける。",
+      "nextfix": "今回の受入れに必要な修正なし"
+    },
+    {
+      "id": "duplication",
+      "verdict": "pass",
+      "score": 2,
+      "evidence": "概要は次工程に集中し、構成内訳・自動学習の最終報告・過去候補は詳細へ。分類とtaskは同じ判定関数を使う。",
+      "nextfix": "今回の受入れに必要な修正なし"
+    },
+    {
+      "id": "completeness",
+      "verdict": "pass",
+      "score": 2,
+      "evidence": "タグ・状態・担当・次処理はカード内、理由/完了条件/観測時刻は直下detailsで確認。未記録を明示し架空の実行を表示しない。",
+      "nextfix": "今回の受入れに必要な修正なし"
+    },
+    {
+      "id": "brevity",
+      "verdict": "pass",
+      "score": 2,
+      "evidence": "390pxの実画面でタグ→状態→次行動が縦積み、評価は折畳み、絞込は既定で閉じる。利用者指示は独立した短文。",
+      "nextfix": "今回の受入れに必要な修正なし"
+    },
+    {
+      "id": "actionability",
+      "verdict": "pass",
+      "score": 2,
+      "evidence": "システム担当の行動と「あなたの承認・追加操作は不要」を分離。確実な誤りだけ訂正する方針と付与済/未付与画像の入口がある。",
+      "nextfix": "今回の受入れに必要な修正なし"
+    },
+    {
+      "id": "exploration",
+      "verdict": "pass",
+      "score": 2,
+      "evidence": "検索・状況/配備設定の複合filter・昇降sort・件数・解除・空結果の操作が4幅のブラウザー証拠で通過。独立UX再試験でdetailsの展開も通過。",
+      "nextfix": "今回の受入れに必要な修正なし"
+    },
+    {
+      "id": "graphics",
+      "verdict": "pass",
+      "score": 2,
+      "evidence": "カード棒はタグ件数割合と明記、配備件数と別軸。候補meterは「以前の候補」とID/時刻付き。実験は未公開・単位・実験IDを示し精度と区別。",
+      "nextfix": "今回の受入れに必要な修正なし"
+    },
+    {
+      "id": "freshness",
+      "verdict": "pass",
+      "score": 2,
+      "evidence": "候補/集計は読込時点と明記し再読込入口あり。実験/ノードは30秒更新、取得失敗時は旧報告と明示しprogressを消す。報告時刻と前進時刻未記録も区別。",
+      "nextfix": "今回の受入れに必要な修正なし"
+    },
+    {
+      "id": "accessibility",
+      "verdict": "pass",
+      "score": 2,
+      "evidence": "実画像で390pxの次行動が横スクロール無しで読める。320/390/844/1280の操作証拠、focus/未送信入力保持あり。意味は色だけでなく文字でも表示。",
+      "nextfix": "今回の受入れに必要な修正なし"
+    }
+  ],
+  "blocking": [],
+  "nextfix": "本番反映後に同じ表示定義であることを照合し、代表タグと狭幅をsmoke確認。モデル品質の合格と呼ばない。",
+  "limitations": [
+    "これは専門家によるUI受入れであり、利用者調査やWCAG認証ではない。",
+    "実画面は本番を変更しない隔離preview。ノード0はfixtureで本番のfleet状態ではない。",
+    "実験の時系列ブラウザー試験は今回fixtureではstub。更新/失敗処理は現sourceを確認し、以前の実測を補助証拠とする。",
+    "評価対象一致の追加変更はsource確認のみ。ハッシュが一致しないとき現在版合格と表示しない設計を確認した。",
+    "音声読み上げ・キーボード全経路・全色覚条件は未検証。"
+  ],
+  "evidence": [
+    "ux-overview-1280.png",
+    "ux-default-card-390.png",
+    "ux-details-card-390.png",
+    "../actionability-preview-final/results.json",
+    "../actionability-preview/results.json"
+  ],
+  "source_sha256": {
+    "api/tagger_core/dashboard_visual.py": "253a74f163ecf7cf338b8661181dad2700710d26d953eb39d4d9c28e43a3bf96",
+    "api/tagger_core/dashboard_actions.py": "a9269c4c359e22b8346f4b3b52de5bec47ece5a5dfd5d477e1be49ce413be02a",
+    "api/tagger_core/dashboard_experiment.py": "a83995cbb4b96bc0763ffe1d8aa6e6da955706669a7ef3d2966a1a6127af279a",
+    "api/routers/pools.py": "0c82647ab9493b0d75f9fcc5c3bebda6428178d346abc2147d934ed0f4f1478c",
+    "web/src/routes/tagger-dashboard/+page.svelte": "4ab6ef709fe31949e3b59a3851114b1560a459d94a98fc1638b085da17dfd57b",
+    "web/src/lib/components/EvaluationPane.svelte": "91b69c0282bbc3387c7b22a84e7c2e0ab3739d6e9a3ee46e93e1c7a3dfd0244f"
+  },
+  "previous_report": "../operations-rereview-d313afcb.md",
+  "production_writes": false,
+  "reviewed_revision": "1f058d0f3276ad8623003358ba52d288720006a1",
+  "final_delta": "ba46a224のUI受入れに加え、停止条件の分類とAPI source照合の保証範囲を明記（1f058d0f）。本番Webは配布後に別途確認。"
+}

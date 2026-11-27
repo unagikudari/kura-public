@@ -47,17 +47,18 @@ async def candidates(db,source,pid,keep_ids):
     return list(rows.scalars())
 
 
-async def replace(db,source,pid,tag_ids):
+async def replace(db,source,pid,tag_ids, *, preserve_tag_ids=()):
     if not tag_ids:
         raise ValueError('A claim snapshot requires a nonempty completion')
     if not source.normalized:
-        return await legacy.replace(db,pid,source.actor,tag_ids)
+        return await legacy.replace(db,pid,source.actor,tag_ids,preserve_tag_ids=preserve_tag_ids)
+    tag_ids = [tid for tid in tag_ids if tid not in preserve_tag_ids]
     key=source.key
     if key is None:
         key=(await db.execute(text('''INSERT INTO claim_storage.actor(actor_id) VALUES(:actor)
           ON CONFLICT DO NOTHING RETURNING id'''),{'actor':source.actor})).scalar()
         if key is None:
             key=(await db.execute(text('SELECT id FROM claim_storage.actor WHERE actor_id=:actor'),{'actor':source.actor})).scalar_one()
-    await db.execute(text('DELETE FROM claim_storage.claim WHERE post_id=:pid AND actor_key=:actor'),{'pid':pid,'actor':key})
+    await db.execute(text('DELETE FROM claim_storage.claim WHERE post_id=:pid AND actor_key=:actor AND tag_id<>ALL(CAST(:held AS int[]))'),{'pid':pid,'actor':key,'held':list(preserve_tag_ids)})
     await db.execute(text('''INSERT INTO claim_storage.claim(post_id,tag_id,actor_key)
       SELECT :pid,x,:actor FROM unnest(CAST(:tags AS int[])) x'''),{'pid':pid,'actor':key,'tags':tag_ids})

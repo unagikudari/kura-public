@@ -1,4 +1,4 @@
-# The web image is built from web/ (compose.yaml), where the root .dockerignore does not apply.
+# Retained for web-only build tools; compose uses the repository root .dockerignore.
 # Settings reach the container through env_file; the build gets ORIGIN as an argument.
 .env*
 !.env*example

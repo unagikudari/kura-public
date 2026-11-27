@@ -76,6 +76,9 @@ async def publish(build_dir: Path, created_by: str | None) -> int:
     engine = create_async_engine(DATABASE_URL)
     try:
         async with engine.begin() as conn:
+            from tagger.character_inheritance import lock_predecessor, attach
+            await conn.execute(sa.text("SET LOCAL lock_timeout='2s'"))
+            prior = await lock_predecessor(conn)
             # tagger_release/tagger_release_active are governed (0079) --
             # tagger_governed_publish_release (0087) does the INSERT +
             # active-pointer flip (with correct generation increment,
@@ -108,6 +111,7 @@ async def publish(build_dir: Path, created_by: str | None) -> int:
             # release publish と同一トランザクション = release と head registry が atomic。
             from tagger.sync_patch_registry import sync_registry  # noqa: PLC0415
             await sync_registry(conn)
+            await attach(conn, prior, release_id, release["model_sha256"])
             # Transaction commits here (engine.begin() context exit) -- release
             # insert + active-pointer flip land together, or neither does.
         return release_id

@@ -50,6 +50,7 @@ load_wd14_fixed() と同じ契約) の pull() で kura の tagger_release テー
 from __future__ import annotations
 
 import argparse
+import json
 from tagger.credentials import token_headers
 import csv
 import io
@@ -137,6 +138,8 @@ class ModelState:
         self.names: list[str] = []
         self.cats: list[int] = []
         self.img_size: int = 448
+        # The release's input contract (tagger/base_preprocess.py); None = today's pipeline.
+        self.transform = None
         self.veto_heads: dict = {}
         # correction-authoritative reap domain: patched rows ∪ veto heads
         # (user 2026-07-22「最終的に一般化」— not just the veto head). Reported
@@ -181,7 +184,7 @@ def recompute_reap_gates(state: "ModelState") -> None:
         set(state.release_reap) | set(state.veto_heads) | _policy_reap_gates())
 
 
-def refresh_model(state: "ModelState") -> None:
+def refresh_model(state: "ModelState", *, trial_release_id=None) -> None:
     """release_client.py 経由で tagger_release の現在アクティブなパッチ適用済み
     モデルを取得・検証する。rc.pull() は release が変わっていなければ軽量な
     メタデータ確認だけで即座に戻る(content-addressed skip) — この関数を
@@ -198,6 +201,10 @@ def refresh_model(state: "ModelState") -> None:
     H, _ = auth_header()
     fetch_meta_fn, fetch_data_fn = rc.make_http_callbacks(API, H)
     verified = rc.pull(fetch_meta_fn, fetch_data_fn, RELEASE_CACHE_DIR, rc.default_loader)
+    if trial_release_id is not None and (verified.fallback or verified.release_id != trial_release_id):
+        from tagger.character_policy import CharacterReleaseChanged
+
+        raise CharacterReleaseChanged("worker trial release unavailable")
 
     if verified.release_id == state.release_id and state.model is not None:
         return  # 既にこの release をロード済み — 何もしない
@@ -219,6 +226,9 @@ def refresh_model(state: "ModelState") -> None:
     state.names = names
     state.cats = cats
     state.img_size = ckpt.get("img_size", 448)
+    from .base_preprocess import transform_for
+    state.transform = transform_for(ckpt.get("preprocessing"), state.img_size,
+                                    ckpt.get("mean") or None, ckpt.get("std") or None)
     # Gated-veto heads bundled into the release (build_release.py) — moves
     # each veto tensor to DEVICE so the veto runs on the same GPU/CPU as the
     # backbone. plan:kura-tagger-self-improvement-loop 「打ち消し続ける」.
@@ -250,18 +260,20 @@ def refresh_model(state: "ModelState") -> None:
           f"{' (FALLBACK to previous verified release)' if verified.fallback else ''}", flush=True)
 
     # tagger_node_state へ報告 (fleet drift が SELECT で見えるように — infer.py と同じ契約)
-    try:
-        report = requests.post(f"{API}/api/tagger/node-state", headers=H,
-                      json={"host": AUTOTAG_HOST, "release_id": verified.release_id,
-                            "verified": True,
-                            "detail": f"n_out={ckpt['n_out']} fallback={verified.fallback}"},
-                      timeout=10)
-        report.raise_for_status()
-    except Exception as e:  # noqa: BLE001
-        print(f"[kura-autotag] node-state report failed ({e})", flush=True)
+    if trial_release_id is None:
+        try:
+            report = requests.post(f"{API}/api/tagger/node-state", headers=H,
+                          json={"host": AUTOTAG_HOST, "release_id": verified.release_id,
+                                "verified": True,
+                                "detail": f"n_out={ckpt['n_out']} fallback={verified.fallback}"},
+                          timeout=10)
+            report.raise_for_status()
+        except Exception as e:  # noqa: BLE001
+            print(f"[kura-autotag] node-state report failed ({e})", flush=True)
 
 
-def infer(model, names, cats, size, img, veto_heads=None, *, characters=(), patched_characters=()):
+def infer(model, names, cats, size, img, veto_heads=None, *, characters=(), patched_characters=(),
+          transform=None):
     """release_client.py が配布する merged checkpoint 専用の前処理: Resize+ToTensor、
     正規化なし(意図的 — tagger/infer.py の _run_wd14_fixed と同一。全パッチ行は
     このパイプラインで学習されており、timm の「正しい」変換に変えると全パッチが
@@ -274,10 +286,15 @@ def infer(model, names, cats, size, img, veto_heads=None, *, characters=(), patc
     import torch
     from torchvision import transforms
 
-    x = transforms.Compose([
-        transforms.Resize((size, size)),
-        transforms.ToTensor(),
-    ])(img.convert("RGB")).unsqueeze(0)
+    # A release built on another base names its own contract (build_release
+    # records it); without one this is the pipeline every patch was trained on.
+    if transform is None:
+        x = transforms.Compose([
+            transforms.Resize((size, size)),
+            transforms.ToTensor(),
+        ])(img.convert("RGB")).unsqueeze(0)
+    else:
+        x = transform(img).unsqueeze(0)
     pooled = None
     try:
         x = x.to(DEVICE)
@@ -415,12 +432,15 @@ def _fetch_artifact(sha: str, *, api_url=None, headers=None):
     return dest
 
 
-def load_head_policies(*, api_url=None, headers=None) -> list[dict]:
+def load_head_policies(*, api_url=None, headers=None, require_complete=False) -> list[dict]:
     """Fetch the declared ensemble. Transport failure is not an empty policy."""
     try:
         H = headers if headers is not None else auth_header()[0]
-        response = requests.get(f"{api_url or API}/api/tagger/head-policies", headers=H, timeout=30)
+        options = {"params": {"require_complete": "true"}} if require_complete else {}
+        response = requests.get(f"{api_url or API}/api/tagger/head-policies", headers=H, timeout=30, **options)
         response.raise_for_status()
+        if require_complete and response.headers.get('X-Kura-Head-Inventory') != 'deployable-complete-v1':
+            raise ValueError('complete head inventory not supported')
         policies = response.json()
         if not isinstance(policies, list):
             raise ValueError("head policies must be a list")
@@ -451,12 +471,16 @@ def refresh_content_heads() -> bool:
 
     戻り値は「積み直したか」。変わっていなければ HTTP 1 回だけで返る。
     """
+    from .content_head_policy import require_loaded
+
     global CONTENT_HEADS, _POLICY_FP
-    policies = load_head_policies()
+    policies = load_head_policies(require_complete=True)
     fp = policy_fingerprint(policies)
     if fp == _POLICY_FP and CONTENT_HEADS is not None:
         return False
-    CONTENT_HEADS = load_content_heads(policies)
+    replacement = load_content_heads(policies)
+    require_loaded(replacement, policies)
+    CONTENT_HEADS = replacement
     _POLICY_FP = fp
     report_node_heads(policies)
     print(f"[kura-autotag] content-heads {'HOT-SWAPPED' if _POLICY_FP else 'loaded'} "
@@ -464,7 +488,7 @@ def refresh_content_heads() -> bool:
     return True
 
 
-def report_node_heads(policies: list[dict]) -> None:
+def report_node_heads(policies: list[dict], *, heads=None, api_url=None, headers=None, host=None) -> None:
     """このノードが **どの head を実際に積めたか** をスキーマに書く。
 
     2026-08-06 まで、これは完了ごとに `veto_gates` 配列で運ばれていた。
@@ -476,16 +500,18 @@ def report_node_heads(policies: list[dict]) -> None:
     fail-soft: ここが落ちてもタグ付けは続ける (観測のための報告であって、
     タグ付けの前提条件ではない)。
     """
-    heads = CONTENT_HEADS or {}
-    body = {"host": AUTOTAG_HOST, "heads": [
+    heads = (CONTENT_HEADS or {}) if heads is None else heads
+    body = {"host": AUTOTAG_HOST if host is None else host, "heads": [
         {"tag": p["tag"], "content_sha256": p["content_sha256"],
          "loaded": heads.get(p["tag"]) is not None,
          "detail": (heads.get(f"__err__{p['tag']}")
                     or f"content_head_bundle loaded (policy v{p.get('patch_version')})")}
         for p in policies if p.get("tag") and p.get("content_sha256")]}
     try:
-        H, _ = auth_header()
-        r = requests.post(f"{API}/api/tagger/node-heads", headers=H, json=body, timeout=30)
+        H = headers
+        if H is None:
+            H, _ = auth_header()
+        r = requests.post(f"{api_origin(api_url or API)}/api/tagger/node-heads", headers=H, json=body, timeout=30)
         r.raise_for_status()
     except Exception as e:  # noqa: BLE001
         print(f"[kura-autotag] node-heads の報告に失敗 (タグ付けは継続): {e}", flush=True)
@@ -533,6 +559,7 @@ def load_content_heads(policies: list[dict] | None = None, *, artifact_fetcher=N
             # refresh_model() で .to(DEVICE) されているのと同じ扱いに揃える。
             heads[tag] = _load(path).to(DEVICE)
             heads[f"__sha__{tag}"] = sha[:12]
+            heads[f"__artifact_sha256__{tag}"] = sha
             loaded.append(tag)
         except Exception as e:  # noqa: BLE001
             print(f"[kura-autotag] content-head {tag} の load に失敗: {e}", flush=True)
@@ -614,23 +641,14 @@ def _sha256_short(path) -> str:
 def _content_head_prob(img, model) -> float:
     """tagger/infer.py::_run_content_head と同一の前処理。"""
     import torch
-    from torchvision import transforms
+    from .content_preprocessing import for_model, transform
 
-    from .content_head_model import IMG_SIZE
-
-    size = getattr(model, "img_size", IMG_SIZE)
-    mean = list(getattr(model, "mean", (0.485, 0.456, 0.406)))
-    std = list(getattr(model, "std", (0.229, 0.224, 0.225)))
-    x = transforms.Compose([
-        transforms.Resize((size, size)),
-        transforms.ToTensor(),
-        transforms.Normalize(mean=mean, std=std),
-    ])(img.convert("RGB")).unsqueeze(0).to(DEVICE)
+    x = transform(for_model(model))(img).unsqueeze(0).to(DEVICE)
     with torch.no_grad():
         return float(torch.sigmoid(model(x))[0].item())
 
 
-def apply_content_heads(general: list[str], img, heads: dict | None, *, scores=None) -> list[str]:
+def apply_content_heads(general: list[str], img, heads: dict | None, *, scores=None, required=False, evaluated_tags=None, evaluated_scores=None) -> list[str]:
     """policy に書かれたとおりに head を当てる。
 
     **閾値も gate もここに書かない** — `__policy__<tag>` に載っている値を使う。
@@ -642,6 +660,9 @@ def apply_content_heads(general: list[str], img, heads: dict | None, *, scores=N
     gate は `gate_tags` が全部そろっているときだけ発火する (domain gate =
     「この視覚領域でだけ校正されている」の意味なので、一部一致は校正の外)。
     """
+    if required:
+        from .content_head_policy import require_loaded
+        require_loaded(heads or {})
     if not heads:
         return general
     require_character_heads(heads)
@@ -668,14 +689,21 @@ def apply_content_heads(general: list[str], img, heads: dict | None, *, scores=N
             continue
         try:
             probability = _content_head_prob(img, m)
-            if pol.get("category") == "character" and not 0 <= probability <= 1:
+            if (required or pol.get("category") == "character") and not 0 <= probability <= 1:
                 raise ValueError("invalid character probability")
             fires = probability >= float(thr)
         except Exception as e:  # noqa: BLE001
             print(f"[kura-autotag] content-head {tag} の推論に失敗: {e}", flush=True)
+            if required:
+                from .content_head_policy import RequiredContentHeadError
+                raise RequiredContentHeadError(f'content_head_inference_failed:{tag}') from e
             if pol.get("category") == "character":
                 raise RequiredCharacterComponentError(f"character head {tag} inference failed: {e}") from e
             continue
+        if evaluated_tags is not None:
+            evaluated_tags.add(tag)
+        if evaluated_scores is not None:
+            evaluated_scores[tag] = probability
         if fires:
             if scores is not None:
                 scores[tag] = probability
@@ -704,22 +732,37 @@ def apply_content_heads(general: list[str], img, heads: dict | None, *, scores=N
 #
 # 適用は tagger/pixai_chars.py (infer.py と共有の唯一の実装、閾値込み)。
 # **CPUExecutionProvider 固定**なのでこのワーカーの torch/GPU 状態 (nodeb の
-# ROCm 等) には触れない。fail-soft: load できなければキャラ無しで走り続け、
-# サイクル毎に再試行する — ただし沈黙はしない (毎回 stderr に出る)。
+# ROCm 等) には触れない。load できなければ claim を停止し、
+# サイクル毎に再試行する。空のキャラ予測として完了させない。
 PIXAI_CHARS: dict | None = None
+_CHARACTER_THRESHOLD = None
+_CHARACTER_RELEASE_POLICY = None
+_UNSET_CHARACTER_THRESHOLD = object()
 
 
-def refresh_pixai_chars() -> None:
-    global PIXAI_CHARS
+def refresh_pixai_chars(*, character_threshold=_UNSET_CHARACTER_THRESHOLD) -> None:
+    global PIXAI_CHARS, _CHARACTER_THRESHOLD
+    if character_threshold is not _UNSET_CHARACTER_THRESHOLD:
+        if character_threshold is not None:
+            from .cl2_chars import validate_threshold
+            validate_threshold(character_threshold)
+        if PIXAI_CHARS is not None and character_threshold != _CHARACTER_THRESHOLD:
+            raise RequiredCharacterComponentError("character component change requires worker restart")
+        _CHARACTER_THRESHOLD = character_threshold
+    character_threshold = _CHARACTER_THRESHOLD
     if PIXAI_CHARS is not None:
         return
     try:
         from . import pixai_chars
-        PIXAI_CHARS = pixai_chars.load()
-        print(f"[kura-autotag] pixai chars loaded ({len(PIXAI_CHARS['chars'])} 語彙, "
-              f"sha={PIXAI_CHARS['sha12']}, CPU)", flush=True)
+        if character_threshold is None:
+            PIXAI_CHARS = pixai_chars.load()
+        else:
+            from . import cl2_chars
+            PIXAI_CHARS = cl2_chars.load(threshold=character_threshold)
+        print(f"[kura-autotag] character component loaded ({len(PIXAI_CHARS['chars'])} 語彙, "
+              f"source={PIXAI_CHARS.get('source', PIXAI_CHARS.get('sha12'))}, providers={PIXAI_CHARS['sess'].get_providers()})", flush=True)
     except Exception as e:  # noqa: BLE001
-        print(f"[kura-autotag] pixai chars UNAVAILABLE — claim を停止 "
+        print(f"[kura-autotag] character component UNAVAILABLE — claim を停止 "
               f"(次サイクル再試行): {type(e).__name__}: {str(e)[:160]}",
               file=sys.stderr, flush=True)
 
@@ -728,13 +771,16 @@ def apply_pixai_chars(img) -> list[str]:
     """Return genuine predictions, including zero hits; never hide component failure."""
     global PIXAI_CHARS
     if PIXAI_CHARS is None:
-        raise RequiredCharacterComponentError("PixAI character model is not loaded; retry loading before claiming")
+        raise RequiredCharacterComponentError("Required character model is not loaded; retry loading before claiming")
     try:
         from . import pixai_chars
+        if PIXAI_CHARS.get('source', '').startswith('cl_tagger_v2='):
+            from . import cl2_chars
+            return [n for n, _ in cl2_chars.char_tags(PIXAI_CHARS, img)]
         return [n for n, _ in pixai_chars.char_tags(PIXAI_CHARS, img)]
     except Exception as exc:  # reload a broken session before another claim
         PIXAI_CHARS = None
-        raise RequiredCharacterComponentError(f"PixAI character inference failed: {exc}") from exc
+        raise RequiredCharacterComponentError(f"Required character inference failed: {exc}") from exc
 
 
 def ensemble_source_id(release_id, heads: dict | None) -> str:
@@ -753,7 +799,11 @@ def ensemble_source_id(release_id, heads: dict | None) -> str:
     if policy_source := character_head_source(heads):
         parts.append(policy_source)
     parts.append(f"skin={SKIN_MODEL_SHA}" if SKIN_MODEL_SHA else "skin=absent")
-    parts.append(f"pixai={PIXAI_CHARS['sha12']}" if PIXAI_CHARS else "pixai=absent")
+    if PIXAI_CHARS:
+        parts.append(PIXAI_CHARS["source"] if "source" in PIXAI_CHARS
+                     else f"pixai={PIXAI_CHARS['sha12']}")
+    else:
+        parts.append("pixai=absent" if _CHARACTER_THRESHOLD is None else "cl_tagger_v2=absent")
     for tag in sorted(t for t in (heads or {}) if not t.startswith("__")):
         sha = (heads or {}).get(f"__sha__{tag}")
         parts.append(f"{tag}={sha}" if sha else f"{tag}=absent")
@@ -795,11 +845,9 @@ def fetch_image(H, content_url):
 # api/services/tagging.py::enforce_claim_guard.
 WORKER_PROFILE = "wd14"
 # 2026-08-04: 2 -> 3。**publish より先に上げて配り切る**のが唯一の安全な順序。
-# tagger_governed_publish_release は active generation を必ず +1 するので、
-# worker が 2 のまま publish すると active=3 > worker=2 で全ノードが 409 を返し
-# fleet が止まる (2026-08-02 に実際に 14.5 時間・503,486 件を滞留させた)。
-# worker >= floor なら通るので、worker=3 / active=2 の窓は安全。
-WORKER_GENERATION = 5  # 2026-08-08: 4 -> 5, phimosis v2 retirement (chance AUC, serving P≈0.199) を載せる release の先行 bump — publish は active generation を必ず +1 するので、先に配り切るのが唯一の安全な順序 (2026-08-02 の 14.5h 停止の教訓)
+# Code compatibility is independent of model-publication epochs (0194).
+# Bump only for a worker behavior change, then explicitly raise the code floor.
+WORKER_GENERATION = 6  # CL policy-aware code; distribute before raising the active floor.
 
 
 def _provider_label() -> str:
@@ -815,6 +863,26 @@ def _provider_label() -> str:
     return "ROCMExecutionProvider" if getattr(torch.version, "hip", None) else "CUDAExecutionProvider"
 
 
+_CL_EXECUTION_RECEIPT = None
+_CL_WORKER_ID = None
+
+
+def _execution_receipt(release_id):
+    global _CL_EXECUTION_RECEIPT, _CL_WORKER_ID
+    if not PIXAI_CHARS or not PIXAI_CHARS.get('source', '').startswith('cl_tagger_v2='):
+        return None
+    from .execution_receipt import from_loaded
+    from . import character_policy
+    packet = from_loaded(PIXAI_CHARS, host=AUTOTAG_HOST, profile=WORKER_PROFILE, release_id=release_id)
+    if _CL_EXECUTION_RECEIPT is None:
+        _CL_WORKER_ID = f'{AUTOTAG_HOST}-autotag'
+        _CL_EXECUTION_RECEIPT = packet
+        print('[kura-autotag] character_execution=' + json.dumps(packet, sort_keys=True), flush=True)
+    elif _CL_EXECUTION_RECEIPT != packet:
+        raise character_policy.CharacterReleaseChanged('character_execution_changed')
+    return _CL_EXECUTION_RECEIPT
+
+
 def claim(H, limit, lease, state: "ModelState"):
     if PIXAI_CHARS is None:
         raise RequiredCharacterComponentError("PixAI character model unavailable; no posts claimed")
@@ -828,7 +896,12 @@ def claim(H, limit, lease, state: "ModelState"):
         params["release_id"] = state.release_id
     if state.model_sha256:
         params["model_sha256"] = state.model_sha256
-    r = requests.post(f"{API}/api/internal/tagging/claim", headers=H, params=params, timeout=60)
+    packet = _execution_receipt(state.release_id)
+    if packet:
+        from .execution_receipt import weakest_provider
+        params.update(worker_id=_CL_WORKER_ID, provider=weakest_provider(params['provider'], packet))
+    r = requests.post(f"{API}/api/internal/tagging/claim", headers=H, params=params,
+                      **({'json': {'packet': packet}} if packet else {}), timeout=60)
     r.raise_for_status()
     return r.json().get("claimed", [])
 
@@ -842,7 +915,17 @@ class PostGone(Exception):
     """The claimed post no longer exists; nothing to complete."""
 
 
-def complete(H, post_id, status, tags=None, error=None, release_id=None, veto_gates=None):
+def complete(H, post_id, status, tags=None, error=None, release_id=None, veto_gates=None,
+             executed_content_heads=None):
+    # Claims bind this process once. Error completions may omit the release;
+    # use that same snapshot, never construct a new receipt from an absent ID.
+    packet = _CL_EXECUTION_RECEIPT
+    if packet:
+        bound_release = packet['body']['release_id']
+        if release_id is not None and release_id != bound_release:
+            from .character_policy import CharacterReleaseChanged
+            raise CharacterReleaseChanged('character_execution_changed')
+        release_id = bound_release
     body = {"id": post_id, "kind": "auto_tag", "status": status,
             "tags": tags or [], "error": error,
             # veto-authority reap (plan:kura-tagger-self-improvement-loop, user
@@ -877,6 +960,10 @@ def complete(H, post_id, status, tags=None, error=None, release_id=None, veto_ga
             # tags" behavior originally asked for at the start of this
             # session.
             "reap_scope": "own"}
+    if packet:
+        body.update(worker_id=_CL_WORKER_ID, execution_receipt_sha256=packet['receipt_sha256'])
+        if status == "ok" and executed_content_heads:
+            body["executed_content_heads"] = executed_content_heads
     r = requests.post(f"{API}/api/internal/tagging/complete", headers=H, json=body, timeout=60)
     if r.status_code == 404 and _error_slug(r) == POST_GONE:
         raise PostGone(post_id)
@@ -892,27 +979,47 @@ def _error_slug(r):
     return detail.get("error") if isinstance(detail, dict) else None
 
 
+def predict_image(model, names, cats, size, img, *, veto_heads=None,
+                  content_heads=None, patched_tags=(), notes=None, transform=None):
+    """Run the WD14 proposal path without fetching or completing work."""
+    chars = apply_pixai_chars(img)
+    character_names = set(PIXAI_CHARS["chars"].values()) | {
+        name for name, category in zip(names, cats) if category == 4}
+    character_names.update(tag for tag in (content_heads or {})
+                           if (content_heads.get(f"__policy__{tag}") or {}).get("category") == "character")
+    candidates, top_rating, ratings = infer(
+        model, names, cats, size, img, veto_heads=veto_heads, characters=chars,
+        patched_characters=set(patched_tags) & character_names, transform=transform)
+    from .content_head_policy import executed_heads
+
+    evaluated = set()
+    observed = {} if notes is not None else None
+    candidates = apply_content_heads(candidates, img, content_heads,
+                                     evaluated_tags=evaluated, evaluated_scores=observed)
+    execution = executed_heads(content_heads or {}, evaluated)
+    candidates = apply_skin_model(candidates, img, SKIN_MODEL)
+    tags = build_tags([tag for tag in candidates if tag not in character_names], top_rating,
+                      [tag for tag in candidates if tag in character_names])
+    if notes is not None:
+        notes["executed_content_heads"] = execution
+        notes["executed_content_head_scores"] = observed
+    return tags, top_rating, candidates, execution
+
+
 def process_item(H, model, names, cats, size, item, release_id=None, verbose=False,
-                 veto_heads=None, reap_gates=None, content_heads=None, patched_tags=()):
+                 veto_heads=None, reap_gates=None, content_heads=None, patched_tags=(),
+                 transform=None):
     pid = item["id"]
     try:
         img = fetch_image(H, item.get("content_url") or f"/api/post/{pid}/content")
-        chars = apply_pixai_chars(img)
-        character_names = set(PIXAI_CHARS["chars"].values()) | {
-            name for name, category in zip(names, cats) if category == 4}
-        character_names.update(tag for tag in (content_heads or {})
-                               if (content_heads.get(f"__policy__{tag}") or {}).get("category") == "character")
-        candidates, top_rating, ratings = infer(
-            model, names, cats, size, img, veto_heads=veto_heads, characters=chars,
-            patched_characters=set(patched_tags) & character_names)
-        candidates = apply_content_heads(candidates, img, content_heads)
-        candidates = apply_skin_model(candidates, img, SKIN_MODEL)
-        tags = build_tags([tag for tag in candidates if tag not in character_names], top_rating,
-                          [tag for tag in candidates if tag in character_names])
+        tags, top_rating, candidates, execution = predict_image(
+            model, names, cats, size, img, veto_heads=veto_heads,
+            content_heads=content_heads, patched_tags=patched_tags, transform=transform)
         # reap_gates = correction-authoritative domain (patched ∪ veto), NOT just
         # veto heads — server reaps a stale corrected tag absent from this output.
         res = complete(H, pid, "ok", tags=tags, release_id=release_id,
-                       veto_gates=reap_gates or [])
+                       veto_gates=reap_gates or [],
+                       **({"executed_content_heads": execution} if execution else {}))
         if verbose:
             print(f"  post {pid}: applied={res.get('tags_applied')} rating={top_rating} "
                   f"tags[:8]={candidates[:8]}")
@@ -941,6 +1048,8 @@ def process_item(H, model, names, cats, size, item, release_id=None, verbose=Fal
 
 def process_batch(H, state, limit, lease, *, verbose=False):
     """A required-component failure aborts the batch without consuming image retries."""
+    from .character_policy import require_release
+    require_release(_CHARACTER_RELEASE_POLICY, state.release_id)
     items = claim(H, limit, lease, state)
     ok = 0
     for item in items:
@@ -948,7 +1057,8 @@ def process_batch(H, state, limit, lease, *, verbose=False):
             H, state.model, state.names, state.cats, state.img_size, item,
             release_id=state.release_id, verbose=verbose,
             veto_heads=state.veto_heads, reap_gates=state.reap_gates,
-            content_heads=CONTENT_HEADS, patched_tags=state.release_reap)
+            content_heads=CONTENT_HEADS, patched_tags=state.release_reap,
+            transform=getattr(state, "transform", None))
         ok += succeeded
         time.sleep(SLEEP_POST)
     return ok, len(items)
@@ -968,7 +1078,13 @@ def main() -> int:
     # content head は毎サイクル policy を見て積み直す (下の loop も同じ)。
     # 起動時に 1 度だけだと、新しいタグが昇格しても再起動まで適用されない。
     refresh_content_heads()
-    refresh_pixai_chars()
+    from . import character_policy
+    global _CHARACTER_RELEASE_POLICY
+    _CHARACTER_RELEASE_POLICY = character_policy.fetch(API, H)
+    if _CHARACTER_RELEASE_POLICY['threshold'] is None:
+        refresh_pixai_chars()
+    else:
+        refresh_pixai_chars(character_threshold=_CHARACTER_RELEASE_POLICY['threshold'])
     global SKIN_MODEL, SKIN_MODEL_SHA, _POLICY_FP
     SKIN_MODEL, SKIN_MODEL_SHA = load_skin_model()
     print(f"[kura-autotag] API={API} th={GEN_TH} rating_mode={RATING_MODE} "
@@ -1031,6 +1147,9 @@ def main() -> int:
                   flush=True)
             time.sleep(DEFER_SECONDS)
             continue
+        except character_policy.CharacterReleaseChanged:
+            print('[kura-autotag] character_loaded_release_mismatch; restart for fresh policy', flush=True)
+            return 75
         except RequiredCharacterComponentError as exc:
             print(f"[kura-autotag] character component unavailable: {exc}; "
                   f"incomplete leases expire within {a.lease}s; no completion sent; "

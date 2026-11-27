@@ -114,6 +114,9 @@ def _thumbnail_url(post: Post) -> str:
     return f"/api/post/{post.post_id}/thumbnail?v={post.version}"
 
 
+from api.services.pool_visibility import post_visible
+
+
 def _serialize_post(post: Post, auth_user: Optional[User] = None,
                     pool_post_counts: Optional[dict[int, int]] = None,
                     latest_auto_tag: Optional[dict] = None,
@@ -144,7 +147,7 @@ def _serialize_post(post: Post, auth_user: Optional[User] = None,
     try:
         for pp in post._pools or []:
             pool = pp.pool
-            if pool is None:
+            if pool is None or pool.hidden:
                 continue
             pool_names = sorted(pool.names or [], key=lambda n: n.order)
             # postCount comes from a precomputed GROUP BY (pool_post_counts) so we
@@ -399,12 +402,25 @@ async def _build_where_clauses(db: AsyncSession, query: str) -> tuple[list, int 
         token: _query_identifier(token) for _, token in tokens
         if token.startswith(("id:", "pool:"))
     }
+    id_sets = {}
+    for _, token in tokens:
+        if not token.startswith('ids:'):
+            continue
+        values = token[4:].split(',')
+        if (not 0 < len(values) <= 500 or any(
+                not v.isascii() or not v.isdecimal() or len(v) > 10
+                or not 0 < int(v) < 2**31 for v in values)):
+            raise KuraError(422, 'invalid_search_id_set',
+                            fix='ids: には1〜500件の正の画像IDをカンマで区切って指定してください。')
+        id_sets[token] = list(dict.fromkeys(map(int, values)))
     for negated, token in tokens:
         clause = None
         if token.startswith("md5:"):
             clause = Post.checksum_md5 == token[4:]
         elif token.startswith("id:"):
             clause = Post.post_id == identifiers[token]
+        elif token.startswith('ids:'):
+            clause = Post.post_id.in_(id_sets[token])
         elif token.startswith("type:"):
             value = token[5:]
             clause = Post.type == TYPE_ALIASES.get(value, value)
@@ -414,7 +430,7 @@ async def _build_where_clauses(db: AsyncSession, query: str) -> tuple[list, int 
             # positive filters — negative pool filter is just exclusion.
             if not negated:
                 pool_id_filter = pool_id
-            pool_filter = select(PoolPost.post_id).where(PoolPost.pool_id == pool_id)
+            pool_filter = select(PoolPost.post_id).join(Pool).where(PoolPost.pool_id == pool_id, Pool.hidden.is_(False))
             clause = Post.post_id.in_(pool_filter)
         elif token.startswith("source:"):
             clause = Post.source.ilike(f"%{token[7:]}%")
@@ -502,7 +518,7 @@ def post_list_options(localize: bool):
     tags = selectinload(Post.tags).load_only(Tag.tag_id, Tag.post_count, raiseload=True)
     memberships = selectinload(Post._pools)
     pools = memberships.selectinload(PoolPost.pool).load_only(
-        Pool.pool_id, Pool.description, raiseload=True)
+        Pool.pool_id, Pool.description, Pool.hidden, raiseload=True)
     return (
         tags.raiseload("*"),
         tags.selectinload(Tag.names),
@@ -539,10 +555,11 @@ async def list_posts(
     # UI 改修なしで「件数は正確・容量は非表示」に落ちる。小さい集合 (< 5 万) は
     # この経路を使わないので、そちらでは容量表示が残る。
     _fast = await _fast_total_single_tag(db, query, safe) if query else None
+    any_hidden = await db.scalar(select(select(Pool.pool_id).where(Pool.hidden.is_(True)).exists()))
     if not query.strip():
         from api.read_models.post_listing import totals
-        total, total_bytes = await totals(db,safe)
-    elif _fast is not None:
+        total, total_bytes = await totals(db,safe, apply_visibility=any_hidden)
+    elif _fast is not None and not any_hidden:
         total, total_bytes = _fast, 0
     else:
         _sq = base_stmt.subquery()
@@ -589,7 +606,7 @@ async def _listing_set(db: AsyncSession, query: str, safe: bool):
     # pg-native (Phase 4b): browse only the displayable curated set. near_dup /
     # exact_dup / corrupt / lost / not-yet-materialized rows are hidden (they have
     # no post.data). Matches the post_displayable view used by the mockup.
-    base_stmt = select(Post).where(Post.status == "ok")
+    base_stmt = select(Post).where(Post.status == "ok", post_visible(Post.post_id))
     for clause in where_clauses:
         base_stmt = base_stmt.where(clause)
 
@@ -696,7 +713,7 @@ async def get_post_media_redirect(
     /api/post/{id}/media?w=1080. Resolves to /data/posts/{id}_{hash}.{ext}
     via 307 redirect so SW cache stores the canonical data URL.
     """
-    stmt = select(Post).where(Post.post_id == post_id)
+    stmt = select(Post).where(Post.post_id == post_id, post_visible(Post.post_id))
     result = await db.execute(stmt)
     post = result.scalar_one_or_none()
     if post is None:
@@ -716,13 +733,14 @@ async def get_post_content(post_id: int, request: Request, db: AsyncSession = De
     if media_role.MEDIA_ROLE == "replica_redirect":
         return RedirectResponse(
             media_role.redirect_target(f"/api/post/{post_id}/content"), status_code=307)
-    post = (await db.execute(select(Post).where(Post.post_id == post_id))).scalar_one_or_none()
+    post = (await db.execute(select(Post).where(Post.post_id == post_id, post_visible(Post.post_id)))).scalar_one_or_none()
     if post is None:
         raise KuraError(404, "post_not_found", fix="Check the post id: the post does not exist, was deleted, or is hidden in safe mode.")
     # Rendition tables are canonical-only: a replica has neither the rows nor the files.
     if media_role.MEDIA_ROLE == "authority":
         stored = await renditions.response_for(db, request, post_id, "view")
         if stored is not None:
+            stored.headers["Cache-Control"] = "private, no-cache"
             return stored
     if post.media_location == "pg":
         # Post.data is deferred (excluded from select(Post)); fetch just this one
@@ -734,7 +752,7 @@ async def get_post_content(post_id: int, request: Request, db: AsyncSession = De
             media_role.note_local_media_serve(
                 "content", post_id, request.headers.get("x-kura-census-probe"))
             return Response(bytes(data), media_type="image/webp",
-                            headers={"Cache-Control": "public, max-age=86400"})
+                            headers={"Cache-Control": "private, no-cache"})
     return RedirectResponse(_legacy_fs_content_url(post), status_code=307)
 
 
@@ -743,13 +761,14 @@ async def get_post_thumbnail(post_id: int, request: Request, db: AsyncSession = 
     if media_role.MEDIA_ROLE == "replica_redirect":
         return RedirectResponse(
             media_role.redirect_target(f"/api/post/{post_id}/thumbnail"), status_code=307)
-    post = (await db.execute(select(Post).where(Post.post_id == post_id))).scalar_one_or_none()
+    post = (await db.execute(select(Post).where(Post.post_id == post_id, post_visible(Post.post_id)))).scalar_one_or_none()
     if post is None:
         raise KuraError(404, "post_not_found", fix="Check the post id: the post does not exist, was deleted, or is hidden in safe mode.")
     # Rendition tables are canonical-only: a replica has neither the rows nor the files.
     if media_role.MEDIA_ROLE == "authority":
         stored = await renditions.response_for(db, request, post_id, "thumb")
         if stored is not None:
+            stored.headers["Cache-Control"] = "private, no-cache"
             return stored
     # Post.thumbnail is deferred; fetch just this row's blob explicitly.
     thumb = (await db.execute(
@@ -759,7 +778,7 @@ async def get_post_thumbnail(post_id: int, request: Request, db: AsyncSession = 
         media_role.note_local_media_serve(
             "thumbnail", post_id, request.headers.get("x-kura-census-probe"))
         return Response(bytes(thumb), media_type="image/webp",
-                        headers={"Cache-Control": "public, max-age=86400"})
+                        headers={"Cache-Control": "private, no-cache"})
     # kura#56: a 307 to a file that is not there is a lie followed by a 404 on the
     # second hop — invisible to the redirect's caller, surfacing only as a blank
     # image. Measured 2026-09-05: 1,691 rows 307'd to a missing FS thumbnail, none
@@ -819,19 +838,48 @@ async def put_tag_pin(
     なのに GT が主張し続ける孤児になる。pool 由来 GT (source_pool_id あり)
     と implicit_review はこの endpoint の管轄外で触らない。
     削除アイコン側は既存の人間タグ編集 (PUT /post/{id} の tags 差分) がそのまま
-    absent pin + negative GT になるので、この endpoint は present 専用。"""
+    absent pin + negative GT になる。
+    state='absent' (owner 2026-11-15) = **付いていないタグを「無い」と確定**。
+    タガーが付けなかった画像を人が見て「無い」と残す経路 (それまでは誤って
+    付いたタグを外すことでしか負例を作れなかった)。タグが付いている post には
+    409 — 外すのはタグ編集の仕事で、ここは何も消さない。"""
     tag_name = (body.get("tag") or "").strip()
     state = body.get("state", "present")
     if not tag_name:
         raise KuraError(422, "tag_required", fix="Send the tag name in the body's `tag` field.")
-    if state not in ("present", None):
-        raise KuraError(422, "invalid_pin_state", context={"allowed": ["present", None]}, fix="Send state 'present' to lock the tag, or null to unlock it.")
+    if state not in ("present", "absent", None):
+        raise KuraError(422, "invalid_pin_state", context={"allowed": ["present", "absent", None]}, fix="Send state 'present' to lock the tag, 'absent' to record that an untagged post does not have it, or null to unlock.")
 
     tag_id = (await db.execute(text(
         "SELECT tag_id FROM tag_name WHERE name = :name LIMIT 1"), {"name": tag_name}
     )).scalar_one_or_none()
     if tag_id is None:
         raise KuraError(404, "tag_not_found", context={"tag": tag_name}, fix="Check the spelling, or create the tag first.")
+
+    if state == "absent":
+        on_post = (await db.execute(text(
+            "SELECT 1 FROM post_tag WHERE post_id = :pid AND tag_id = :tid"),
+            {"pid": post_id, "tid": tag_id})).scalar_one_or_none()
+        if on_post is not None:
+            raise KuraError(409, "tag_on_post", context={"tag": tag_name, "post_id": post_id},
+                            fix="「無い」の確定は付いていないタグにのみ可能です。付いているタグは外してください (外すと同じ確定になります)。")
+        exists = (await db.execute(text("SELECT 1 FROM post WHERE id = :pid"), {"pid": post_id})).scalar_one_or_none()
+        if exists is None:
+            raise KuraError(404, "post_not_found", context={"post_id": post_id}, fix="Check the post id.")
+        audit_id = (await db.execute(text(
+            "INSERT INTO post_tag_audit "
+            "(post_id, actor_type, actor_id, source, added_tags, removed_tags) "
+            "VALUES (:pid, 'human', :actor, :src, '{}', '{}') RETURNING id"),
+            {"pid": post_id, "actor": auth_user.name, "src": f"pin_absent:{tag_name}"})).scalar_one()
+        await db.execute(text(
+            "INSERT INTO post_tag_pin (post_id, tag_id, state, pinned_by, audit_id) "
+            "VALUES (:pid, :tid, 'absent', :by, :aid) "
+            "ON CONFLICT (post_id, tag_id) DO UPDATE SET "
+            "state = 'absent', pinned_by = EXCLUDED.pinned_by, "
+            "audit_id = EXCLUDED.audit_id, pinned_at = now()"),
+            {"pid": post_id, "tid": tag_id, "by": auth_user.name, "aid": audit_id})
+        await db.commit()
+        return {"post_id": post_id, "tag": tag_name, "pinned": "absent"}
 
     if state == "present":
         on_post = (await db.execute(text(
@@ -877,14 +925,23 @@ async def put_tag_pin_bulk(
     - 原子性: 1 リクエスト。クライアントの N 連打 (旧 lockSelected) を置換。
     state='present' は付いているタグのみ対象 (無いものは skipped に計上、409 に
     しない — 一括では部分成立が正)。state=null は pin 削除 + pin 由来 GT 撤回
-    (単発と同じ governed 関数)。undo は同 endpoint の state=null で行う。"""
+    (単発と同じ governed 関数)。undo は同 endpoint の state=null で行う。
+
+    state='absent' (owner 2026-11-15) は**付いていないタグを「無い」と確定する**。
+    それまで absent pin は「付いていたタグを人が外した」ときにしか生まれなかった —
+    つまり人が負例にできるのはタガーが誤って付けたものだけで、タガーが付けなかった
+    画像を「見た、無い」と残す手段が無かった。負例 GT がタガーの誤検知に偏る。
+    対象は**タグが付いていない** post だけ (付いているものは skipped — 外すのは
+    tag-remove-bulk の仕事で、ここは何も消さない)。pin は 'absent'、来歴は
+    source='pin_absent:<tag>' の audit 行 (制約 0195)。pin 同期 (0190) がそのまま負例 GT にし、
+    01_post_tag_pin_guard_ins がタガーの付け直しを拒む。undo は state=null。"""
     tag_name = (body.get("tag") or "").strip()
     state = body.get("state", "present")
     post_ids = body.get("post_ids") or []
     if not tag_name:
         raise KuraError(422, "tag_required", fix="Send the tag name in the body's `tag` field.")
-    if state not in ("present", None):
-        raise KuraError(422, "invalid_pin_state", context={"allowed": ["present", None]}, fix="Send state 'present' to lock the tag, or null to unlock it.")
+    if state not in ("present", "absent", None):
+        raise KuraError(422, "invalid_pin_state", context={"allowed": ["present", "absent", None]}, fix="Send state 'present' to lock the tag, 'absent' to record that an untagged post does not have it, or null to unlock.")
     if not isinstance(post_ids, list) or not post_ids or len(post_ids) > 1000:
         raise KuraError(422, "invalid_post_ids", context={"max": 1000}, fix="Send post_ids as a non-empty list of at most 1000 ids; split larger batches.")
     post_ids = [int(i) for i in post_ids]
@@ -919,6 +976,32 @@ async def put_tag_pin_bulk(
             done += 1
         await db.commit()
         return {"tag": tag_name, "locked": done, "skipped": len(post_ids) - done}
+
+    if state == "absent":
+        # 実在し、かつこのタグを持たない post だけ。audit と pin は 1 文で
+        # (tag-remove-bulk と同じ形: pin が audit の id を要る)。
+        targets = [r[0] for r in (await db.execute(text(
+            "SELECT p.id FROM post p WHERE p.id = ANY(:ids) AND NOT EXISTS "
+            "(SELECT 1 FROM post_tag pt WHERE pt.post_id = p.id AND pt.tag_id = :tid)"),
+            {"tid": tag_id, "ids": post_ids})).all()]
+        if targets:
+            await db.execute(text(
+                "WITH aud AS ("
+                "  INSERT INTO post_tag_audit "
+                "  (post_id, actor_type, actor_id, source, added_tags, removed_tags) "
+                "  SELECT pid, 'human', :actor, :src, '{}', '{}' "
+                "  FROM unnest(CAST(:ids AS int[])) AS pid "
+                "  RETURNING id, post_id"
+                ") "
+                "INSERT INTO post_tag_pin (post_id, tag_id, state, pinned_by, audit_id) "
+                "SELECT aud.post_id, :tid, 'absent', :by, aud.id FROM aud "
+                "ON CONFLICT (post_id, tag_id) DO UPDATE SET "
+                "  state = 'absent', pinned_by = EXCLUDED.pinned_by, "
+                "  audit_id = EXCLUDED.audit_id, pinned_at = now()"),
+                {"ids": targets, "actor": auth_user.name, "src": f"pin_absent:{tag_name}",
+                 "tid": tag_id, "by": auth_user.name})
+        await db.commit()
+        return {"tag": tag_name, "absent": len(targets), "skipped": len(post_ids) - len(targets)}
 
     done = 0
     for pid in post_ids:
@@ -1035,7 +1118,7 @@ async def get_post(
 ) -> PostResponse:
     stmt = (
         select(Post)
-        .where(Post.post_id == post_id)
+        .where(Post.post_id == post_id, post_visible(Post.post_id))
         .options(
             selectinload(Post.tags).selectinload(Tag.names),
             selectinload(Post.tags).selectinload(Tag.category),
@@ -1425,6 +1508,12 @@ async def delete_post(
     await asyncio.to_thread(files.delete_all_names, doomed)
 
 
+def _existing_post_context(post: Post) -> dict:
+    """What a duplicate refusal says about the post that already holds the file: its id (so the caller can link
+    to it) and the two facts that can keep it out of the caller's current view."""
+    return {"post_id": post.post_id, "safety": post.safety, "status": post.status}
+
+
 @router.post("/posts")
 async def create_post(
     content: Optional[UploadFile] = File(None),
@@ -1456,8 +1545,12 @@ async def create_post(
 
     # Duplicate check
     dup_result = await db.execute(select(Post).where(Post.checksum == sha1))
-    if dup_result.scalar_one_or_none() is not None:
-        raise KuraError(409, "post_already_exists", fix="すでに登録済みです (checksum重複)。同じ画像は取り込み済みです。")
+    existing = dup_result.scalar_one_or_none()
+    if existing is not None:
+        # The caller is told WHICH post already holds this file: a refusal that only says "duplicate" left the
+        # owner unable to tell what had happened or where the image was (2026-11-14).
+        raise KuraError(409, "post_already_exists", context=_existing_post_context(existing),
+                        fix="すでに登録済みです (checksum重複)。同じ画像は取り込み済みです。")
 
     try:
         media = await asyncio.to_thread(post_files.prepare, raw)
@@ -1485,16 +1578,18 @@ async def create_post(
         mime_type=mime,
         flags_string="",
     )
+    # タグ付与 — PATCH と同じ理由で 1 クエリ (2026-09-05)。作成時も 1 post に
+    # 数十〜百のタグが付くので、逐次解決だとその数だけ往復する。
+    # **flush の前に**付ける。flush 済みの Post に `tags` を代入すると、SQLAlchemy は差分のために
+    # 既存の集合を lazy load しようとし、async session では MissingGreenlet で落ちる。metadata に
+    # tags を付けた POST /api/posts は必ず 500 になっていた (2026-11-15 実測、post は作られない)。
+    if tag_names:
+        new_post.tags = await get_or_create_tags(
+            db, [n.strip() for n in tag_names if n.strip()])
     db.add(new_post)
     await db.flush()  # populate new_post.post_id
 
     await asyncio.to_thread(post_files.store, new_post.post_id, raw, media)
-
-    # タグ付与 — PATCH と同じ理由で 1 クエリ (2026-09-05)。作成時も 1 post に
-    # 数十〜百のタグが付くので、逐次解決だとその数だけ往復する。
-    if tag_names:
-        new_post.tags = await get_or_create_tags(
-            db, [n.strip() for n in tag_names if n.strip()])
 
     # Visible on return, like /upload: the web page's drop and paste come here. A post that
     # cannot be made visible is not kept: a new install has no cull timer to retry a
@@ -1519,6 +1614,8 @@ async def create_post(
         if not _is_sha256_conflict(exc):
             raise
         await discard()
-        raise KuraError(409, "post_already_exists", fix="すでに登録済みです (同じ内容の画像が同時に取り込まれました)。")
+        winner = (await db.execute(select(Post).where(Post.checksum == sha1))).scalar_one_or_none()
+        raise KuraError(409, "post_already_exists", context=_existing_post_context(winner) if winner is not None else None,
+                        fix="すでに登録済みです (同じ内容の画像が同時に取り込まれました)。")
     await db.refresh(new_post, ["tags", "favorited_by", "user"])
     return _serialize_post(new_post, auth_user, localize=localize)

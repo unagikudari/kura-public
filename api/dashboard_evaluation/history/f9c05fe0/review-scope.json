@@ -1,0 +1,16 @@
+{
+  "reviewed_revision": "f9c05fe01a94fe5c48a790e517980e63fe110900",
+  "files": {
+    "api/routers/pools.py": "dc2d09a0ad93ba60f7653ca2e08078e9261439bd4dad043834494df81085d93e",
+    "api/tagger_core/dashboard_visual.py": "532b8f41878b2c74d62cb682f29fed068d1db8221bc60abada6e2ad4911ed224",
+    "api/tagger_core/dashboard_actions.py": "2046687f877aec2e62a7c2a93ddfba0ac8e734e7310b38dd23d9308465a8fba8",
+    "api/tagger_core/dashboard_experiment.py": "b8aae36ddf924d6288872131dcaacb61e70903dadc52f2aa6ec8932fd1ed007b",
+    "web/src/routes/tagger-dashboard/+page.svelte": "da38f6cfcd2d63a7831d8621e1f196aac2d8cb9f48f1e3ef73b4734100fef9b9",
+    "web/src/lib/components/EvaluationPane.svelte": "0af8624536665f918c829eb2fc0de2eb3575128bd512099f7037337e47e7bb39",
+    "web/src/lib/components/ReviewActions.svelte": "4f5b0cec253628db9cf69a5f2b876081859b6cf7cd6081353bb383cc144357c5",
+    "web/src/lib/components/ReviewComparison.svelte": "f9a72e541d5a9ece1b45fb8f71f1a11ce19af324cfe52eea206eafb0516d3838",
+    "web/src/lib/components/RuntimeSummary.svelte": "aef4cf4ff03a5dae9380541d84fc989545362f5284171a063a60c0f47b3e5a89",
+    "api/services/dashboard_summary.py": "6b9ac7a4f41cf464e03f77b0b5dab2b2fef8472e7233bcb1b0ca281f5fb9623a",
+    "web/src/lib/tagger/reviewComparison.ts": "fa0fc2f528169c419bcd5e0a81e286654273f3ace3e65d70e1bed5a12e64b10d"
+  }
+}

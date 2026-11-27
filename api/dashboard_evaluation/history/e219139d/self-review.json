@@ -1,0 +1,81 @@
+{
+  "reviewer": "担当Codex・自己評価",
+  "reviewed_revision": "e219139d081815c2187ec0ba9bf33378b7e4f417",
+  "method": "code+generated_html",
+  "evaluated_at": "2026-11-15",
+  "criteria": [
+    {
+      "id": "situation",
+      "verdict": "fail",
+      "evidence": "保存済みプレビューでは467件中303件が状況未確認。未確認の理由が分からず、動作・停止・要対応を区別する材料が足りない。",
+      "nextfix": "未取得・古い報告・読取失敗を観測事実で区別し、分からなければ理由未記録と示す。"
+    },
+    {
+      "id": "consistency",
+      "verdict": "fail",
+      "evidence": "判定待ちという登録状態から『候補の評価結果を確認中です』と表示するが、確認処理の実行証拠を参照していない。待機を実行中と読ませる。",
+      "nextfix": "実行中は新鮮な実行証拠がある場合だけに限定する。"
+    },
+    {
+      "id": "duplication",
+      "verdict": "fail",
+      "evidence": "状態カード・行の状態・次の行動に類似説明が残る。",
+      "nextfix": "状態は一度、次の行動は具体的な処理だけに絞る"
+    },
+    {
+      "id": "completeness",
+      "verdict": "fail",
+      "evidence": "タグ別の担当・確認項目・期限または最終更新が一緒に揃っていない。",
+      "nextfix": "根拠の記録に結び付いた作業表示を作る"
+    },
+    {
+      "id": "brevity",
+      "verdict": "unverified",
+      "evidence": "初期6列と折りたたみは実装したが、多数行・スマホの見やすさは未検証。",
+      "nextfix": "実画面の幅別確認を行う"
+    },
+    {
+      "id": "actionability",
+      "verdict": "fail",
+      "evidence": "「運用側が確認」では、何が不足し何をすれば進むか分からない。",
+      "nextfix": "不足検証・次処理・担当を具体化する"
+    },
+    {
+      "id": "exploration",
+      "verdict": "unverified",
+      "evidence": "JavaScriptの検索・絞込・昇降sortテストは通過。ブラウザー操作課題は未実施。",
+      "nextfix": "対象抽出から訂正リンクまで操作試験する"
+    },
+    {
+      "id": "graphics",
+      "verdict": "unverified",
+      "evidence": "件数比と候補の固定評価を分離し未測定を区別。利用者が図を正しく読めるか未試験。",
+      "nextfix": "精度と件数を読み取る課題を実施する"
+    },
+    {
+      "id": "freshness",
+      "verdict": "fail",
+      "evidence": "実行中はfresh報告だけだが、各行の候補評価の経過時間が一覧で見えない。",
+      "nextfix": "評価日時と現在の観測日時を併記する"
+    },
+    {
+      "id": "accessibility",
+      "verdict": "fail",
+      "evidence": "構成フィルターがonclickだけのspan、列ソートがonclickだけのth。これらの操作にキーボード経路がない。画面全体の操作性も未検証。",
+      "nextfix": "buttonとaria-sort等で操作可能にし、キーボード・狭幅・拡大で実操作を確認する。"
+    }
+  ],
+  "reviewer_kind": "agent",
+  "overall": "fail",
+  "summary": "運用ダッシュボードとして不合格。状態を見る機能はあるが、理由・担当・具体的な次の行動と鮮度が揃わない。",
+  "limitations": [
+    "実ブラウザーの表示・操作試験は未実施。コードと既存の生成HTMLによる評価。",
+    "467タグ中303件の未確認は保存済みプレビューの値であり、現在値の再測定ではない。",
+    "自己評価は独立評価ではない。独立エージェント2名の報告は別に掲載する。"
+  ],
+  "counts": {
+    "pass": 0,
+    "fail": 7,
+    "unverified": 3
+  }
+}

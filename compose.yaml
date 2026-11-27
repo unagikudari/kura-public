@@ -43,7 +43,8 @@ services:
 
   web:
     build:
-      context: web
+      context: .
+      dockerfile: web/Dockerfile
       args:
         ORIGIN: ${ORIGIN:?run ops/install/make_env.py --docker first}
     restart: unless-stopped

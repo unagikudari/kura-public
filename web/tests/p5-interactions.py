@@ -177,8 +177,8 @@ def assert_hide_verify(page, ctx) -> None:
           f"cookie={cookie_val()}")
     pending0 = page.locator(".badge-verify-pending").count()
     done0 = page.locator(".badge-verify-done").count()
-    check("hide-verify: OFF shows pending badges", pending0 >= 1, f"pending={pending0}")
-    check("hide-verify: OFF shows verified badges", done0 >= 1, f"done={done0}")
+    check("history: no obsolete pending badges", pending0 == 0, f"pending={pending0}")
+    check("history: no obsolete verified badges", done0 == 0, f"done={done0}")
 
     # toggle ON: fetchPools が hide_verify=true を渡すことを実 request で捕捉
     with page.expect_request(lambda r: "hide_verify=true" in r.url, timeout=10000) as req:
@@ -193,7 +193,7 @@ def assert_hide_verify(page, ctx) -> None:
     # v1.80.2 意味論 (DOM): pending は残り、verified は消える
     pending1 = page.locator(".badge-verify-pending").count()
     done1 = page.locator(".badge-verify-done").count()
-    check("hide-verify: ON keeps pending pools visible", pending1 >= 1, f"pending={pending1}")
+    check("history: no pending work badges", pending1 == 0, f"pending={pending1}")
     check("hide-verify: ON hides verified pools", done1 == 0, f"done={done1}")
 
     # v1.80.2 意味論 (server 応答): hide_verify=true の結果に verified/excluded ゼロ
@@ -205,7 +205,7 @@ def assert_hide_verify(page, ctx) -> None:
              return d.results.map(p => p.verifyStatus ?? null);
            }"""
     )
-    check("hide-verify: server result has pending", "pending" in res, f"statuses={set(res)}")
+    check("history: server excludes old pending pools", "pending" not in res, f"statuses={set(res)}")
     check("hide-verify: server result has no verified/excluded",
           not any(s in ("verified", "excluded") for s in res), f"statuses={set(res)}")
 
@@ -225,35 +225,11 @@ def assert_hide_verify(page, ctx) -> None:
 
 # ── site 3: PoolVerifyBadge 描画 (card 色 / chip 未設定) ──
 def assert_badges(page) -> None:
-    guard_routes(page)  # ここは読み取りのみ — chip click は fixture 変異なので禁止
+    guard_routes(page)
     H.goto_settled(page, f"{ORIGIN}/?mode=pools&q=HEADVERIFY")
-    pend = page.locator(".badge-verify-pending").first
-    done = page.locator(".badge-verify-done").first
-    if pend.count():
-        bg = pend.evaluate("el => getComputedStyle(el).backgroundColor")
-        check("badge: pending card badge #e08a2e", "224, 138, 46" in bg, f"bg={bg}")
-        check("badge: pending card label 検", pend.inner_text() == "検")
-    else:
-        check("badge: pending card badge present", False, "no pending badge in view")
-    if done.count():
-        bg = done.evaluate("el => getComputedStyle(el).backgroundColor")
-        check("badge: verified card badge #2f9e6f", "47, 158, 111" in bg, f"bg={bg}")
-        check("badge: verified card label 済", done.inner_text() == "済")
-    else:
-        check("badge: verified card badge present", False, "no verified badge in view")
-
-    # PoolTitleBar chip variant (POOL は verify 未設定 fixture — click しない)
+    check("history: no verification work badges", page.locator(".badge-verify-pending,.badge-verify-done").count() == 0)
     H.goto_settled(page, f"{ORIGIN}/?q=pool%3A{POOL}")
-    chip = page.locator(".pool-verify-chip")
-    check("badge: title-bar chip renders", chip.count() == 1)
-    if chip.count():
-        check("badge: chip label 検証: 未設定", chip.inner_text() == "検証: 未設定",
-              f"label={chip.inner_text()!r}")
-        unset = chip.evaluate("el => el.classList.contains('unset')")
-        check("badge: chip unset class", bool(unset))
-        name = page.locator(".pool-title-name").inner_text()
-        check("badge: chip sits in PoolTitleBar of fixture pool", name == POOL_NAME,
-              f"name={name!r}")
+    check("history: no verification-state action", page.locator(".pool-verify-chip,.pool-mission").count() == 0)
 
 
 # ── A/B 静止画 (pool 一覧は golden 集合に無い live surface) ──

@@ -13,7 +13,7 @@
     tagLocale.set(value);
     document.cookie = `kura_tag_locale=${value}; Path=/; Max-Age=31536000; SameSite=Lax`;
   }
-  import { extensionNav, hasLoraUI } from '#lib/extensions.ts';
+  import { extensionNav } from '#lib/extensions.ts';
   import { t, uiLocale, readUiLocale, UI_LOCALE_COOKIE } from '#lib/i18n/index.ts';
   const m = t();
   const locale = uiLocale();
@@ -317,6 +317,7 @@
       <a href="/?q=" onclick={(e) => { if (page.url.pathname === '/' && poolMode && onTogglePool && !e.ctrlKey && !e.metaKey && !e.shiftKey && !e.altKey) { e.preventDefault(); onTogglePool(); } }} class:current={page.url.pathname === '/' && !poolMode} aria-current={page.url.pathname === '/' && !poolMode ? 'page' : undefined} aria-label={m.header.navImages} title={m.header.navImages}><Icon name="image" /></a>
       <a href="/?mode=pools" onclick={(e) => { if (page.url.pathname === '/' && !poolMode && onTogglePool && !e.ctrlKey && !e.metaKey && !e.shiftKey && !e.altKey) { e.preventDefault(); onTogglePool(); } }} class:current={page.url.pathname === '/' && poolMode} aria-current={page.url.pathname === '/' && poolMode ? 'page' : undefined} aria-label="Pool" title="Pool"><Icon name="pool" /></a>
       <a href="/tags" class:current={page.url.pathname === '/tags'} aria-current={page.url.pathname === '/tags' ? 'page' : undefined} aria-label={m.header.navTags} title={m.header.navTags}><Icon name="tag" /></a>
+      <a href="/tagger-dashboard" class:current={page.url.pathname === '/tagger-dashboard'} aria-current={page.url.pathname === '/tagger-dashboard' ? 'page' : undefined} aria-label={m.header.taggerDashboard} title={m.header.taggerDashboard}><Icon name="tagger" /></a>
       <a href="/tags/manage" data-sveltekit-preload-code="viewport" class:current={page.url.pathname.startsWith('/tags/')} aria-current={page.url.pathname.startsWith('/tags/') ? 'page' : undefined} aria-label={m.header.navTagManage} title={m.header.navTagManage}><Icon name="list" /></a>
       <a href="/artists" data-sveltekit-preload-code="viewport" class:current={(activeSection === 'artists' || page.url.pathname === '/artists')} aria-current={(activeSection === 'artists' || page.url.pathname === '/artists') ? 'page' : undefined} aria-label={m.header.navArtists} title={m.header.navArtists}><Icon name="character" /></a>
       {#each extensionNav as item (item.href)}<a href={item.href} data-sveltekit-preload-code="viewport" class:current={(!activeSection && page.url.pathname.startsWith(item.href))} aria-current={(!activeSection && page.url.pathname.startsWith(item.href)) ? 'page' : undefined} aria-label={item.label} title={item.label}>{#if item.icon}<Icon name={item.icon} />{:else}{item.label}{/if}</a>{/each}
@@ -367,9 +368,6 @@
             <a class="menu-item" href="/lab/collector" onclick={closeMenu}>{m.header.tryCollector}</a>
             {#if page.data.sourceUrl}<a class="menu-item" href={page.data.sourceUrl} target="_blank" rel="noopener noreferrer" onclick={closeMenu}>{m.header.sourceCode}</a>{/if}
             <div class="menu-label">{m.header.pages}</div>
-            <a class="menu-item" href="/tagger-dashboard" onclick={closeMenu}>
-              <span>{m.header.taggerDashboard}</span>
-            </a>
             {#if onToggleHideVerify}
               <button type="button" class="menu-item" class:active={hideVerify} onclick={() => { onToggleHideVerify(); closeMenu(); }}>
                 <span>{m.header.hideVerifyPools}</span>{#if hideVerify}<span class="chk">✓</span>{/if}
@@ -423,11 +421,6 @@
               <span>{item.menuLabel}</span>
             </a>
             {/each}
-            {#if hasLoraUI}
-            <a class="menu-item" href="/lora" onclick={closeMenu}>
-              <span>{m.header.lora}</span>
-            </a>
-            {/if}
           </div>
           <div class="menu-group">
             <div class="menu-label">{m.header.account}</div>
@@ -587,6 +580,7 @@
 </header>
 
 <style>
+  @media (min-width: 1280px) { header { zoom: 1.4; } }
   header {
     position: sticky; top: 0; z-index: 50; flex-shrink: 0;
     background: var(--surface, var(--surface)); color: var(--text, #ece9e2);

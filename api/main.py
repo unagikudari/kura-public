@@ -35,8 +35,6 @@ from api.routers import (
     posts,
     post_variant,
     similar,
-    tagger,
-    tagging,
     tags,
     upload,
 )
@@ -639,17 +637,26 @@ app.include_router(operator_settings.router)
 app.include_router(upload.router)
 from api.collector.router import router as _collector_router
 app.include_router(_collector_router)
-# Image tagging is an optional capability (api/capabilities.py, gate G7): with
-# KURA_TAGGING_ENABLED=0 these surfaces are simply not mounted.
-if capabilities.tagging_enabled():
-    app.include_router(tagging.router)
 # Retain the extension routers' machine read gate. All commands, including
 # browser-facing adapters exempted from this legacy gate, also cross the shared
 # fail-closed CommandAuthMiddleware boundary above.
 from api.auth import require_api_key as _require_api_key
 _MACHINE_GATE = [Depends(_require_api_key)]
+# The core archive can start with the image-tagging capability disabled.
 if capabilities.tagging_enabled():
+    from api.routers import (
+        dashboard_evaluation, human_review, tagger, tagger_measurements,
+        tagger_qualification, tagging, training_readiness,
+    )
+
+    app.include_router(tagging.router)
     app.include_router(tagger.router)
+    app.include_router(tagger_qualification.router)
+    app.include_router(tagger_measurements.router)
+    app.include_router(human_review.router)
+    app.include_router(pools.dashboard_router)
+    app.include_router(dashboard_evaluation.router)
+    app.include_router(training_readiness.router)
 _extensions = extension_hooks.include_routers(app, machine_gate=_MACHINE_GATE)
 _log.info("extensions loaded: %s", _extensions or "(core only)")
 
@@ -665,7 +672,9 @@ _log.info("site adapters loaded: %s", _optional_routers or "(なし)")
 # 8aaede8f) — Starlette's StaticFiles defaults to NOT following symlinks and
 # 404s them otherwise, which is what broke tagger/UI image fetches after the
 # tiering sweep.
-_data_static = StaticFiles(directory=str(DATA_DIR), follow_symlink=True) if DATA_DIR.exists() else None
+from api.services.pool_visibility import VisibleMediaFiles, require_visible_post
+
+_data_static = VisibleMediaFiles(directory=str(DATA_DIR), follow_symlink=True) if DATA_DIR.exists() else None
 
 
 # Originals under /data/posts/<name> (tagger content_url). A regular file, or an archived
@@ -695,6 +704,7 @@ async def _data_posts_original(name: str, request: _Request):
     from api.db.session import async_session
     post_id = int(originals.NAME.fullmatch(name)[1])
     async with async_session() as db:
+        await require_visible_post(db, post_id)
         row = (await db.execute(_text(
             'SELECT sha256, checksum_md5, checksum, file_size, "mime-type" AS mime FROM post WHERE id = :id'),
             {"id": post_id})).mappings().first()
@@ -711,7 +721,9 @@ async def _data_posts_original(name: str, request: _Request):
     media_type = mimetypes.guess_type(name)[0]   # what StaticFiles would send for the name
     # Sent from the leased descriptor; the lease (a shared flock) keeps every worker's
     # eviction off it and is released however the response ends.
-    return originals.releasing_file_response(lease, media_type)
+    response = originals.releasing_file_response(lease, media_type)
+    response.headers["Cache-Control"] = "private, no-cache"
+    return response
 
 
 if _data_static is not None:

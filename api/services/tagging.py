@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.claim_storage import service as claim_storage
 from api.services import tagging_queue
+from api.tagger_core.quality_hold import held_names
 from api.config import DATA_DIR, DATA_URL
 from api.db.models import Pool, PoolPost, Post, PostTag, TagName
 from api.schemas.tagging import ClaimedItem, KindStats, StatsResponse, TagItem
@@ -276,6 +277,7 @@ class ClaimNotEligibleError(Exception):
 async def enforce_claim_guard(
     db: AsyncSession, *, host: str, worker_id: str, profile: str,
     release_id: int | None, generation: int, provider: str, model_sha256: str | None,
+    execution_receipt: dict | None = None,
 ) -> None:
     """Fail-closed compatibility gate for kind=auto_tag claims.
 
@@ -297,15 +299,14 @@ async def enforce_claim_guard(
         (tagger_fleet.degraded_reason) but there is no "expected provider"
         source of truth to compare against — inventing one would be
         guessing, not implementing.
-      - `generation` as a queue-ownership token (distinguishing pre- vs
-        post-consolidation worker code, Step 12): recorded but not yet
-        compared against anything, since tagger/worker.py -- the thing
-        that would give it real meaning -- does not exist yet.
+    Worker code must meet required_worker_generation; generation on the active
+    row is a publication epoch used independently by sweep TOCTOU checks.
     """
     try:
         await upsert_heartbeat(
             db, worker_id=worker_id, host=host, profile=profile, generation=generation,
             release_id=release_id, provider=provider, model_sha256=model_sha256,
+            execution_receipt=execution_receipt,
         )
     except TransitionError as e:
         raise ClaimNotEligibleError(f"heartbeat upsert failed: {e}") from e
@@ -326,7 +327,7 @@ async def enforce_claim_guard(
         )
 
     active = (await db.execute(
-        text("SELECT release_id, generation FROM tagger_release_active WHERE id = 1"),
+        text("SELECT release_id, generation, required_worker_generation FROM tagger_release_active WHERE id = 1"),
     )).one_or_none()
     if active is None or active.release_id is None:
         raise ClaimNotEligibleError("no active tagger_release configured")
@@ -342,14 +343,14 @@ async def enforce_claim_guard(
     # hot-swaps release 6's weights but silently re-adds the tag the veto is
     # meant to cancel, overwriting a newer tagger's correction. WORKER_GENERATION
     # is a code constant (loop.py / nodec_autotag_worker.py) reported in the
-    # claim; tagger_release_active.generation is the floor. A worker below the
+    # claim; required_worker_generation is the floor; active.generation is the publication epoch. A worker below the
     # floor can no longer claim (409) — it CANNOT overwrite. This is the
     # queue-ownership token 0080's docstring reserved for exactly this and left
     # unwired until the veto made it load-bearing.
-    if active.generation is not None and generation < active.generation:
+    if generation < active.required_worker_generation:
         raise ClaimNotEligibleError(
             f"worker code generation={generation} is below the active floor "
-            f"{active.generation} (stale worker code — pull latest + restart). "
+            f"{active.required_worker_generation} (stale worker code — pull latest + restart). "
             f"A stale worker must not overwrite a newer tagger's output."
         )
 
@@ -375,9 +376,19 @@ async def complete_auto_tag(
     source: str | None = None, reap_scope: str = "off",
     host: str | None = None, release_id: int | None = None,
     veto_gates: list[str] | None = None, generation: int | None = None,
-    commit: bool = True,
+    worker_id: str | None = None, execution_receipt_sha256: str | None = None,
+    commit: bool = True, executed_content_heads=None,
 ) -> tuple[str, int, int, int]:
     """Returns (final_status, tags_applied, attempts, tags_skipped_pinned)."""
+    from api.services.execution_receipts import for_completion
+    receipt_ref = await for_completion(db, receipt_sha256=execution_receipt_sha256,
+                                       worker_id=worker_id, host=host, release_id=release_id)
+    if executed_content_heads:
+        from api.tagger_core.execution_receipt import require
+        require(status == "ok" and receipt_ref is not None,
+                "content_head_execution_receipt_required")
+        require(len({head.tag for head in executed_content_heads}) == len(executed_content_heads),
+                "content_head_execution_duplicate_tag")
     # Claim sets and their post_tag projection are one per-post write aggregate.
     # Fence writer ownership before touching its relations, then serialize
     # completions without blocking FK key-share checks on the post identity.
@@ -413,10 +424,16 @@ async def complete_auto_tag(
             # hiccup) skips this whole block, so it can never wipe a post's
             # unlocked tags. A non-"ok" completion never reaches here at
             # all (see the `else` branch below).
-            names = [t.name for t in tags]
+            # A quality hold means no new assertion and no retraction. It is
+            # not a negative prediction. Resolve aliases to the same identity.
+            holds = await held_names(db)
+            held_ids = list((await db.execute(
+                select(TagName.tag_id).where(TagName.name.in_(holds))
+            )).scalars())
+            names = [t.name for t in tags if t.name not in holds]
             categories = {t.name: t.category for t in tags if t.category}
             tag_objs = await get_or_create_tags(db, names, categories)
-            tag_ids = [t.tag_id for t in tag_objs if t.tag_id is not None]
+            tag_ids = [t.tag_id for t in tag_objs if t.tag_id is not None and t.tag_id not in held_ids]
             if tag_ids:
                 # INV-M (plan fe46c5fa Step C, migration 0057): a tag the
                 # human explicitly REMOVED from this post is pinned absent —
@@ -480,13 +497,14 @@ async def complete_auto_tag(
                         "WHERE pt.tag_id = tn.tag_id "
                         "AND pt.post_id = :pid AND NOT pt.locked "
                         "AND tn.name = ANY(:gates) AND tn.name <> ALL(:keep) "
+                        "AND pt.tag_id <> ALL(CAST(:held AS int[])) "
                         "AND NOT EXISTS ("
                         "  SELECT 1 FROM post_tag_pin pin "
                         "  WHERE pin.post_id = pt.post_id AND pin.tag_id = pt.tag_id "
                         "  AND pin.state = 'present') "
                         "RETURNING tn.name"
                     ),
-                    {"pid": post_id, "gates": reap_gates, "keep": keep_names},
+                    {"pid": post_id, "gates": reap_gates, "keep": keep_names, "held": held_ids},
                 )
                 veto_removed_names = [r[0] for r in reaped.fetchall()]
             # rev7 (plan kura-tagger-audit-and-remediation, fact 00702a48):
@@ -517,7 +535,7 @@ async def complete_auto_tag(
                 # first-adder guesswork). Positive membership (`= ANY`), not
                 # `<> ALL` — this DELETE can only ever touch tags proven to
                 # be this actor's own stale claims.
-                reap_ids = await claim_storage.candidates(db, claim_backend, post_id, tag_ids)
+                reap_ids = await claim_storage.candidates(db, claim_backend, post_id, tag_ids + held_ids)
                 if reap_ids:
                     del_stmt = text(
                         "DELETE FROM post_tag WHERE post_id = :pid AND NOT locked "
@@ -548,7 +566,7 @@ async def complete_auto_tag(
                 # rev6's over-deletion). Both statements run in this same
                 # transaction, atomic with the reap above and the add-side
                 # insert below.
-                await claim_storage.replace(db, claim_backend, post_id, tag_ids)
+                await claim_storage.replace(db, claim_backend, post_id, tag_ids, preserve_tag_ids=held_ids)
             if tag_ids:
                 # RETURNING under ON CONFLICT DO NOTHING yields only the rows
                 # that were ACTUALLY inserted -- tags the post already had
@@ -583,7 +601,7 @@ async def complete_auto_tag(
             # locked=False: WD14 起源の implication は reap 対象のまま (upload
             # 起源の implication は _apply_tags 側で既に locked=True 済み)。
             # delete/add の後に呼ぶ — post の最終タグ状態を反映してから展開する。
-            await expand_implications(db, post_id, locked=False)
+            await expand_implications(db, post_id, locked=False, excluded_tag_ids=held_ids)
         # Provenance (task 4328fb0e, revised post plan-review fb64f308):
         # one post_tag_audit row per successful completion, not a mutable
         # snapshot on post -- a re-tag of the same post (already observed
@@ -605,12 +623,14 @@ async def complete_auto_tag(
             await db.execute(
                 text(
                     "INSERT INTO post_tag_audit "
-                    "(post_id, actor_type, actor_id, source, added_tags, removed_tags, host, release_id) "
-                    "VALUES (:pid, 'script', :actor_id, 'auto_tag', :added, :removed, :host, :release_id)"
+                    "(post_id, actor_type, actor_id, source, added_tags, removed_tags, host, release_id"
+                    + (", execution_receipt_sha256) " if receipt_ref else ") ")
+                    + "VALUES (:pid, 'script', :actor_id, 'auto_tag', :added, :removed, :host, :release_id"
+                    + (", :receipt)" if receipt_ref else ")")
                 ),
                 {"pid": post_id, "actor_id": source, "added": added_names,
                  "removed": removed_names + veto_removed_names,
-                 "host": host, "release_id": release_id},
+                 "host": host, "release_id": release_id, "receipt": receipt_ref},
             )
         # post.tagging_* are governed (0079) — go through the governed
         # function (0083) instead of a direct UPDATE.
@@ -618,6 +638,22 @@ async def complete_auto_tag(
             text("SELECT tagger_governed_complete_ok(:pid)"),
             {"pid": post_id},
         )
+        if executed_content_heads:
+            await db.execute(text("""
+                INSERT INTO tagger_content_head_execution
+                    (receipt_sha256, worker_id, tag, artifact_sha256, threshold, apply_mode,
+                     policy_epoch, post_id)
+                VALUES (:receipt, :worker, :tag, :artifact_sha256, :threshold, :apply_mode,
+                        coalesce((
+                            SELECT greatest(p.created_at, a.updated_at)
+                            FROM tagger_current_head_policy p CROSS JOIN tagger_release_active a
+                            WHERE a.id = 1 AND a.release_id = :release AND p.tag = :tag
+                              AND p.content_sha256 = :artifact_sha256 AND p.threshold = :threshold
+                              AND p.apply_mode = :apply_mode
+                        ), TIMESTAMPTZ '-infinity'), :post)
+                ON CONFLICT DO NOTHING
+            """), [{"receipt": receipt_ref, "worker": worker_id, "post": post_id, "release": release_id,
+                     **head.model_dump()} for head in executed_content_heads])
         final = "done"
     else:
         # Count attempts on genuine failed completions, NOT at claim time: a
@@ -654,10 +690,17 @@ async def complete_pool_meta(
     tags_applied = 0
     if status == "ok":
         if tags:
-            names = [t.name for t in tags]
-            categories = {t.name: t.category for t in tags if t.category}
-            tag_objs = await get_or_create_tags(db, names, categories)
-            tag_ids = [t.tag_id for t in tag_objs if t.tag_id is not None]
+            # Pool metadata is also machine output. Resolve held identities
+            # before accepting aliases, without retracting existing assignments.
+            holds = await held_names(db)
+            held_ids = set((await db.execute(
+                select(TagName.tag_id).where(TagName.name.in_(holds))
+            )).scalars()) if holds else set()
+            names = [t.name for t in tags if t.name not in holds]
+            categories = {t.name: t.category for t in tags if t.category and t.name not in holds}
+            tag_objs = await get_or_create_tags(db, names, categories) if names else []
+            tag_ids = [t.tag_id for t in tag_objs
+                       if t.tag_id is not None and t.tag_id not in held_ids]
             if tag_ids:
                 post_id_rows = await db.execute(
                     select(PoolPost.post_id).where(PoolPost.pool_id == pool_id)

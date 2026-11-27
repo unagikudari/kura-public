@@ -1,0 +1,85 @@
+{
+  "reviewer": "独立エージェント・状態と操作",
+  "reviewer_kind": "agent",
+  "reviewed_revision": "e219139d081815c2187ec0ba9bf33378b7e4f417",
+  "method": "code+generated_html",
+  "overall": "fail",
+  "summary": "状態の分類と検索の構造は改善しているが、停止理由・担当・次の具体処理・更新時刻が揃わず、利用者が運用の次工程を判断できない。実ブラウザーの使い勝手は未検証。",
+  "limitations": [
+    "画面のスクリーンショット、実操作、タッチ操作、色・文字の読みやすさは確認していない。",
+    "生成HTMLは467タグの読み取り専用プレビュー。現在の運用状態そのものの再測定ではない。",
+    "実装上の機能の存在を、利用者が課題を遂行できた証拠として扱っていない。"
+  ],
+  "criteria": [
+    {
+      "id": "situation",
+      "verdict": "fail",
+      "evidence": "8分類と本番使用の別表示はある。一方、プレビュー467タグ中303タグが『状況未確認』で、何が未取得かが主表示にないため、動いている対象と対応が必要な対象を選ぶ根拠が不足する。",
+      "nextfix": "状況未確認を、実行記録なし・報告期限超過・読取失敗など、観測された理由で分ける。理由がない場合は『理由未記録』と明示する。",
+      "references": ["api/tagger_core/dashboard_visual.py:23-33", "生成HTML:467行、unknown303行"]
+    },
+    {
+      "id": "consistency",
+      "verdict": "fail",
+      "evidence": "候補と本番使用を分け、freshな学習を優先する点はよい。ただし登録状態『判定待ち』だけから詳細に『候補の評価結果を確認中です』と書く。確認プロセスの実行証拠を読まず、待機を実行中のように説明している。",
+      "nextfix": "『確認中』はfreshな実行証拠がある場合だけにし、それ以外は『判定待ち・実行未確認』とする。",
+      "references": ["api/tagger_core/dashboard_visual.py:23-33", "api/tagger_core/dashboard_actions.py:9-10", "api/routers/pools.py:1507-1510"]
+    },
+    {
+      "id": "duplication",
+      "verdict": "unverified",
+      "evidence": "概要カード・一覧のグループ見出し・各行の状態が同じ分類を再掲する。これは位置把握に有用な重複になり得るが、候補評価の数値も別の詳細説明で再掲される。実画面で冗長さを評価していない。",
+      "nextfix": "同じタグで概要→一覧→詳細をたどり、判断を助けない繰り返しを実画面で確認する。数値の正式な表示先を一つにし、他は要約にする。",
+      "references": ["api/tagger_core/dashboard_visual.py:60-75", "api/routers/pools.py:1428-1430", "api/routers/pools.py:1506-1510"]
+    },
+    {
+      "id": "completeness",
+      "verdict": "fail",
+      "evidence": "各行にはタグ・分類・本番使用・評価・訂正数があるが、『運用側』の担当者、未完の検証項目、最終更新、次の処理が同じ場所に揃わない。登録理由の文章がdetailsにあるだけで、作業記録との結び付きはない。",
+      "nextfix": "各対象に担当、根拠となる記録の日時、未完条件、次処理を表示する。存在しない情報を補完せず未記録と出す。",
+      "references": ["api/tagger_core/dashboard_visual.py:7-15", "api/routers/pools.py:1507-1513"]
+    },
+    {
+      "id": "brevity",
+      "verdict": "unverified",
+      "evidence": "初期表示を6列に絞り、内部構成や長文をdetailsへ移したことはコードで確認した。ただし8カード、学習strip、工程図、使用中モデルの集計が同じ概要にあり、実際の一画面での情報量は未確認。",
+      "nextfix": "デスクトップとスマホで、最初の画面に残す情報を実測する。詳細を開かず『現在の重要事項と自分の作業』を言えるか確認する。",
+      "references": ["api/tagger_core/dashboard_visual.py:68-75", "api/tagger_core/dashboard_visual.py:101-104"]
+    },
+    {
+      "id": "actionability",
+      "verdict": "fail",
+      "evidence": "主表示の『運用側が検証』『運用側が理由を確認』は、何を調べ、何が揃えば進むかを示さない。画像の訂正リンクは全行でタグ名検索であり、未付与の見逃し画像を直接示すものではない。",
+      "nextfix": "検証待ちなら不足している精度測定・ノード動作検査等を具体名で出す。人手が必要な場合だけ、対象画像・不足数・訂正入口を結ぶ。タグ検索は『このタグの画像を見る』と実際の範囲を示す。",
+      "references": ["api/tagger_core/dashboard_visual.py:7-15", "api/routers/pools.py:1509-1513"]
+    },
+    {
+      "id": "exploration",
+      "verdict": "unverified",
+      "evidence": "状況・本番使用・タグ名での絞り込み、グループ化、昇降ソート、件数、0件表示、解除が実装されている。未知の数値を末尾に置く処理もある。ただし実ブラウザーでカードから訂正までの課題遂行は試していない。",
+      "nextfix": "実画面で『保留を選択→タグを検索→ソート→画像を見る→戻る→解除』を行い、選択状態と件数が常に分かることを確認する。",
+      "references": ["api/tagger_core/dashboard_visual.py:78-88", "api/tagger_core/dashboard_visual.py:110-127"]
+    },
+    {
+      "id": "graphics",
+      "verdict": "unverified",
+      "evidence": "件数比の棒を精度や進捗率と区別し、候補の適合率・再現率には固定評価の件数と『本番精度ではない』を併記している。未測定も0とは別扱い。ただし、その図で人が正しく比較・判断できるかは実画面で未検証。",
+      "nextfix": "2候補を比較する課題で、どちらがどの測定で良いか、未測定が何かを利用者が説明できるか確認する。図の単位・母数・対象を視線移動なしで読めるかも見る。",
+      "references": ["api/tagger_core/dashboard_visual.py:36-56", "api/tagger_core/dashboard_visual.py:64-72"]
+    },
+    {
+      "id": "freshness",
+      "verdict": "fail",
+      "evidence": "学習中の分類にはfreshを要求しているが、learning_status.readがobserved_atとageを返さず、概要に『直近の学習』の日時が出ない。登録済み状態は古くても同じラベルのまま。iframe全体の取得日時は親が非表示にするchromeにあり、ノードの30秒更新と他の集計の鮮度が混同され得る。",
+      "nextfix": "学習報告と集計それぞれの取得時刻・経過時間を見える場所へ出す。報告期限超過を示し、ノードだけ自動更新・集計は手動更新であることを明記する。",
+      "references": ["tagger/learning_status.py:30-41", "api/tagger_core/dashboard_visual.py:66-73", "web/src/routes/tagger-dashboard/+page.svelte:50,73-110"]
+    },
+    {
+      "id": "accessibility",
+      "verdict": "unverified",
+      "evidence": "カードがbutton、主要selectにlabel、件数にaria-live、metricにaria-labelがあり色だけには依存しない。一方、旧構成chipはクリック用span、表見出しはonclickのthのまま。キーボードや読み上げで全機能を使えるか、スマホで文字が読めるかは未確認。",
+      "nextfix": "キーボードだけで主要課題を実行し、構成chipと表見出しもbutton等に直す。スマホ幅・拡大・読み上げでフォーカス順と可視性を確認する。",
+      "references": ["api/tagger_core/dashboard_visual.py:65,78-88", "api/routers/pools.py:1828-1842"]
+    }
+  ]
+}

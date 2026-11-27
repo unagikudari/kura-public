@@ -1,0 +1,38 @@
+{
+  "schema": "dashboard-review-notes/1",
+  "author": "Codex（実装者・記録照合）",
+  "reviewed_revision": "1302822e38aee9e974fd94ff46b846e70ca9348b",
+  "notes": [
+    {
+      "id": "prompt-table-disclosure",
+      "source": "review prompt / Gemini brevity recommendation",
+      "finding": "The prompt incorrectly described table/filter/sort/graphs as all behind details.",
+      "correction": "The table and its exploration controls are intentionally visible; graphs and supporting details are collapsible. Collapsing the whole table is a suggestion, not restoration of a stated product requirement."
+    },
+    {
+      "id": "gemini-tag-sort",
+      "source": "Gemini exploration scorecard",
+      "finding": "The original scorecard alleges tag sorting fails to disable priority/remaining tie-breaking.",
+      "correction": "Existing browser checks distinguish tag order from request priority and passed. Keep the reviewer verdict and original text unchanged; this alleged defect is not accepted as demonstrated.",
+      "code_reference": "web/tests/review-actions.browser.py"
+    },
+    {
+      "id": "claude-completion",
+      "source": "Claude recommended next small improvement",
+      "finding": "The reviewer suggests telling users that one pass to the last image completes their work.",
+      "correction": "Do not promise completion while skipped images remain unresolved without persistent uncertain judgments or a completion acknowledgement. The reviewer itself conditions this wording on actual partial-coverage policy."
+    },
+    {
+      "id": "observer-vs-ui",
+      "source": "Gemini situation/freshness",
+      "finding": "The independent observer is not visible in the dashboard.",
+      "correction": "The five-minute observer is separate operational evidence collection. The UI reads current counts every 30 seconds while visible; the observer does not determine UI freshness."
+    },
+    {
+      "id": "terminal-observation",
+      "source": "Gemini freshness",
+      "finding": "An old completed experiment retains its completed label.",
+      "correction": "Completion is a historical terminal result scoped to this experiment, not a current-running/global-idle claim. Observation age and fetch time remain useful clarity improvements."
+    }
+  ]
+}

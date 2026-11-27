@@ -274,3 +274,48 @@ def test_with_sidecars_an_image_waits_for_its_sidecar_to_settle(kura, tmp_path):
         assert _WatchKura.uploads[0]["tags"] == "night sky_view"
     finally:
         _stop(proc)
+
+
+@pytest.mark.parametrize('waiting_kind', ['copy', 'partial', 'sidecar', 'mid-send'])
+def test_waiting_page_holds_only_its_pool_and_resumes_in_order(kura, tmp_path, waiting_kind):
+    root = tmp_path / 'books'
+    book = root / 'Book'
+    other = root / 'Other'
+    book.mkdir(parents=True)
+    other.mkdir()
+    for n in (1, 2, 3):
+        p = book / f'p{n}.png'
+        p.write_bytes(PNG + bytes([n]))
+        _old(p)
+    (other / 'other.png').write_bytes(PNG + b'other')
+    _old(other / 'other.png')
+    # A changing non-media file must not hold even the first page.
+    (book / '0.txt').write_text('notes in progress')
+    waiting = book / 'p2.png'
+    if waiting_kind == 'sidecar':
+        waiting = book / 'p2.png.json'
+        waiting.write_text('{"tags": ["page"]}')
+    elif waiting_kind == 'partial':
+        waiting.write_bytes(b'\x89PNG')
+    elif waiting_kind == 'copy':
+        os.utime(waiting, None)
+    else:
+        _WatchKura.slow_paths = {'p1.png'}
+    proc = _start(tmp_path, root, kura, '--settle', '60', '--pool-per-folder', '--sidecars')
+    try:
+        if waiting_kind == 'mid-send':
+            assert _until(lambda: _WatchKura.slow_started)
+            os.utime(waiting, None)
+        names = lambda: [u['name'] for u in _WatchKura.uploads]
+        assert _until(lambda: 'other.png' in names())
+        time.sleep(1.2)
+        assert [n for n in names() if n.startswith('p')] == ['p1.png']
+        rows = [json.loads(l) for l in (tmp_path / 'rec.jsonl').read_text().splitlines()[1:]]
+        assert not any(r.get('path') in ('Book/p2.png', 'Book/p3.png') for r in rows)
+        if waiting_kind == 'partial':
+            waiting.write_bytes(PNG + bytes([2]))
+        _old(waiting)
+        assert _until(lambda: 'p3.png' in names())
+        assert [n for n in names() if n.startswith('p')] == ['p1.png', 'p2.png', 'p3.png']
+    finally:
+        _stop(proc)

@@ -49,13 +49,13 @@
   // exclusive 破線下線。関係は target 変更ごとに 1 回だけ API から引く。
   let relMap = $state<Map<string, 'related' | 'exclusive'> | null>(null);
   $effect(() => {
-    const t = $verifyTarget;
+    const t = bandTag;
     relMap = null;
     if (!t) return;
-    tagRelations(t).then(m => { if ($verifyTarget === t) relMap = m; }, () => {});
+    tagRelations(t).then(m => { if (bandTag === t) relMap = m; }, () => {});
   });
   function emphasisFor(names: string[]): 'target' | 'related' | 'exclusive' | null {
-    const t = $verifyTarget;
+    const t = bandTag;
     if (t && names.includes(t)) return 'target';
     if (relMap) for (const n of names) { const k = relMap.get(n); if (k) return k; }
     return null;

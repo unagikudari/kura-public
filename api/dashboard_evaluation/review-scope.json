@@ -1,0 +1,24 @@
+{
+  "reviewed_revision": "4588fbd5adfd7014ac228da5777de0890487b349",
+  "files": {
+    "api/routers/pools.py": "944c33002455bbffe8edf3802825936f826bce58e62ed6c40abf2e6a57832038",
+    "api/tagger_core/dashboard_visual.py": "79aa5fb074ba5fea0022dd4af79a6a56734d8e2101a42637ef77566759148a23",
+    "api/tagger_core/dashboard_actions.py": "2046687f877aec2e62a7c2a93ddfba0ac8e734e7310b38dd23d9308465a8fba8",
+    "api/tagger_core/dashboard_experiment.py": "9ffeefd0aacf75f89b3fde95a689fd1b9c1de2f01ef50f7b2160f41f1c78018a",
+    "web/src/routes/tagger-dashboard/+page.svelte": "9f18ded9ec67e9d12e5504550a7e6cf2f3376b373453951f79ed605835587828",
+    "web/src/lib/components/EvaluationPane.svelte": "0af8624536665f918c829eb2fc0de2eb3575128bd512099f7037337e47e7bb39",
+    "web/src/lib/components/ReviewActions.svelte": "8436ebfcd9634ebe5b7c8ee0e47842c549f65247977046ad68ee8aef70a370ba",
+    "web/src/lib/components/ReviewComparison.svelte": "11a6fb1af78fe47e1eabc0135b4a35f9db7c5c6604b75c125bc34be184a43364",
+    "web/src/lib/components/RuntimeSummary.svelte": "429e0e9e01320c8005f6129f32aa9cc943e7de2953116bfb0dafea98197fc59b",
+    "api/services/dashboard_summary.py": "6b9ac7a4f41cf464e03f77b0b5dab2b2fef8472e7233bcb1b0ca281f5fb9623a",
+    "web/src/lib/tagger/reviewComparison.ts": "c9906af475cc6a4161fb57b083a7e72e7a625fb38c6fb1c9dfebad6f88e03ec3",
+    "web/src/lib/components/ReviewQueues.svelte": "106a9aa3b1ec2c373658280d05ec1edab9e7669190046e92f5fbd16e76687c95",
+    "web/src/lib/components/TrainingReadiness.svelte": "94b46a097316f370b909587f04ca3412355a70db98e00f004634e8d43b6f2a14",
+    "web/src/lib/tagger/reviewRequests.ts": "9f24a3fc41d58069339cbb5cf349137a8f6ff4f5733ca8a793b6688e9652f469",
+    "web/src/lib/tagger/trainingReadiness.ts": "4d8223282f02f7c791045d964207289a1f37b31fdaae8cf356363d33e314ea54",
+    "api/routers/training_readiness.py": "136aa622a2ef08cdc3f842971b5ac87770cc9a91e57fb64c1707f1dab7f25779",
+    "api/services/training_readiness.py": "8a60ac32894103a54cb04adec41e7fbeea9d71c9799b7e6b4325a2ef7ee1e9d1",
+    "api/tagger_core/training_eligibility.py": "3475be7cb38a673d606907b40358194a04668fd741977b9056fb465f8b79b6c8"
+  },
+  "scope": "overview/review/queue-local readiness; not all dashboard screens or model admission"
+}

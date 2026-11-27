@@ -11,7 +11,8 @@ from sqlalchemy.orm import selectinload
 from api.db.models import Tag, TagCategory, TagName, TagLocalization
 
 
-async def expand_implications(db: AsyncSession, post_id: int, locked: bool) -> int:
+async def expand_implications(db: AsyncSession, post_id: int, locked: bool,
+                              *, excluded_tag_ids: list[int] | None = None) -> int:
     """post が持つタグの implication child を post_tag に materialize する。
 
     例: `reze_(chainsaw_man)`(character) が付いていれば copyright `chainsaw_man`
@@ -35,9 +36,10 @@ async def expand_implications(db: AsyncSession, post_id: int, locked: bool) -> i
             "SELECT DISTINCT CAST(:pid AS INTEGER), ti.child_id, CAST(:locked AS BOOLEAN) "
             "FROM post_tag pt JOIN tag_implication ti ON ti.parent_id = pt.tag_id "
             "WHERE pt.post_id = :pid "
+            "AND ti.child_id <> ALL(CAST(:excluded AS int[])) "
             "ON CONFLICT (post_id, tag_id) DO NOTHING"
         ),
-        {"pid": post_id, "locked": locked},
+        {"pid": post_id, "locked": locked, "excluded": excluded_tag_ids or []},
     )
     return result.rowcount or 0
 

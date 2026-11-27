@@ -1,0 +1,44 @@
+{
+  "schema": "dashboard-review-provenance/1",
+  "reviewed_revision": "1302822e38aee9e974fd94ff46b846e70ca9348b",
+  "live_api_revision": "f8db2a7e303528f5cece158d00e26d5ff8c8b5bf",
+  "capture": {
+    "outcome": "succeeded",
+    "revision": "1302822e38aee9e974fd94ff46b846e70ca9348b",
+    "writes": 0,
+    "page_errors": 0
+  },
+  "source_artifacts": {
+    "claude-review.txt": "da68a3b79a9cfc590162f04c72855b8f6f3c8bfe84f5f83b8dfdf906530b8311",
+    "gemini-review.txt": "3755422fd8f75a4b9a4975644a8aaa235baf724c70ef3df6be573424c4632f0a",
+    "capture.json": "8c865d08d324f3167bc0181894d8388719829d450789c5af8d1a3042308ea6dd",
+    "review.py": "ba9ebe76aa909508d0fbf6b7ea55f768b40cb6683725d250bab6c1eaed68a0b2",
+    "overview-text.txt": "06d135d6c1ff759556c4b4115d722b6df3cfffc95d22715845b273b268fffe9f",
+    "overview-390-top.png": "b60f2ccd9c81230fe4a1c4a46359d75273c7bc9621883faeb28963c28f42f266",
+    "overview-390-table.png": "bf79b5f05e55aca99e096c407f63aa5b0a915cc75fd97dde2fa0999414290363",
+    "overview-1280-top.png": "41d39904e31f524a66f81a164d669533b97fd147c5e5375ecd35aea631cbc104",
+    "overview-1280-table.png": "10330d391fc2c0cefe8727760243816cac11aebdaddcbb5d4923cb5fbd772ae2"
+  },
+  "retained_text": {
+    "Claude": "claude-full.txt",
+    "Gemini": "gemini-full.txt",
+    "Codex": "codex-full.txt"
+  },
+  "limitations": [
+    "Screenshots and CLI envelope are retained in the operator evidence store; hashes identify them but are not publicly accessible download links.",
+    "Capture writes=0 and page_errors=0 are capture facts, not proof that every interaction was tested."
+  ],
+  "retained_text_sha256": {
+    "claude-full.txt": "1ad38f87c77506968cda29a7576def343baeb47ea8934c62de05e1838920be29",
+    "gemini-full.txt": "3755422fd8f75a4b9a4975644a8aaa235baf724c70ef3df6be573424c4632f0a",
+    "codex-full.txt": "6d93e00096e7a9e753c0de9338269b6e100380bc258c693043887375efa3a244"
+  },
+  "self_assessment": {
+    "author": "Codex root（実装者）",
+    "method": "Actual 390px overview capture plus previously recorded four-width/live browser controls; not a new independent or all-interactions review.",
+    "grades": {
+      "pass": 2,
+      "partial": 8
+    }
+  }
+}

@@ -153,7 +153,14 @@ def active_release(db: DB):
     return rid, bytes(model_data), bytes(csv_data).decode(), repo, rev
 
 
-def gt_labels(db: DB, min_positive: int, tags: list[str] | None = None,
+def gt_labels(db: DB, min_positive: int, tags=None, extra=None, *, with_eligibility=False):
+    from api.tagger_core.training_eligibility import read_snapshot
+    with read_snapshot(db.conn):
+        result = _gt_labels(db, min_positive, tags, extra)
+        return result if with_eligibility else result[:3]
+
+
+def _gt_labels(db: DB, min_positive: int, tags: list[str] | None = None,
               extra: set[str] | None = None):
     """-> (labels, groups). labels = [(post_id, tag, y)], groups = {post_id: group_key}.
 
@@ -161,26 +168,35 @@ def gt_labels(db: DB, min_positive: int, tags: list[str] | None = None,
     round is a one-tag rescue, not a general path, and silently dropping to a smaller
     denominator is worse than reporting the real one.
     """
+    from api.tagger_core.post_exclusion import training_label
+
     where_tag = "and g.tag = any(%s)" if tags else ""
     args = ([tags] if tags else [])
     rows = db.rows(
         f"select g.post_id, g.tag, g.verdict, {GROUP_SQL} "
         "from tagger_gt_label g join post p on p.id = g.post_id "
-        f"where p.type='image' and p.media_location = 'pg' {where_tag} "
+        f"where p.type='image' and p.media_location = 'pg' and {training_label('g')} {where_tag} "
         "order by g.tag, g.post_id", args or None)
+    from api.tagger_core import training_eligibility as eligibility
+    overlays = {tag: eligibility.load(db.rows, tag) for tag in sorted({r[1] for r in rows})}
+    eligible_ids = {tag: eligibility.eligible_ids(overlay, ((r[0], r[2]) for r in rows if r[1] == tag))
+                    for tag, overlay in overlays.items()}
+    blocked_posts = set().union(*(eligibility.excluded(ov) for ov in overlays.values()))
     by_tag: dict[str, list] = {}
     groups: dict[int, str] = {}
     for pid, tag, verdict, grp in rows:
+        if pid in blocked_posts or pid not in eligible_ids[tag]:
+            continue
         by_tag.setdefault(tag, []).append((pid, 1.0 if verdict == "positive" else 0.0))
         groups[pid] = grp
     extra = extra or set()
     kept = {t: v for t, v in by_tag.items()
             if sum(y for _, y in v) >= min_positive or t in extra}
     labels = [(pid, t, y) for t, v in kept.items() for pid, y in v]
-    return labels, groups, {t: (int(sum(y for _, y in v)), len(v)) for t, v in kept.items()}
+    return labels, groups, {t: (int(sum(y for _, y in v)), len(v)) for t, v in kept.items()}, overlays
 
 
-def kd_post_ids(db: DB, n: int, exclude: set[int], seed: int = 0) -> list[int]:
+def kd_post_ids(db: DB, n: int, exclude: set[int], seed: int = 0, *, training_eligibility=None) -> list[int]:
     """Random image posts for KD-only batches. TABLESAMPLE (not ORDER BY random()) --
     the table is ~735k rows and a full sort to draw a few thousand ids is wasteful.
 
@@ -189,12 +205,15 @@ def kd_post_ids(db: DB, n: int, exclude: set[int], seed: int = 0) -> list[int]:
     different set of preservation images. The drift differences would then be partly
     a difference in which pictures were measured, which is not a measurement.
     """
+    from api.tagger_core.post_exclusion import not_excluded
+    from api.tagger_core.training_eligibility import excluded
+    exclude = set(exclude) | set().union(*(excluded(ov) for ov in (training_eligibility or {}).values()))
     if n <= 0:
         return []
     pct = min(100.0, max(0.2, 100.0 * (n * 4) / 735000))
     rows = db.rows(
         f"select id from post tablesample system ({pct:.3f}) repeatable ({seed}) "
-        "where type='image' and media_location = 'pg' order by id limit %s", (n * 3,))
+        f"where type='image' and media_location = 'pg' and {not_excluded('id')} order by id limit %s", (n * 3,))
     ids = [r[0] for r in rows if r[0] not in exclude]
     return ids[:n]
 
@@ -330,9 +349,11 @@ def load_base(db: DB, base: str, pin_revision: str | None):
                 "veto_heads": sorted(ckpt.get("veto_heads", {}) or {}),
                 "img_size": ckpt.get("img_size", IMG_SIZE)}
     else:
-        from huggingface_hub import HfApi, hf_hub_download  # noqa: PLC0415
-        repo = "SmilingWolf/wd-swinv2-tagger-v3"
-        rev = pin_revision or HfApi().model_info(repo).sha
+        from huggingface_hub import hf_hub_download  # noqa: PLC0415
+        from tagger import base_model  # noqa: PLC0415
+        pinned = base_model.active()
+        repo = pinned["repo"]
+        rev = pin_revision or pinned["revision"]
         model = timm.create_model(f"hf-hub:{repo}@{rev}", pretrained=True)
         names = [r["name"] for r in csv.DictReader(
             open(hf_hub_download(repo, "selected_tags.csv", revision=rev)))]
@@ -759,7 +780,8 @@ def main() -> int:
           f"min_pred_pos_support={conf.get('min_pred_pos_support')}", flush=True)
 
     extra_tags = set(args.extra_tags or [])
-    labels, groups, tag_counts = gt_labels(db, min_pos, args.tags, extra_tags)
+    labels, groups, tag_counts, training_eligibility = gt_labels(
+        db, min_pos, args.tags, extra_tags, with_eligibility=True)
     if not labels:
         raise SystemExit(f"no GT tag reaches min_positive={min_pos} -- nothing to train")
     # Below-floor tags admitted by --extra-tags. Policy call for `erection`: it has 19 GT
@@ -832,7 +854,10 @@ def main() -> int:
     # a narrow slice (penis/genital close-ups from a handful of verify pools), and the
     # tags at risk of being silently rewritten are the ~10.8k that describe everything
     # else. Both domains are reported separately below; the random one is the honest one.
-    drawn = kd_post_ids(db, args.kd_posts + args.pres_val_posts, set(gt_post_ids), args.seed)
+    # Whole-post exclusion for the selected targets prevents supervised-other-tag
+    # batches or distillation from quietly reintroducing their disputed frames.
+    drawn = kd_post_ids(db, args.kd_posts + args.pres_val_posts,
+                        set(gt_post_ids), args.seed, training_eligibility=training_eligibility)
     kd_ids = drawn[:args.kd_posts]
     pres_ids = drawn[args.kd_posts:args.kd_posts + args.pres_val_posts]
     print(f"[kd] distillation-only train posts={len(kd_ids)} | "
@@ -1109,7 +1134,7 @@ def main() -> int:
               f"per_step={(hist[-1]['t'] - hist[0]['t']) / max(1, len(hist) - 1):.2f}s"
               if hist else "", flush=True)
 
-    result = dict(
+    result = dict(training_eligibility=training_eligibility,
         script="tagger/train_base_finetune.py", smoke=bool(args.smoke),
         lineage="base-finetune", freeze_validated=False,
         base=base_meta,

@@ -15,6 +15,7 @@ import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from starlette.routing import Mount, WebSocketRoute
+from starlette.staticfiles import StaticFiles
 
 from api import access
 
@@ -66,7 +67,10 @@ def test_the_app_mounts_no_surface_the_gate_cannot_see():
     below, and only the declared ones may exist."""
     for inner, path, _ in _surfaces(_app().routes):
         assert not isinstance(inner, WebSocketRoute), path
-        assert not isinstance(inner, Mount) or path in MOUNTS, path
+        if isinstance(inner, Mount):
+            # The optional static media mount exists only when DATA_DIR exists.
+            # Still probe it below, and reject a writable app at the same path.
+            assert path in MOUNTS or (path == "/data" and type(inner.app) is StaticFiles), path
 
 
 def test_nested_routes_keep_their_kind_and_prefix():

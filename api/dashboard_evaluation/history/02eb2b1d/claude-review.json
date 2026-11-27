@@ -1,0 +1,81 @@
+{
+  "reviewer": "Claude",
+  "reviewed_revision": "02eb2b1de0cbe1319d2481c3e70c7709f9e6685e",
+  "method": "Claude CLI: 実スクリーンショット4枚・可視本文・コード。操作なし。2026-11-17。",
+  "criteria": [
+    {
+      "id": "situation",
+      "verdict": "partial",
+      "assessment": "partial",
+      "evidence": "処理・停止・確認依頼はあるが同じ強さで並び、390幅では159枚の依頼が初画面に入らない。",
+      "nextfix": "対象・枚数・直接リンクを確認依頼の要約にまとめる"
+    },
+    {
+      "id": "consistency",
+      "verdict": "partial",
+      "assessment": "partial",
+      "evidence": "候補と本番は区別されるが、選択を稼働中と呼ぶ副題と、比較非表示を未測定とする表記が紛らわしい。",
+      "nextfix": "選択と稼働、比較非表示と未測定を分ける"
+    },
+    {
+      "id": "duplication",
+      "verdict": "partial",
+      "assessment": "partial",
+      "evidence": "更新ボタン3つ、受領表示と注意書きが重複。",
+      "nextfix": "更新対象を明記し共通説明を1回にする"
+    },
+    {
+      "id": "completeness",
+      "verdict": "fail",
+      "assessment": "fail",
+      "evidence": "担当と判定後の処理、セットの依頼・受領時刻が揃わない。",
+      "nextfix": "確認する人と判定後の処理を依頼の場所に明示する"
+    },
+    {
+      "id": "brevity",
+      "verdict": "partial",
+      "assessment": "partial",
+      "evidence": "初期表示に内部用語と5つのグラフ用行が残る。",
+      "nextfix": "不要なグラフ行を出さず内部情報を詳細へ移す"
+    },
+    {
+      "id": "actionability",
+      "verdict": "partial",
+      "assessment": "partial",
+      "evidence": "159枚への入口はあるが任意のリンクも同じ強調。完了条件と次の処理が不明。",
+      "nextfix": "依頼だけを強調し、任意の確認を通常のリンクにする"
+    },
+    {
+      "id": "exploration",
+      "verdict": "pass",
+      "assessment": "pass",
+      "evidence": "ソースに検索・状況フィルター・4つのソート・件数・解除がある。操作はレビュアー未実施。",
+      "nextfix": "絞り込み後の件数に総数も添える"
+    },
+    {
+      "id": "graphics",
+      "verdict": "partial",
+      "assessment": "partial",
+      "evidence": "グラフのない行にもグラフの見出しが出る。工程と画像枚数の区別が必要。展開後の描画は未検証。",
+      "nextfix": "比較データのない行はグラフを提示しない"
+    },
+    {
+      "id": "freshness",
+      "verdict": "partial",
+      "assessment": "partial",
+      "evidence": "古い報告は現在稼働と区別されるがセットの時刻と抽出の根拠が不足。",
+      "nextfix": "観測時刻と確認セットの根拠を分けて示す"
+    },
+    {
+      "id": "accessibility",
+      "verdict": "partial",
+      "assessment": "partial",
+      "evidence": "44px領域と文字説明はあるが停止理由の展開マーカーが見えない。キーボード操作は未検証。",
+      "nextfix": "展開マーカーを追加し操作を実測する"
+    }
+  ],
+  "limitations": [
+    "02eb2b1dの概要の親画面だけの評価。埋め込み画面・モデル品質・今回の修正の合格ではない。",
+    "根拠と改善案は原文から実装者が要約。原文は同ディレクトリに保存。"
+  ]
+}

@@ -1,0 +1,143 @@
+{
+  "schema": "kura-dashboard-review/1",
+  "reviewer": "独立エージェント・UX",
+  "reviewer_kind": "agent",
+  "reviewed_revision": "e219139d081815c2187ec0ba9bf33378b7e4f417",
+  "method": "code+generated_html",
+  "reviewed_at": "2026-11-15",
+  "overall": "revise",
+  "scope": "10項目の利用者視点レビュー。製品コードのmerge可否ではなく、ダッシュボードの使い勝手の評価。",
+  "limitations": [
+    "実ブラウザーの表示・クリック・タッチ操作は未実施。コード確認を画面の使いやすさの合格に数えていない。",
+    "生成HTMLはREAD ONLYプレビュー467タグ。レビュー自体でAPI/DB書き込みやソース変更はしていない。"
+  ],
+  "criteria": [
+    {
+      "id": "situation",
+      "verdict": "unverified",
+      "evidence": "8状況カード、対象467タグ、優先分類の件数は生成HTMLで確認。うち303タグが状況未確認であり、カードがあるだけで実際の運転状態を把握できるとは言えない。初見の利用者による探索は未実施。",
+      "nextfix": "実画面で「動作中・停止中・要対応」を説明してもらう課題を実施。未確認タグは記録なし・古い記録・状態未接続を分ける。",
+      "references": [
+        "api/tagger_core/dashboard_visual.py:23-33",
+        "api/tagger_core/dashboard_visual.py:60-75"
+      ],
+      "code_contract": "優先分類と件数は確認済み。初見での理解は未確認。"
+    },
+    {
+      "id": "consistency",
+      "verdict": "unverified",
+      "evidence": "候補の判定と本番使用は別軸、学習中はfreshな報告のみ、候補不採用だけで現行モデル停止とは表示しない構造を確認。ただし状況・構成・詳細の複数表示を実画面で矛盾なく読めるかは未確認。",
+      "nextfix": "使用中かつ候補不採用、出力保留かつ構成あり、古い学習報告の3例を画面上で比較して確認する。",
+      "references": [
+        "api/tagger_core/dashboard_visual.py:19-33",
+        "api/routers/pools.py:1507-1513",
+        "api/routers/pools.py:1568-1586"
+      ],
+      "code_contract": "状態の軸分離を確認。全状態組合せの画面理解は未確認。"
+    },
+    {
+      "id": "duplication",
+      "verdict": "unverified",
+      "evidence": "長い説明はdetailsへ移された。一方、概要にreleaseが2回現れ、カードと行に同じ一般的な行動、詳細に旧判定と処理状態が重なる。これが必要な要約か不要な重複かは、実画面の情報階層を見ずに合格にできない。",
+      "nextfix": "同じ事実の唯一の詳細表示先を決め、概要は件数とリンクだけにする。重複を一覧化し、同じ文を読む必要がないか確認する。",
+      "references": [
+        "api/tagger_core/dashboard_visual.py:69-75",
+        "api/routers/pools.py:1507-1513",
+        "api/routers/pools.py:1805-1818"
+      ],
+      "code_contract": "折りたたみは確認。重複の有用性は未確認。"
+    },
+    {
+      "id": "completeness",
+      "verdict": "fail",
+      "evidence": "各行で対象・状態・一般的な次行動はあるが、担当者名、タグ固有の不足条件、作業着手の有無、最終確認日時が同じ行で揃わない。「運用側が検証」だけでは依頼済みか未着手かも分からない。",
+      "nextfix": "対象ごとに担当、判定根拠、未充足の条件、次の具体処理、更新時刻を表示。根拠がない欄は未記録とする。",
+      "references": [
+        "api/tagger_core/dashboard_visual.py:7-16",
+        "api/routers/pools.py:1507-1513",
+        "api/routers/pools.py:1568-1586"
+      ],
+      "code_contract": "必要項目の欠落をソースとHTMLで確認。"
+    },
+    {
+      "id": "brevity",
+      "verdict": "unverified",
+      "evidence": "初期表は6列、詳細列と長い凡例は閉じられる構造。概要には8カードに加えて工程図とモデル/件数の別パネルがある。スマホの1画面内で何が優先されるか、文字量が十分少ないかは未実測。",
+      "nextfix": "デスクトップと狭幅で最初に見える要素を確認し、初見の判断に不要なカード・件数は詳細へ移す。",
+      "references": [
+        "api/tagger_core/dashboard_visual.py:68-75",
+        "api/tagger_core/dashboard_visual.py:93-104",
+        "api/routers/pools.py:1805-1818"
+      ],
+      "code_contract": "6列と折りたたみは確認。視覚的密度は未確認。"
+    },
+    {
+      "id": "actionability",
+      "verdict": "fail",
+      "evidence": "主な指示が「運用側が原因を確認／検証／状態を確認」で、対象固有の何を調べ何が満たされれば進むかがない。画像リンクはそのタグが既に付いた検索なので、未付与の見逃し画像を直接示す経路ではない。",
+      "nextfix": "「本番分布の評価標本が未作成→標本を固定して適合率測定」など証拠に対応した次処理へ置換。画像リンクの対象範囲も明記する。",
+      "references": [
+        "api/tagger_core/dashboard_visual.py:7-16",
+        "api/tagger_core/dashboard_actions.py:5-21",
+        "api/routers/pools.py:1511-1513"
+      ],
+      "code_contract": "曖昧な主行動とリンクの検索範囲を確認。"
+    },
+    {
+      "id": "exploration",
+      "verdict": "unverified",
+      "evidence": "状況・本番使用・タグ名フィルター、昇降順、グループ化、表示件数、解除、0件メッセージは実装済み。467行の生成HTMLも確認したが、自分で実ブラウザー上のカード→一覧→訂正→解除課題は実施していない。",
+      "nextfix": "実ブラウザーで絞り込みの組合せ、戻る操作、カテゴリ間移動、0件からの解除を課題として実行し記録する。",
+      "references": [
+        "api/tagger_core/dashboard_visual.py:78-88",
+        "api/tagger_core/dashboard_visual.py:107-128",
+        "web/src/routes/tagger-dashboard/+page.svelte:32-69"
+      ],
+      "code_contract": "操作部と実装経路は存在。ユーザー課題の成功は未確認。"
+    },
+    {
+      "id": "graphics",
+      "verdict": "unverified",
+      "evidence": "件数比の棒と候補の固定評価meterを分離し、対象nと「本番精度ではない」を明記。欠損を0にしない計算も確認。ただし棒の長さ・ラベル・画面内の比較が人の判断を助けるか、現物での評価はない。",
+      "nextfix": "代表的な成功・失敗・未測定の3例で、図だけから対象・単位・判定上の意味を説明できるかを確認する。",
+      "references": [
+        "api/tagger_core/dashboard_visual.py:36-57",
+        "api/tagger_core/dashboard_visual.py:60-75"
+      ],
+      "code_contract": "数値意味と欠損の区別は確認。視覚的有効性は未確認。"
+    },
+    {
+      "id": "freshness",
+      "verdict": "fail",
+      "evidence": "学習中の表示にfresh判定はある。しかしlearning_status.readはobserved_at/ageを画面へ返さず、概要の直近学習に日時がない。タグごとの最新候補判定にも更新日時が見えない。更新が新しい状態と古い記録を利用者が定量的に区別できない。",
+      "nextfix": "報告日時と経過時間を返して表示し、候補判定時刻も添える。古い記録は現在の作業状況ではないと明示する。",
+      "references": [
+        "tagger/learning_status.py:30-41",
+        "api/tagger_core/dashboard_visual.py:66-75",
+        "api/routers/pools.py:1507-1513"
+      ],
+      "code_contract": "fresh判定は存在するが画面の日時欠落を確認。"
+    },
+    {
+      "id": "accessibility",
+      "verdict": "fail",
+      "evidence": "主フィルターはlabel付きselect/buttonで、色以外の名前と数値がある。ただし詳細の構成チップはonclickだけのspan、列見出しのソートもonclickだけのthで、これらにキーボード操作用のbuttonやtabindex/キー処理がない。タッチ・拡大・コントラストは未検証。",
+      "nextfix": "構成チップと列見出しをbutton等の操作可能な要素にし、aria-pressed/aria-sortを付ける。その後キーボードと狭幅で実操作する。",
+      "references": [
+        "api/routers/pools.py:1828-1841",
+        "api/tagger_core/dashboard_visual.py:78-88"
+      ],
+      "code_contract": "一部操作のキーボード経路欠落をソースで確認。"
+    }
+  ],
+  "summary": {
+    "pass": 0,
+    "fail": 4,
+    "unverified": 6
+  },
+  "strongest_blockers": [
+    "タグごとの具体的な不足条件・担当・進捗・更新日時が揃わない。",
+    "「運用側が確認」という一般文で具体的な次の処理と完了条件が不明。",
+    "詳細フィルターと列ソートにキーボード経路がない。"
+  ]
+}
